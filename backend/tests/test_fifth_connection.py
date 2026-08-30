@@ -10,7 +10,7 @@ import connected_sources
 from connection_config import state_layout
 from observation_store import ObservationStore
 
-FROZEN_CONNECTION_CONTRACT = "792765ee2e7dff09a6b3856728db9e50c925b194"
+FROZEN_CONNECTION_CONTRACT = "a0fc8716aee760fa65ec195c93b6147f1c4575e5"
 PROTECTED_CORE_PATHS = (
     "backend/check.py",
     "backend/connected_sources.py",
