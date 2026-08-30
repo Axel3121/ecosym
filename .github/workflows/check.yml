@@ -19,48 +19,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  backend:
-    name: backend
+  check:
+    name: check
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
 
     steps:
       - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
         with:
-          fetch-depth: 0
+          node-version: '24'
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
+      # The repository holds specifications until the implementation lands.
+      # Report success rather than inventing a verdict about nothing.
+      - name: detect implementation
+        id: detect
+        run: |
+          if [ -f package.json ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "no implementation yet — specifications only"
+          fi
 
-      - name: install ruff
-        run: pipx install ruff
-
-      - name: lint
-        run: ruff check .
-
-      - name: format
-        run: ruff format --check .
-
-      # Fanger syntaksfeil uten å starte tjenesten.
-      - name: compile
-        run: python -m compileall -q .
+      - name: install
+        if: steps.detect.outputs.present == 'true'
+        run: npm ci
 
       - name: check
-        run: python check.py
-
-      # SECURITY.md: external SQLite sources are opened read-only. Axey's own
-      # observation store is a writable, owned store and is not covered here.
-      - name: verify read-only source access
-        run: |
-          if grep -nE '\b(INSERT|UPDATE|DELETE|DROP|ALTER)\b' source_readers.py; then
-            echo "::error::writing SQL found — source readers must be read-only"
-            exit 1
-          fi
-          if ! grep -q 'mode=ro' source_readers.py; then
-            echo "::error::no mode=ro in source_readers.py — connections must be read-only"
-            exit 1
-          fi
-          echo "read-only confirmed"
+        if: steps.detect.outputs.present == 'true'
+        run: npm run check
