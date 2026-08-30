@@ -1,22 +1,28 @@
 #!/usr/bin/env bash
-# Show the status and log of a task run started by run-task.
+# Show what a task run is doing.
 # Usage: task-status [unit-name]   (no argument = most recent)
+#
+# Reads the run's own OpenCode server when it is up, and falls back to the log.
 set -euo pipefail
 
 RUNS="$HOME/.local/share/axey/runs"
-
-if [ $# -ge 1 ]; then
-  UNIT="$1"
-else
-  UNIT="$(ls -t "$RUNS"/*.log 2>/dev/null | head -1 | xargs -r basename | sed 's/\.log$//')"
-fi
+UNIT="${1:-$(ls -t "$RUNS"/*.log 2>/dev/null | head -1 | xargs -r basename | sed 's/\.log$//')}"
 
 [ -n "${UNIT:-}" ] || { echo "no runs found" >&2; exit 1; }
 
 echo "unit: $UNIT"
 systemctl --user is-active "$UNIT.service" 2>/dev/null || true
-if [ -f "$RUNS/$UNIT.port" ]; then
-  echo "port: $(cat "$RUNS/$UNIT.port")  (continue it with: opencode run --attach http://localhost:PORT -c \"...\")"
+
+PORT_FILE="$RUNS/$UNIT.port"
+if [ -f "$PORT_FILE" ]; then
+  PORT="$(cat "$PORT_FILE")"
+  TODO="$(curl -s --max-time 3 "http://127.0.0.1:$PORT/session/status" 2>/dev/null || true)"
+  if [ -n "$TODO" ]; then
+    echo "--- live (port $PORT) ---"
+    echo "$TODO" | head -c 1200
+    echo
+  fi
 fi
-echo "---"
+
+echo "--- log ---"
 tail -40 "$RUNS/$UNIT.log" 2>/dev/null || echo "(no log yet)"
