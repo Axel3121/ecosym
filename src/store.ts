@@ -358,7 +358,7 @@ export class ObservationStore {
                FROM collection_attempts latest
               WHERE latest.connection_id = c.connection_id
                 AND latest.config_hash = c.config_hash
-              ORDER BY latest.started_at DESC, latest.attempt_id DESC
+              ORDER BY latest.rowid DESC
               LIMIT 1
            )
           ORDER BY c.connection_id`,
@@ -522,7 +522,7 @@ export class ObservationStore {
         ) STRICT;
 
         CREATE INDEX collection_attempts_latest
-          ON collection_attempts(connection_id, config_hash, started_at DESC, attempt_id DESC);
+          ON collection_attempts(connection_id, config_hash, started_at DESC);
 
         CREATE TABLE facts (
           fact_id INTEGER PRIMARY KEY,
