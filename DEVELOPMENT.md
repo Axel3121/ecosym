@@ -1,6 +1,6 @@
 # Development
 
-This document owns the stable obligations for developing Axey. Current tools
+This document owns the stable obligations for developing Echosystem. Current tools
 may implement these obligations but do not redefine them.
 
 ## Owns
@@ -241,7 +241,7 @@ simple mechanism
   → keep semantic ownership unchanged
 ```
 
-Architecture that exists only to protect Axey from hypothetical future choices
+Architecture that exists only to protect Echosystem from hypothetical future choices
 is not earned complexity.
 
 ## Decision records

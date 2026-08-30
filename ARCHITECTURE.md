@@ -1,13 +1,13 @@
 # Architecture
 
-This document owns Axey's stable system boundaries: which concern owns which
+This document owns Echosystem's stable system boundaries: which concern owns which
 kind of state, how information and authority may cross boundaries, and which
 properties must survive replacement of current implementation choices.
 
 ## Owns
 
 - stable component and concern boundaries;
-- authoritative ownership of Axey-controlled information;
+- authoritative ownership of Echosystem-controlled information;
 - trust and authority topology;
 - durable dependency direction and isolation properties.
 
@@ -28,7 +28,7 @@ User
   ↓
 World surface
   ↓
-Axey application core
+Echosystem application core
   ├── institution owner        — civilizations, jurisdiction, mandate, authority
   ├── observation owner        — what was seen, from where, when
   ├── form boundary            — observation → depiction
@@ -66,12 +66,12 @@ below. Model output is input to this core, never an alternative control plane.
 
 ### Institution owner
 
-Axey owns institutional semantics: which civilizations exist, their
+Echosystem owns institutional semantics: which civilizations exist, their
 jurisdiction, their mandate, the rules of authority, and the institutional state
 the user sees. This is definitional, not presentational — what it holds
 determines what work is permitted.
 
-It therefore has one logical source of record, and it is trust-bearing. Axey
+It therefore has one logical source of record, and it is trust-bearing. Echosystem
 cannot execute an action and cannot widen its own authority, but its state is
 consulted before governed work is admitted.
 
@@ -80,7 +80,7 @@ jurisdiction, mandate, or authority.
 
 ### Observation owner
 
-Axey-owned durable observations have one logical source of record. An
+Echosystem-owned durable observations have one logical source of record. An
 observation keeps enough source, temporal, and status information to establish
 what was seen, from which owner, when, and whether it is current.
 
@@ -111,13 +111,13 @@ Models perform ephemeral reasoning over application-selected input. They may
 produce responses, proposed interpretations, or proposed actions. They own no
 durable state, no authority, no secrets, and no effect outcomes.
 
-Replacing a model or provider must not require redefining Axey's institutional
+Replacing a model or provider must not require redefining Echosystem's institutional
 or observational semantics.
 
 ### Petition boundary
 
-A petition is a typed request leaving Axey for an authority. It carries the
-user's identity, never Axey's, and Axey holds no credentials to lend it.
+A petition is a typed request leaving Echosystem for an authority. It carries the
+user's identity, never Echosystem's, and Echosystem holds no credentials to lend it.
 
 A petition has a durable identity that outlives the asking, so that an outcome
 observed later can be attributed to it. Its own lifecycle — asked, admitted,
@@ -126,7 +126,7 @@ refused, executed — is distinct from any depiction of work having happened.
 ## Authority topology
 
 ```text
-Axey            defines what is permitted
+Echosystem            defines what is permitted
   ↓ petition + authority context
 control plane   admits or refuses governed work
   ↓ only if admitted
@@ -136,7 +136,7 @@ enforcement check   final refusal before a tool runs
 ```
 
 No governed work may begin unless its runtime's control plane has admitted it under
-a current Axey-defined mandate. Runtime paths do not bypass that admission, and
+a current Echosystem-defined mandate. Runtime paths do not bypass that admission, and
 tool execution remains subject to a final enforcement check.
 
 The enforcement check is a lock, not an institution. It can refuse an action; it
@@ -149,15 +149,15 @@ would depict government over a runtime that does as it pleases.
 
 ## Data and fact ownership
 
-- Axey's institution store owns civilizations, mandates, jurisdiction, and
+- Echosystem's institution store owns civilizations, mandates, jurisdiction, and
   authority rules.
-- Axey's observation store owns observation records and their provenance,
+- Echosystem's observation store owns observation records and their provenance,
   timing, and status.
 - External systems own their current external facts and effect outcomes.
 - A connected runtime owns its own state: agents, lineage, delegation, and tool
   access. Which runtimes are connected, and what each can enforce, is observed —
   never assumed, and never written into this document.
-- Axey's observation store also owns what Axey concluded from what it saw: a
+- Echosystem's observation store also owns what Echosystem concluded from what it saw: a
   derived statement is stored as derived, carrying its inputs, and is stale once
   they change. It is never stored as something observed.
 - The model owns no durable fact merely because it generated text about it.
@@ -193,7 +193,7 @@ matter that waits days for an answer cannot be carried by process-local
 delegation, so something must carry it; no candidate is canonical until a
 vertical chain has been proven end to end.
 
-Whatever is chosen coordinates. It does not acquire Axey's authority semantics
+Whatever is chosen coordinates. It does not acquire Echosystem's authority semantics
 or a runtime's agent execution by being the thing in the middle.
 
 ## Growth rule

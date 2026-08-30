@@ -14,10 +14,10 @@ cd "$(dirname "$0")/.."
 
 # Run under a transient user unit so the work survives a Hermes restart.
 # The sandbox keeps --die-with-parent, but its parent is now systemd, not us.
-UNIT="axey-task-${TASK}-$(date +%s)"
-RUNS="${XDG_DATA_HOME:-$HOME/.local/share}/axey/runs"
+UNIT="echosystem-task-${TASK}-$(date +%s)"
+RUNS="${XDG_DATA_HOME:-$HOME/.local/share}/echosystem/runs"
 LOG="$RUNS/${UNIT}.log"
-PORT="${AXEY_PORT:-$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")}"
+PORT="${ECHOSYSTEM_PORT:-$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")}"
 mkdir -p "$RUNS"
 
 echo "$PORT" > "$RUNS/${UNIT}.port"
@@ -30,6 +30,6 @@ systemd-run --user --unit="$UNIT" --collect \
   --working-directory="$PWD" \
   --property=StandardOutput="append:$LOG" \
   --property=StandardError="append:$LOG" \
-  "$HOME/bin/axey-sandbox" run --variant max --port "$PORT" \
+  "$HOME/bin/echosystem-sandbox" run --variant max --port "$PORT" \
   "Follow the instructions in the attached files." \
   -f "$SPEC" -f scripts/run-instruction.md

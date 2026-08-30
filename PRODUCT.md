@@ -1,11 +1,11 @@
 # Product
 
-Axey is a **world of civilizations**: a living, inhabited representation of the
+Echosystem is a **world of civilizations**: a living, inhabited representation of the
 domains one person cares about, and of the agents working inside them.
 
 ## Owns
 
-- the user problem Axey exists to solve;
+- the user problem Echosystem exists to solve;
 - durable product concepts and product invariants;
 - what a civilization, an inhabitant, and the council mean at the user surface;
 - product non-goals.
@@ -37,30 +37,30 @@ resolve it by picking the more convenient rule.
 
 ## Purpose
 
-Axey should reduce the work required to reconstruct personal context and decide
+Echosystem should reduce the work required to reconstruct personal context and decide
 what deserves attention — by giving that context a place rather than a report.
 
-The thinking happens elsewhere. Axey reads, and gives what it finds a form.
+The thinking happens elsewhere. Echosystem reads, and gives what it finds a form.
 
 Whatever does that thinking — an agent harness, a personal assistant, a
-scheduler, a person's own scripts — connects. Axey names none of them and
+scheduler, a person's own scripts — connects. Echosystem names none of them and
 requires none of them. A world with nothing connected is empty, not broken.
 
-Axey has no execution authority and renders only state it can account for:
+Echosystem has no execution authority and renders only state it can account for:
 external state it has observed, and institutional state the user declared.
 Never operational success it inferred. It may submit requests to a runtime, which
-decides whether and how to act. Axey is therefore not read-only, and is not
-described as such: a user action inside Axey can cause work to begin.
+decides whether and how to act. Echosystem is therefore not read-only, and is not
+described as such: a user action inside Echosystem can cause work to begin.
 
 Observed state is not only finished outcomes. Live operation is observable and
 may be shown as live; a petition's own lifecycle is observable and may be shown
 as a request. What may never happen is one being dressed as another — work in
 progress depicted as work completed, or a request depicted as a result.
 
-Axey does, however, own what the institution *means* — which civilizations
-exist, what each may do, and what must be escalated. That makes Axey
-trust-bearing even though it executes nothing: what Axey holds determines what
-agents are permitted to do. Axey cannot perform an action, and it cannot widen
+Echosystem does, however, own what the institution *means* — which civilizations
+exist, what each may do, and what must be escalated. That makes Echosystem
+trust-bearing even though it executes nothing: what Echosystem holds determines what
+agents are permitted to do. Echosystem cannot perform an action, and it cannot widen
 its own authority; but its state is consulted before governed work is allowed to
 begin, and it is protected accordingly.
 
@@ -131,17 +131,17 @@ standing office where there is only a running process.
 
 ### Petition
 
-A request the user makes from inside Axey — typically by addressing a
-civilization's coordinator — which Axey forwards to whichever runtime that
+A request the user makes from inside Echosystem — typically by addressing a
+civilization's coordinator — which Echosystem forwards to whichever runtime that
 civilization runs on.
 
-Axey holds no credentials, executes nothing, and decides nothing. A runtime may
-refuse, alter, or defer any petition. Axey learns what came of it only by
+Echosystem holds no credentials, executes nothing, and decides nothing. A runtime may
+refuse, alter, or defer any petition. Echosystem learns what came of it only by
 observing state afterward, as it observes everything else.
 
-A petition carries the user's identity, never Axey's. Axey is the envelope, not
+A petition carries the user's identity, never Echosystem's. Echosystem is the envelope, not
 the sender: it has no authority of its own to lend, and a runtime weighs a petition
-exactly as it would the same request made anywhere else. Axey having a service
+exactly as it would the same request made anywhere else. Echosystem having a service
 identity with rights of its own would give it the authority it is defined not to
 have.
 
@@ -178,7 +178,7 @@ other civilizations and puts a recommendation to the user.
 The border rule binds civilizations, not the user: founding, dissolving, and
 redrawing a mandate are sovereign acts and bypass the council entirely.
 
-The council holds a queue of open matters. It is the reason to open Axey.
+The council holds a queue of open matters. It is the reason to open Echosystem.
 
 The council sees every civilization, but only in summary: enough to know that
 something is wrong, never the detail of why. Detail lives where the work lives,
@@ -189,7 +189,7 @@ This mirrors the border rule. Authority is local except where it crosses a
 border; information is local except in summary. It is also what allows the
 council to remain readable as the world grows.
 
-Because Axey has no execution authority, the council's authority is procedural:
+Because Echosystem has no execution authority, the council's authority is procedural:
 it is where cross-border decisions are surfaced and reasoned about. It cannot
 compel or prevent what a runtime does.
 
@@ -209,7 +209,7 @@ that holds it, and is fetched fresh every time.
 
 ### The chronicler
 
-Axey's own voice. It keeps the history, and compares what was said against what
+Echosystem's own voice. It keeps the history, and compares what was said against what
 happened.
 
 Its independence comes from standing elsewhere, not from being smarter:
@@ -232,10 +232,10 @@ Memory is what makes the chronicler worth asking: a thing that only sees the
 present notices nothing. But a memory that accumulates conclusions is how a
 truthful world starts lying to itself, so what it keeps is constrained.
 
-A noticed pattern is not an observation. It is something Axey worked out, and it
+A noticed pattern is not an observation. It is something Echosystem worked out, and it
 stays marked as that for as long as it is held. It carries what it was derived
 from, over which window, and by what method — so the same rule that governs a
-runtime's claims governs Axey's own.
+runtime's claims governs Echosystem's own.
 
 A conclusion whose inputs changed is stale. It is not presented as current until
 it has been reworked against what is now known. Nothing that was superseded
@@ -243,14 +243,14 @@ quietly comes back as support.
 
 A conclusion may point at what to look into. It is never the evidence itself:
 where the underlying records are available, they are what an answer rests on.
-This is the council's rule about its own summaries, applied to Axey — a trace
+This is the council's rule about its own summaries, applied to Echosystem — a trace
 that a conclusion happened is not a source to conclude from.
 
 An answer shows its footing: what kind of thing each part is, where it came
 from, how fresh it is, what was missing, and how to reach the records
 underneath. An answer that cannot show this says so instead.
 
-And it forgets. Axey holds what it needs to remain honest about the past, not a
+And it forgets. Echosystem holds what it needs to remain honest about the past, not a
 private archive of everything other systems own. What it keeps, for how long,
 and what happens to conclusions when a source is disconnected are decisions with
 an owner — not an accident of never deleting.
@@ -263,12 +263,12 @@ as it pleases — the failure this product is least able to survive.
 
 Three layers, each owning what it is actually good at:
 
-**Axey owns meaning.** Which civilizations exist, their jurisdiction, their
+**Echosystem owns meaning.** Which civilizations exist, their jurisdiction, their
 mandate, the rules of authority, and the institutional state the user sees. This
 is not presentation: it is the definition of what is permitted.
 
 **A control plane inside each runtime owns admission.** It decides whether work
-may begin under a current Axey-defined mandate, dispatches what it admits,
+may begin under a current Echosystem-defined mandate, dispatches what it admits,
 coordinates live work, and binds the authorized scope to concrete runtime
 limits. It is authoritative to its runtime rather than adjacent to it.
 
@@ -277,7 +277,7 @@ final enforcement check before a tool runs.
 
 ### Any runtime, but the world shows what it can enforce
 
-Axey does not name its executor. A runtime connects the way a source connects,
+Echosystem does not name its executor. A runtime connects the way a source connects,
 and more than one may be connected at once.
 
 What a runtime must offer to carry *governed* work is a contract, not a brand:
@@ -298,7 +298,7 @@ observed state, and is never assumed.
 ### Governed work requires admission
 
 No governed work may begin in any runtime unless that runtime's control plane
-has admitted it under a current Axey-defined mandate. Runtime paths do not
+has admitted it under a current Echosystem-defined mandate. Runtime paths do not
 bypass that admission, and tool execution remains subject to a final
 enforcement check.
 
@@ -319,7 +319,7 @@ ambiguous mandate.
 
 ### What exists, and what does not
 
-Real today: Axey's institutional semantics; a connected runtime's execution primitives —
+Real today: Echosystem's institutional semantics; a connected runtime's execution primitives —
 observation, delegation, spawning, steering, stopping, per-agent tool limits,
 and a pre-execution check that can block.
 
@@ -397,7 +397,7 @@ or decaying on the strength of its charter.
 
 ### Depiction requires existence
 
-Axey does not render authority, coordination, or activity that does not exist in
+Echosystem does not render authority, coordination, or activity that does not exist in
 the system it reads. A depicted role corresponds to a real one.
 
 Naming obeys the same rule. A word that implies a standing institution is not
@@ -439,8 +439,8 @@ never tied to a request on the strength of having followed it in time.
 
 ### External facts keep their external owners
 
-Reading an observation from another system does not make Axey authoritative for
-that fact. Axey preserves the observation, its source, and when it was observed.
+Reading an observation from another system does not make Echosystem authoritative for
+that fact. Echosystem preserves the observation, its source, and when it was observed.
 
 ### History and current truth are distinct
 
@@ -450,7 +450,7 @@ state does not silently re-enter current reasoning.
 
 ### Unknown remains unknown
 
-Missing provenance, verification, or currentness is presented as unknown. Axey
+Missing provenance, verification, or currentness is presented as unknown. Echosystem
 does not invent certainty to make a surface look complete. A city with no data
 looks unfounded, not thriving.
 
@@ -458,7 +458,7 @@ looks unfounded, not thriving.
 
 A civilization decays when its domain has gone quiet: no work done, no
 observations arriving, nothing moving. Tending is life in the domain, never
-attention paid to Axey — a city whose agents shipped work yesterday is tended
+attention paid to Echosystem — a city whose agents shipped work yesterday is tended
 whether or not the user looked at it. Decay that measured visits would be the
 world reporting on its own use, and would flatter or condemn a city for reasons
 that have nothing to do with what is true of it.
@@ -471,13 +471,13 @@ Both are reported by appearance rather than by alerting, nagging, or ranking
 the user.
 
 A quiet civilization and a broken observation path look identical from inside
-the world, and must not be shown identically. Where Axey has stopped seeing, it
+the world, and must not be shown identically. Where Echosystem has stopped seeing, it
 shows that it cannot see. Silence is only depicted as quiet when it is known to
 be quiet.
 
 ## What good means
 
-Axey is improving when real use shows that:
+Echosystem is improving when real use shows that:
 
 - the world's appearance holds up against a spot check of the underlying
   systems;
@@ -504,7 +504,7 @@ having one city that reflects anything real.
 
 ## Non-goals
 
-Axey is not initially:
+Echosystem is not initially:
 
 - a coding harness, task runner, or workflow builder;
 - a system with execution authority, or one that can compel or prevent
@@ -517,8 +517,8 @@ Axey is not initially:
 - a general-purpose dashboard or metrics surface;
 - a game, or a world whose appearance is authored rather than derived.
 
-Axey does allow the user to define their own civilizations. This is a general
-mechanism by intent, and is the one sense in which Axey is extensible; it does
+Echosystem does allow the user to define their own civilizations. This is a general
+mechanism by intent, and is the one sense in which Echosystem is extensible; it does
 not extend to executing or orchestrating work.
 
 New product scope must be earned by repeated use or a concrete failure of the
@@ -527,7 +527,7 @@ current slice.
 ## Open questions
 
 - Which durable substrate carries a case that waits days for an answer, and can
-  it do so without taking over either Axey's authority semantics or a runtime's
+  it do so without taking over either Echosystem's authority semantics or a runtime's
   agent runtime?
 - How is jurisdiction resolved deterministically, without a model deciding
   where a matter belongs?
@@ -536,10 +536,10 @@ current slice.
 - What counts as a source that owns a fact, and how is a traceable origin
   carried from petition to observed outcome?
 - Petitions carry the user's identity: how is that identity established at the
-  Axey surface, and what record does a petition leave?
+  Echosystem surface, and what record does a petition leave?
 - How much can the council prepare a matter on its own before the user sees it,
   and could well-evidenced matters eventually decide themselves? This is a
   direction, not a decision. Any such automatic decision requires an explicit
   mandate the user granted; a runtime enforces a mandate but never creates one,
   and executing work confers no authority to decide what work is permitted.
-  Note the tension: an empty queue removes the reason to open Axey.
+  Note the tension: an empty queue removes the reason to open Echosystem.

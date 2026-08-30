@@ -1,4 +1,4 @@
-# CodeRabbit — automatisk PR-review for Axey.
+# CodeRabbit — automatisk PR-review for Echosystem.
 # Skjema: https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
 #
 # DEVELOPMENT.md eier review-forpliktelsene. To ting derfra styrer denne fila:
@@ -54,7 +54,7 @@ reviews:
       instructions: >-
         A connected source is opened read-only. Flag any SQLite connection
         without a read-only URI, and any INSERT/UPDATE/DELETE/CREATE against a
-        source. Axey's own store is writable; a source never is.
+        source. Echosystem's own store is writable; a source never is.
         Flag SQL built by string concatenation - use parameter binding.
         Flag any field persisted that its connection did not name, and any
         named container whose nested contents are stored wholesale: naming a
@@ -80,7 +80,7 @@ reviews:
     oxc:
       enabled: true          # samme linter som prosjektet bruker lokalt
     ruff:
-      enabled: true          # backend/axey.py
+      enabled: true          # backend/echosystem.py
     gitleaks:
       enabled: true          # SECURITY.md: ingen credentials i repoet
     actionlint:

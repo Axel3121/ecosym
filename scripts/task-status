@@ -5,7 +5,7 @@
 # Reads the run's own OpenCode server when it is up, and falls back to the log.
 set -euo pipefail
 
-RUNS="${XDG_DATA_HOME:-$HOME/.local/share}/axey/runs"
+RUNS="${XDG_DATA_HOME:-$HOME/.local/share}/echosystem/runs"
 UNIT="${1:-$(ls -t "$RUNS"/*.log 2>/dev/null | head -1 | xargs -r basename | sed 's/\.log$//')}"
 
 [ -n "${UNIT:-}" ] || { echo "no runs found" >&2; exit 1; }
