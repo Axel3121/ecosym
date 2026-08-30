@@ -12,8 +12,14 @@ failing is total failure, not a cosmetic bug.
 
 Early, and the current frontend does not conform to this specification. It
 invents its own agents that Hermes does not know about and attaches runs to them
-by keyword matching — depiction not derived from observed state. Treat it as
-prior exploration, not a reference implementation.
+by keyword matching — depiction not derived from observed state. Its backend was
+archived after review found it exposed an unauthenticated endpoint that executed
+arbitrary text through Hermes. Treat the frontend as prior exploration, not a
+reference implementation.
+
+The observation layer is real and verified: sources are connected by declarative
+configuration, observations carry provenance, and a check command proves the
+store agrees with reality.
 
 The institutional layer described in `PRODUCT.md` — durable cases, a council,
 admission of governed work — does not exist yet, and is not depicted until it

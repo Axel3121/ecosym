@@ -1,9 +1,20 @@
 #!/usr/bin/env python3
-"""
-Axey backend.
+"""SUPERSEDED - archived, not part of the product. Do not run.
 
-Eier ingenting av Hermes. Leser Hermes' SQLite READ-ONLY og serverer JSON.
-Når noe krever tenking, spør den `hermes -z` — den tenker aldri selv.
+Written for an earlier direction, before the observation layer existed and
+before PRODUCT.md established that Axey has no execution authority.
+
+Two reasons it cannot come back:
+
+POST /api/ask passed arbitrary unauthenticated request text to `hermes -z`,
+giving anyone who could reach the port full tool execution. That is the exact
+opposite of the product's central invariant.
+
+/api/state served raw Hermes rows with no provenance, bypassing the observation
+owner. Task 001 says this output must not be carried forward.
+
+Kept as evidence of the earlier shape. A replacement reads from the observation
+store and has no execution endpoint at all.
 """
 
 import json
