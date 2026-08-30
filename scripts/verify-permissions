@@ -1,8 +1,0 @@
-#!/usr/bin/env bash
-# Verify OpenCode's own permission layer does not silently refuse the sources
-# a task needs. Runs the probe through the real sandbox and reports the answers.
-set -uo pipefail
-cd "$(dirname "$0")/.."
-exec "$HOME/bin/axey-sandbox" run --model "${AXEY_PROBE_MODEL:-openai/gpt-5.4-mini}" \
-  "Follow the instructions in the attached file exactly." \
-  -f scripts/permission-probe.md
