@@ -60,11 +60,24 @@ useful, understandable, and verifiable.
 
 ## Repository artifacts
 
+Ordered. Where two disagree, the higher one is right and is corrected before
+the lower one merges — a pull request description never quietly becomes new
+product policy.
+
 - Canonical documents own reusable current normative meaning.
-- Issues own meaningful unresolved problems, outcomes, and acceptance evidence.
+- Task specifications under `docs/tasks/` own the contract for one piece of
+  work: the outcome, the constraints that would be expensive to get wrong, and
+  what would prove it worked. They live in the repository because an agent
+  reads them as context and they are reviewed before work starts.
+- Issues own a bounded slice of that work and its current state: what is in
+  progress, what is blocked, what was found. An issue links its specification
+  rather than restating it; two copies of a requirement is one too many.
 - Code and configuration own current implementation reality.
 - Commits own durable historical implementation deltas and rationale.
 - Pull requests own coherent candidate delivery, review, and evidence surfaces.
+  Every review — automated, independent, and empirical — lands here, so the
+  decision to merge is made against all of them at once rather than serially
+  after the fact.
 - Comments own local clarification and evidence, not hidden reusable policy.
 - ADRs preserve earned historical rationale; they do not replace current
   semantic owners.
