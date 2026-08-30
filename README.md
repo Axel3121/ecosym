@@ -10,16 +10,17 @@ failing is total failure, not a cosmetic bug.
 
 ## Status
 
-Early, and the current frontend does not conform to this specification. It
-invents its own agents that no runtime knows about and attaches runs to them
-by keyword matching — depiction not derived from observed state. Its backend was
-archived after review found it exposed an unauthenticated endpoint that executed
-arbitrary text through a runtime. Treat the frontend as prior exploration, not a
-reference implementation.
+Early. Nothing is implemented: the repository holds specifications and one open
+work item. An earlier attempt was built and removed — it worked, but was written
+in the wrong language from specifications that told the implementer what to type
+rather than what to achieve. What it taught is in `docs/tasks/`, not in code.
 
-The observation layer is real and verified: sources are connected by declarative
-configuration, observations carry provenance, and a check command proves the
-store agrees with reality.
+A frontend exists under `app/` and does not conform: it invents its own agents
+that no runtime knows about and attaches runs to them by keyword matching —
+depiction not derived from observed state. Its backend was removed after review
+found it exposed an unauthenticated endpoint that executed arbitrary text
+through a runtime. Treat it as prior exploration, not a reference
+implementation.
 
 The institutional layer described in `PRODUCT.md` — durable cases, a council,
 admission of governed work — does not exist yet, and is not depicted until it
@@ -43,7 +44,5 @@ persisted, and the case resumed correctly after a restart.
 This README is navigation and current orientation. It is not a competing owner
 of product, architecture, security, or development policy.
 
-Visual form has no owner yet. An earlier design document described an
-agent-monitor visualization and has been archived under `docs/archive/`; it is
-superseded and must not be implemented from. Until a visual owner exists, form
-follows `PRODUCT.md` and the form boundary in `ARCHITECTURE.md`.
+Visual form has no owner yet. Until one exists, form follows `PRODUCT.md` and
+the form boundary in `ARCHITECTURE.md`.
