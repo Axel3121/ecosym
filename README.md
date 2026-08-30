@@ -1,9 +1,9 @@
-# Echosystem
+# Axey
 
-Echosystem is a world of civilizations: a living, inhabited representation of the
+Axey is a world of civilizations: a living, inhabited representation of the
 domains one person cares about, and of the agents working inside them.
 
-A connected runtime is the brain and does the work. Echosystem reads what happens and gives it a
+A connected runtime is the brain and does the work. Axey reads what happens and gives it a
 form — a place to walk into rather than a report to read. It must be delightful
 and true at the same time; a city that looks healthy while its real work is
 failing is total failure, not a cosmetic bug.
@@ -33,9 +33,9 @@ persisted, and the case resumed correctly after a restart.
 
 | Question | Owner |
 | --- | --- |
-| What is Echosystem for? | [`PRODUCT.md`](PRODUCT.md) |
+| What is Axey for? | [`PRODUCT.md`](PRODUCT.md) |
 | What stable boundaries must the system preserve? | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
-| What must Echosystem protect? | [`SECURITY.md`](SECURITY.md) |
+| What must Axey protect? | [`SECURITY.md`](SECURITY.md) |
 | How is work developed, evidenced, reviewed, and merged? | [`DEVELOPMENT.md`](DEVELOPMENT.md) |
 | How should a fresh coding agent orient itself? | [`AGENTS.md`](AGENTS.md) |
 

@@ -1,11 +1,11 @@
 # Security
 
-This document owns Echosystem's durable security, privacy, trust, and authority
+This document owns Axey's durable security, privacy, trust, and authority
 obligations.
 
 ## Owns
 
-- the threats Echosystem takes seriously;
+- the threats Axey takes seriously;
 - privacy and personal-data obligations;
 - authority and consequential-effect requirements;
 - secret handling and outbound-context obligations;
@@ -20,7 +20,7 @@ obligations.
 
 ## Threat model
 
-Echosystem defends against:
+Axey defends against:
 
 1. **Epistemic corruption** — model inference, stale state, summaries, or
    unverified claims becoming indistinguishable from user-confirmed truth.
@@ -39,9 +39,9 @@ Echosystem defends against:
 8. **Authority mirage** — the world depicting governed, bounded work over a
    runtime that is not in fact governed.
 
-## Echosystem-owned state is user-controlled
+## Axey-owned state is user-controlled
 
-Echosystem-owned durable state — institutional records and observations — must be
+Axey-owned durable state — institutional records and observations — must be
 inspectable, correctable, exportable, and deletable by the user. Possessing data
 never implies permission to disclose it.
 
@@ -60,12 +60,12 @@ Only the minimum personal context relevant to the current purpose may be sent
 to a model. Context selection must account for sensitivity, currentness,
 authority, and the operation being performed.
 
-Where practical, Echosystem records enough bounded metadata to identify which owned
+Where practical, Axey records enough bounded metadata to identify which owned
 records or categories informed an outbound request without creating a second
 unnecessary copy of sensitive content.
 
 Provider data-use and retention controls are external facts that must be read
-from their current owner. Echosystem must not equate "not used for training" with
+from their current owner. Axey must not equate "not used for training" with
 "never retained or exposed outside the device."
 
 ## Secrets are capabilities
@@ -94,23 +94,23 @@ evidence about recoverability or irreversibility. The user must be able to
 distinguish a proposed action from an authorized action and an authorized action
 from an observed successful outcome.
 
-## Echosystem is trust-bearing
+## Axey is trust-bearing
 
-Echosystem executes nothing and holds no credentials, but it owns institutional
+Axey executes nothing and holds no credentials, but it owns institutional
 semantics: what it holds determines what agents are permitted to do. Its
 authority is definitional rather than executional, and it is protected on that
 basis.
 
-Echosystem cannot widen its own authority. A change to a mandate, a jurisdiction, or
+Axey cannot widen its own authority. A change to a mandate, a jurisdiction, or
 an authority rule is a deliberate user act, attributable and recorded; it never
 follows from model output, from a civilization's own request, or from a
 convenience path in the surface.
 
-Governed work is admitted by an authority outside Echosystem, against the mandate
+Governed work is admitted by an authority outside Axey, against the mandate
 current at the moment of admission. Ambiguous, stale, or unverifiable mandate
 state fails closed.
 
-A petition carries the user's identity and never Echosystem's. Echosystem has no authority
+A petition carries the user's identity and never Axey's. Axey has no authority
 of its own to lend, and a petition is weighed exactly as the same request made
 anywhere else.
 
@@ -122,7 +122,7 @@ where only a running process exists.
 
 An asserted claim is not shown as an observed outcome, a request is not shown as
 a result, and absence of observation is not shown as absence of activity. Where
-Echosystem has stopped seeing, it shows that it cannot see.
+Axey has stopped seeing, it shows that it cannot see.
 
 ## External content and effects
 
@@ -147,7 +147,7 @@ obligation with nothing implementing it is not compliance.
 
 ## Destructive changes to owned history
 
-Deleting or semantically reinterpreting historical Echosystem-owned state requires:
+Deleting or semantically reinterpreting historical Axey-owned state requires:
 
 - an exact inventory of affected state;
 - a clear statement of scope and consequence;
