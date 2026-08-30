@@ -35,9 +35,10 @@ Axey application core
   ├── model boundary           — reasoning over selected input
   └── petition boundary        — a request leaving for an authority
        ↓
-runtime control plane          — admission of governed work
        ↓
-connected runtime              — agents, tools, delegation, enforcement
+each connected runtime, independently:
+  ├── control plane            — admission of governed work
+  └── execution                — agents, tools, delegation, enforcement
        ↓
 External systems that remain owners of their own facts and effects
 ```
@@ -135,7 +136,7 @@ runtime agents  execute
 enforcement check   final refusal before a tool runs
 ```
 
-No governed work may begin unless the runtime's control plane has admitted it under
+No governed work may begin unless its runtime's control plane has admitted it under
 a current Axey-defined mandate. Runtime paths do not bypass that admission, and
 tool execution remains subject to a final enforcement check.
 
@@ -191,7 +192,7 @@ delegation, so something must carry it; no candidate is canonical until a
 vertical chain has been proven end to end.
 
 Whatever is chosen coordinates. It does not acquire Axey's authority semantics
-or the runtime's agent execution by being the thing in the middle.
+or a runtime's agent execution by being the thing in the middle.
 
 ## Growth rule
 

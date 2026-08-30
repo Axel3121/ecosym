@@ -122,7 +122,7 @@ what was interrupted, and the traces of what finished. All of it time-bounded
 and stamped as a live operation.
 
 This is what can honestly be shown today, and it is why it is not called a town
-hall. Coordination in the runtime exists only while a process runs.
+hall. Coordination inside a runtime exists only while a process runs.
 
 **City hall** is reserved. The name may be used when a civilization has a
 lasting institution — identity, mandate, lifecycle, and coordination that
@@ -132,7 +132,8 @@ standing office where there is only a running process.
 ### Petition
 
 A request the user makes from inside Axey — typically by addressing a
-civilization's coordinator — which Axey forwards to the runtime that owns it.
+civilization's coordinator — which Axey forwards to whichever runtime that
+civilization runs on.
 
 Axey holds no credentials, executes nothing, and decides nothing. A runtime may
 refuse, alter, or defer any petition. Axey learns what came of it only by
@@ -228,7 +229,7 @@ is available within it.
 ## How the institution becomes real
 
 A civilization, a mandate, or a council is only real if something enforces it.
-Otherwise the world depicts constitutional government over a runtime that does
+Otherwise the world depicts constitutional government over runtimes that do
 as it pleases — the failure this product is least able to survive.
 
 Three layers, each owning what it is actually good at:
@@ -237,7 +238,7 @@ Three layers, each owning what it is actually good at:
 mandate, the rules of authority, and the institutional state the user sees. This
 is not presentation: it is the definition of what is permitted.
 
-**A control plane inside the runtime owns admission.** It decides whether work
+**A control plane inside each runtime owns admission.** It decides whether work
 may begin under a current Axey-defined mandate, dispatches what it admits,
 coordinates live work, and binds the authorized scope to concrete runtime
 limits. It is authoritative to its runtime rather than adjacent to it.
@@ -308,7 +309,7 @@ canonical until it has been proven.
 One vertical chain, end to end, before any of this is built broadly:
 
 a petition; a jurisdiction and mandate resolved deterministically; mandatory
-admission; execution in the runtime; the enforcement check refusing what falls
+admission; execution in a connected runtime; the enforcement check refusing what falls
 outside the mandate; the outcome observed; the case persisted; the process
 stopped and restarted; the case resumed correctly.
 
@@ -497,7 +498,7 @@ current slice.
 ## Open questions
 
 - Which durable substrate carries a case that waits days for an answer, and can
-  it do so without taking over either Axey's authority semantics or the runtime's
+  it do so without taking over either Axey's authority semantics or a runtime's
   agent runtime?
 - How is jurisdiction resolved deterministically, without a model deciding
   where a matter belongs?
