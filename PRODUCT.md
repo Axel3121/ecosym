@@ -226,6 +226,35 @@ than opinion.
 The user can address the chronicler directly. The world is the surface; asking
 is available within it.
 
+### What the chronicler remembers
+
+Memory is what makes the chronicler worth asking: a thing that only sees the
+present notices nothing. But a memory that accumulates conclusions is how a
+truthful world starts lying to itself, so what it keeps is constrained.
+
+A noticed pattern is not an observation. It is something Axey worked out, and it
+stays marked as that for as long as it is held. It carries what it was derived
+from, over which window, and by what method — so the same rule that governs a
+runtime's claims governs Axey's own.
+
+A conclusion whose inputs changed is stale. It is not presented as current until
+it has been reworked against what is now known. Nothing that was superseded
+quietly comes back as support.
+
+A conclusion may point at what to look into. It is never the evidence itself:
+where the underlying records are available, they are what an answer rests on.
+This is the council's rule about its own summaries, applied to Axey — a trace
+that a conclusion happened is not a source to conclude from.
+
+An answer shows its footing: what kind of thing each part is, where it came
+from, how fresh it is, what was missing, and how to reach the records
+underneath. An answer that cannot show this says so instead.
+
+And it forgets. Axey holds what it needs to remain honest about the past, not a
+private archive of everything other systems own. What it keeps, for how long,
+and what happens to conclusions when a source is disconnected are decisions with
+an owner — not an accident of never deleting.
+
 ## How the institution becomes real
 
 A civilization, a mandate, or a council is only real if something enforces it.
