@@ -1,0 +1,119 @@
+# CodeRabbit — automatisk PR-review for Axey.
+# Skjema: https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
+#
+# DEVELOPMENT.md eier review-forpliktelsene. To ting derfra styrer denne fila:
+#   "Review challenges a completed candidate; it does not own implementation
+#    or merge authority."
+#   "Merge always requires an explicit decision from a current maintainer."
+# Derfor: ingen auto-godkjenning, ingen auto-merge, ingen auto-tildeling.
+
+language: en-US
+
+tone_instructions: >-
+  Be direct and concrete. A finding must carry a failure scenario,
+  counterexample or contract violation — not a style preference.
+  Say plainly when something is uncertain instead of guessing.
+
+reviews:
+  # assertive = flagger også svakere funn. quiet/chill demper for mye
+  # for et prosjekt der én person eier all koden.
+  profile: assertive
+
+  # Review blokkerer ikke merge. Mennesket bestemmer.
+  request_changes_workflow: false
+
+  high_level_summary: true
+  review_status: true
+  commit_status: true
+  fail_commit_status: false
+  changed_files_summary: true
+  estimate_code_review_effort: true
+  assess_linked_issues: true
+  related_issues: true
+  related_prs: true
+  sequence_diagrams: false
+  poem: false
+
+  auto_review:
+    enabled: true
+    # Ny review på hver push til PR-en — CI verifiserer eksakt publisert head.
+    auto_incremental_review: true
+    drafts: false
+    base_branches:
+      - main
+
+  path_filters:
+    - "!**/pnpm-lock.yaml"
+    - "!**/dist/**"
+    - "!**/node_modules/**"
+    - "!.agents/skills/**"
+    - "!app/public/*.png"
+
+  path_instructions:
+    - path: "app/src/**/*.{ts,tsx}"
+      instructions: >-
+        Frontend leser Hermes-tilstand og skal aldri skrive til den.
+        Flagg skriveoperasjoner mot state.db.
+        Canvas-koden tegner til en fast pikselbuffer som skaleres opp med
+        heltall: flagg ikke-heltalls skalering, glatting som slås på igjen,
+        og sprite-størrelser som ganges med zoomnivået (sprites skal ha fast
+        pikselstørrelse).
+        Flagg tunge allokeringer inne i requestAnimationFrame-løkka.
+
+    - path: "backend/**/*.py"
+      instructions: >-
+        Backend åpner Hermes' state.db READ-ONLY. Flagg enhver tilkobling
+        uten mode=ro, samt INSERT/UPDATE/DELETE/CREATE.
+        Flagg SQL bygget med strengkonkatenering — bruk parameterbinding.
+        Flagg CORS eller binding som eksponerer tjenesten utenfor 127.0.0.1.
+
+    - path: ".github/workflows/**"
+      instructions: >-
+        Flagg actions uten pinnet versjon, unødvendige write-rettigheter,
+        og secrets som kan lekke til logg eller til pull_request_target.
+
+    - path: "**/*.md"
+      instructions: >-
+        Kanoniske dokumenter (PRODUCT/ARCHITECTURE/SECURITY/DEVELOPMENT) eier
+        hver sin betydning. Flagg når et dokument gjentar eller motsier
+        regler som eies av et annet.
+
+  tools:
+    oxc:
+      enabled: true          # samme linter som prosjektet bruker lokalt
+    ruff:
+      enabled: true          # backend/axey.py
+    gitleaks:
+      enabled: true          # SECURITY.md: ingen credentials i repoet
+    actionlint:
+      enabled: true
+    yamllint:
+      enabled: true
+    markdownlint:
+      enabled: true
+    osvScanner:
+      enabled: true          # kjente sårbarheter i avhengigheter
+    semgrep:
+      enabled: false
+    languagetool:
+      enabled: false         # norsk i kommentarer gir bare støy
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  # Lærer av tidligere review i dette repoet.
+  learnings:
+    scope: local
+  issues:
+    scope: local
+  pull_requests:
+    scope: local
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "PRODUCT.md"
+      - "ARCHITECTURE.md"
+      - "SECURITY.md"
+      - "DEVELOPMENT.md"
+      - "AGENTS.md"

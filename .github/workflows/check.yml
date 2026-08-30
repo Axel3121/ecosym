@@ -1,0 +1,101 @@
+# Verifiserer eksakt publisert head, slik DEVELOPMENT.md krever:
+#   "CI verifies the exact published head."
+#   "Merge always requires an explicit decision from a current maintainer."
+# Denne workflowen rapporterer altså status — den merger ingenting.
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Minste rettighet som trengs for å lese koden og rapportere status.
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: frontend (${{ matrix.node }})
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['24']
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.24.0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      # --frozen-lockfile: CI skal aldri stilltiende endre avhengigheter.
+      - name: install
+        run: pnpm install --frozen-lockfile
+
+      # Samme inngangspunkt som kjøres lokalt — ett sted, ikke to sannheter.
+      - name: check
+        run: pnpm check
+
+      - name: upload build
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-node${{ matrix.node }}
+          path: app/dist
+          retention-days: 7
+
+  backend:
+    name: backend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: install ruff
+        run: pipx install ruff
+
+      - name: lint
+        run: ruff check .
+
+      - name: format
+        run: ruff format --check .
+
+      # Fanger syntaksfeil uten å starte tjenesten.
+      - name: compile
+        run: python -m compileall -q .
+
+      # SECURITY.md: databasen åpnes read-only. Dette beviser at kilden
+      # ikke inneholder skrivende SQL mot Hermes-tilstand.
+      - name: verify read-only access
+        run: |
+          if grep -nE '\b(INSERT|UPDATE|DELETE|DROP|ALTER)\b' *.py; then
+            echo "::error::skrivende SQL funnet — backend skal være read-only"
+            exit 1
+          fi
+          if ! grep -q 'mode=ro' *.py; then
+            echo "::error::fant ingen mode=ro — tilkoblingen må være read-only"
+            exit 1
+          fi
+          echo "read-only bekreftet"
