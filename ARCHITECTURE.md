@@ -35,9 +35,9 @@ Axey application core
   ├── model boundary           — reasoning over selected input
   └── petition boundary        — a request leaving for an authority
        ↓
-Hermes-side control plane      — admission of governed work
+runtime control plane          — admission of governed work
        ↓
-Hermes                         — agents, tools, delegation, enforcement
+connected runtime              — agents, tools, delegation, enforcement
        ↓
 External systems that remain owners of their own facts and effects
 ```
@@ -130,12 +130,12 @@ Axey            defines what is permitted
   ↓ petition + authority context
 control plane   admits or refuses governed work
   ↓ only if admitted
-Hermes agents   execute
+runtime agents  execute
   ↓
 enforcement check   final refusal before a tool runs
 ```
 
-No governed Hermes work may begin unless the control plane has admitted it under
+No governed work may begin unless the runtime's control plane has admitted it under
 a current Axey-defined mandate. Runtime paths do not bypass that admission, and
 tool execution remains subject to a final enforcement check.
 
@@ -143,8 +143,8 @@ The enforcement check is a lock, not an institution. It can refuse an action; it
 cannot say who owns a matter, carry deliberation over time, or resolve an
 ambiguous mandate.
 
-The control plane is authoritative to Hermes rather than adjacent to it. A
-governance system Hermes may ignore produces ceremonial authority: the world
+The control plane is authoritative to its runtime rather than adjacent to it. A
+governance system a runtime may ignore produces ceremonial authority: the world
 would depict government over a runtime that does as it pleases.
 
 ## Data and fact ownership
@@ -154,7 +154,9 @@ would depict government over a runtime that does as it pleases.
 - Axey's observation store owns observation records and their provenance,
   timing, and status.
 - External systems own their current external facts and effect outcomes.
-- Hermes owns runtime state: agents, lineage, delegation, and tool access.
+- A connected runtime owns its own state: agents, lineage, delegation, and tool
+  access. Which runtimes are connected, and what each can enforce, is observed —
+  never assumed, and never written into this document.
 - The model owns no durable fact merely because it generated text about it.
 - Derived indexes, summaries, and rendered scenes are projections of owned state
   and can be rebuilt or replaced.
@@ -189,7 +191,7 @@ delegation, so something must carry it; no candidate is canonical until a
 vertical chain has been proven end to end.
 
 Whatever is chosen coordinates. It does not acquire Axey's authority semantics
-or Hermes's agent runtime by being the thing in the middle.
+or the runtime's agent execution by being the thing in the middle.
 
 ## Growth rule
 

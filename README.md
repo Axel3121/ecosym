@@ -3,7 +3,7 @@
 Axey is a world of civilizations: a living, inhabited representation of the
 domains one person cares about, and of the agents working inside them.
 
-Hermes is the brain and does the work. Axey reads what happens and gives it a
+A connected runtime is the brain and does the work. Axey reads what happens and gives it a
 form — a place to walk into rather than a report to read. It must be delightful
 and true at the same time; a city that looks healthy while its real work is
 failing is total failure, not a cosmetic bug.
@@ -11,10 +11,10 @@ failing is total failure, not a cosmetic bug.
 ## Status
 
 Early, and the current frontend does not conform to this specification. It
-invents its own agents that Hermes does not know about and attaches runs to them
+invents its own agents that no runtime knows about and attaches runs to them
 by keyword matching — depiction not derived from observed state. Its backend was
 archived after review found it exposed an unauthenticated endpoint that executed
-arbitrary text through Hermes. Treat the frontend as prior exploration, not a
+arbitrary text through a runtime. Treat the frontend as prior exploration, not a
 reference implementation.
 
 The observation layer is real and verified: sources are connected by declarative
@@ -26,7 +26,7 @@ admission of governed work — does not exist yet, and is not depicted until it
 does.
 
 The current proof target is one vertical chain: a petition, a deterministically
-resolved mandate, mandatory admission, execution in Hermes, enforcement
+resolved mandate, mandatory admission, execution in the runtime, enforcement
 refusing what falls outside the mandate, the outcome observed, the case
 persisted, and the case resumed correctly after a restart.
 

@@ -40,12 +40,15 @@ resolve it by picking the more convenient rule.
 Axey should reduce the work required to reconstruct personal context and decide
 what deserves attention — by giving that context a place rather than a report.
 
-Hermes is the brain and does the work. Axey reads, and gives what it finds a
-form.
+The thinking happens elsewhere. Axey reads, and gives what it finds a form.
+
+Whatever does that thinking — an agent harness, a personal assistant, a
+scheduler, a person's own scripts — connects. Axey names none of them and
+requires none of them. A world with nothing connected is empty, not broken.
 
 Axey has no execution authority and renders only state it can account for:
 external state it has observed, and institutional state the user declared.
-Never operational success it inferred. It may submit requests to Hermes, which
+Never operational success it inferred. It may submit requests to a runtime, which
 decides whether and how to act. Axey is therefore not read-only, and is not
 described as such: a user action inside Axey can cause work to begin.
 
@@ -129,14 +132,14 @@ standing office where there is only a running process.
 ### Petition
 
 A request the user makes from inside Axey — typically by addressing a
-civilization's coordinator — which Axey forwards to Hermes.
+civilization's coordinator — which Axey forwards to the runtime that owns it.
 
-Axey holds no credentials, executes nothing, and decides nothing. Hermes may
+Axey holds no credentials, executes nothing, and decides nothing. A runtime may
 refuse, alter, or defer any petition. Axey learns what came of it only by
 observing state afterward, as it observes everything else.
 
 A petition carries the user's identity, never Axey's. Axey is the envelope, not
-the sender: it has no authority of its own to lend, and Hermes weighs a petition
+the sender: it has no authority of its own to lend, and a runtime weighs a petition
 exactly as it would the same request made anywhere else. Axey having a service
 identity with rights of its own would give it the authority it is defined not to
 have.
@@ -187,7 +190,7 @@ council to remain readable as the world grows.
 
 Because Axey has no execution authority, the council's authority is procedural:
 it is where cross-border decisions are surfaced and reasoned about. It cannot
-compel or prevent what Hermes does.
+compel or prevent what a runtime does.
 
 A civilization may need something another civilization knows. It asks the
 council, the council asks the other, and the answer returns the same way: a
@@ -234,25 +237,47 @@ Three layers, each owning what it is actually good at:
 mandate, the rules of authority, and the institutional state the user sees. This
 is not presentation: it is the definition of what is permitted.
 
-**A Hermes-side control plane owns admission.** It decides whether work may
-begin under a current Axey-defined mandate, dispatches what it admits,
+**A control plane inside the runtime owns admission.** It decides whether work
+may begin under a current Axey-defined mandate, dispatches what it admits,
 coordinates live work, and binds the authorized scope to concrete runtime
-limits. It is authoritative to Hermes rather than adjacent to it.
+limits. It is authoritative to its runtime rather than adjacent to it.
 
-**Hermes owns execution.** Agents, tools, delegation, observation, and the final
-enforcement check before a tool runs.
+**The runtime owns execution.** Agents, tools, delegation, observation, and the
+final enforcement check before a tool runs.
+
+### Any runtime, but the world shows what it can enforce
+
+Axey does not name its executor. A runtime connects the way a source connects,
+and more than one may be connected at once.
+
+What a runtime must offer to carry *governed* work is a contract, not a brand:
+
+- **Admission** before governed work begins, under a current mandate.
+- **Non-bypassability** — no other path into that runtime starts governed work
+  without admission.
+- **Bound scope** — the mandate resolves to concrete runtime limits.
+- **Observable outcome** — what happened is readable, not merely asserted.
+- **Enforcement** — a refusal point before an action takes effect.
+- **Attributable identity** — work traces to the mandate that admitted it.
+
+A runtime meeting none of these can still be connected. It simply cannot carry
+governed work, and the world must show that plainly rather than depicting a
+border it cannot hold. What each connected runtime can enforce is itself
+observed state, and is never assumed.
 
 ### Governed work requires admission
 
-No governed Hermes work may begin unless the Hermes-side control plane has
-admitted it under a current Axey-defined mandate. Runtime paths do not bypass
-that admission, and tool execution remains subject to a final enforcement check.
+No governed work may begin in any runtime unless that runtime's control plane
+has admitted it under a current Axey-defined mandate. Runtime paths do not
+bypass that admission, and tool execution remains subject to a final
+enforcement check.
 
-This is not buildable today. Hermes can refuse an action before it runs, but it
-exposes no mandatory gate before work *begins* — a final refusal proves that one
-action was stopped, not that the work was ever admitted. Until Hermes offers
-admission at every governed entry point, this requirement stands unmet, and
-nothing may be depicted as governed on the strength of the final check alone.
+No runtime is known to satisfy this. Refusing an action before it runs is
+common; admitting work before it begins is not, and a final refusal proves one
+action was stopped rather than that the work was ever admitted. Until a
+connected runtime offers admission at every governed entry point, this
+requirement stands unmet there, and nothing may be depicted as governed on the
+strength of a final check alone.
 
 Without this, a mandate is prompt text and a border is a label. An agent still
 acts to the limit of its raw permissions, and the world shows governance that
@@ -264,7 +289,7 @@ ambiguous mandate.
 
 ### What exists, and what does not
 
-Real today: Axey's institutional semantics; Hermes's execution primitives —
+Real today: Axey's institutional semantics; a connected runtime's execution primitives —
 observation, delegation, spawning, steering, stopping, per-agent tool limits,
 and a pre-execution check that can block.
 
@@ -272,7 +297,8 @@ Required and not yet built: the authoritative control plane; a durable case
 that outlives the process that opened it; a lasting city hall; council
 procedure; routing and escalation between civilizations.
 
-The substrate for durable coordination is an open implementation choice. Hermes
+The substrate for durable coordination is an open implementation choice. A
+connected runtime
 delegation is process-local and cannot carry a matter that waits days for an
 answer, so something must; which thing is not decided here, and no candidate is
 canonical until it has been proven.
@@ -282,7 +308,7 @@ canonical until it has been proven.
 One vertical chain, end to end, before any of this is built broadly:
 
 a petition; a jurisdiction and mandate resolved deterministically; mandatory
-admission; execution in Hermes; the enforcement check refusing what falls
+admission; execution in the runtime; the enforcement check refusing what falls
 outside the mandate; the outcome observed; the case persisted; the process
 stopped and restarted; the case resumed correctly.
 
@@ -364,7 +390,7 @@ The world moves only when an outcome is observed.
 
 ### Observation means evidence, not assertion
 
-That Hermes reports something happened is a claim, not an observation. The
+That a runtime reports something happened is a claim, not an observation. The
 chronicler's whole value is outcomes over reports, and that distinction cannot
 survive if any downstream claim is accepted as fact.
 
@@ -453,7 +479,7 @@ Axey is not initially:
 - a coding harness, task runner, or workflow builder;
 - a system with execution authority, or one that can compel or prevent
   execution by the systems it reads;
-- a control surface that grows toward operating Hermes rather than depicting
+- a control surface that grows toward operating a runtime rather than depicting
   it: petitions exist to serve the council's queue, not to become a remote
   control;
 - a multi-user or team workspace;
@@ -471,7 +497,7 @@ current slice.
 ## Open questions
 
 - Which durable substrate carries a case that waits days for an answer, and can
-  it do so without taking over either Axey's authority semantics or Hermes's
+  it do so without taking over either Axey's authority semantics or the runtime's
   agent runtime?
 - How is jurisdiction resolved deterministically, without a model deciding
   where a matter belongs?
@@ -484,6 +510,6 @@ current slice.
 - How much can the council prepare a matter on its own before the user sees it,
   and could well-evidenced matters eventually decide themselves? This is a
   direction, not a decision. Any such automatic decision requires an explicit
-  mandate the user granted; Hermes enforces a mandate but never creates one,
+  mandate the user granted; a runtime enforces a mandate but never creates one,
   and executing work confers no authority to decide what work is permitted.
   Note the tension: an empty queue removes the reason to open Axey.
