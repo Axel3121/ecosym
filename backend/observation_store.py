@@ -24,13 +24,14 @@ from typing import Literal, Self
 
 EpistemicStatus = Literal["observation", "claim"]
 TemporalStatus = Literal["current", "superseded", "unknown"]
-AttemptOutcome = Literal["success", "failed", "skipped"]
+AttemptOutcome = Literal["success", "failed", "skipped", "interrupted"]
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 
 
 @dataclass(frozen=True)
 class Record:
-    adapter: str
+    connection_id: str
+    reader_type: str
     source: str
     fact_owner: str
     source_version: str
@@ -52,7 +53,7 @@ class StoredRecord(Record):
 
 @dataclass(frozen=True)
 class CollectionAttempt:
-    adapter: str
+    connection_id: str
     started_at: datetime
     completed_at: datetime
     outcome: AttemptOutcome
@@ -106,16 +107,18 @@ class ObservationStore:
 
     def record_attempt(self, attempt: CollectionAttempt) -> StoredCollectionAttempt:
         _validate_attempt(attempt)
+        if attempt.outcome == "interrupted":
+            raise ValueError("interrupted attempts must be created with begin_attempt")
         with self._connection:
             cursor = self._connection.execute(
                 """
                 INSERT INTO collection_attempts (
-                    adapter, started_at, completed_at, outcome,
-                    records_seen, records_added
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    connection_id, started_at, completed_at, outcome,
+                    records_seen, records_added, in_progress
+                ) VALUES (?, ?, ?, ?, ?, ?, 0)
                 """,
                 (
-                    _required(attempt.adapter, "adapter"),
+                    _required(attempt.connection_id, "connection_id"),
                     _time(attempt.started_at, "started_at"),
                     _time(attempt.completed_at, "completed_at"),
                     attempt.outcome,
@@ -125,19 +128,107 @@ class ObservationStore:
             )
         return StoredCollectionAttempt(**attempt.__dict__, id=cursor.lastrowid)
 
+    def begin_attempt(
+        self, connection_id: str, started_at: datetime
+    ) -> StoredCollectionAttempt:
+        """Record an attempt before source I/O so interruption remains visible."""
+        started = _time(started_at, "started_at")
+        with self._connection:
+            cursor = self._connection.execute(
+                """
+                INSERT INTO collection_attempts (
+                    connection_id, started_at, completed_at, outcome,
+                    records_seen, records_added, in_progress
+                ) VALUES (?, ?, ?, 'failed', NULL, NULL, 1)
+                """,
+                (_required(connection_id, "connection_id"), started, started),
+            )
+        return StoredCollectionAttempt(
+            id=cursor.lastrowid,
+            connection_id=connection_id,
+            started_at=started_at,
+            completed_at=started_at,
+            outcome="interrupted",
+        )
+
+    def complete_attempt(
+        self,
+        attempt_id: int,
+        *,
+        completed_at: datetime,
+        outcome: Literal["success", "failed", "skipped"],
+        records_seen: int | None = None,
+        records_added: int | None = None,
+    ) -> StoredCollectionAttempt:
+        row = self._connection.execute(
+            "SELECT * FROM collection_attempts WHERE id = ?", (attempt_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError("collection attempt does not exist")
+        if not row["in_progress"]:
+            raise ValueError("collection attempt is already complete")
+
+        attempt = CollectionAttempt(
+            connection_id=row["connection_id"],
+            started_at=datetime.fromisoformat(row["started_at"]),
+            completed_at=completed_at,
+            outcome=outcome,
+            records_seen=records_seen,
+            records_added=records_added,
+        )
+        _validate_attempt(attempt)
+        with self._connection:
+            self._connection.execute(
+                """
+                UPDATE collection_attempts
+                SET completed_at = ?, outcome = ?, records_seen = ?,
+                    records_added = ?, in_progress = 0
+                WHERE id = ? AND in_progress = 1
+                """,
+                (
+                    _time(completed_at, "completed_at"),
+                    outcome,
+                    records_seen,
+                    records_added,
+                    attempt_id,
+                ),
+            )
+        return StoredCollectionAttempt(**attempt.__dict__, id=attempt_id)
+
     def collection_attempts(
-        self, adapter: str | None = None
+        self, connection_id: str | None = None
     ) -> list[StoredCollectionAttempt]:
-        if adapter is None:
+        if connection_id is None:
             rows = self._connection.execute(
                 "SELECT * FROM collection_attempts ORDER BY id"
             ).fetchall()
         else:
             rows = self._connection.execute(
-                "SELECT * FROM collection_attempts WHERE adapter = ? ORDER BY id",
-                (adapter,),
+                """
+                SELECT * FROM collection_attempts
+                WHERE connection_id = ? ORDER BY id
+                """,
+                (connection_id,),
             ).fetchall()
         return [_attempt_from_row(row) for row in rows]
+
+    def records_for_connection(self, connection_id: str) -> list[StoredRecord]:
+        rows = self._connection.execute(
+            """
+            SELECT records.*,
+                   (claim_supersessions.claim_id IS NOT NULL
+                    OR observation_supersessions.observation_id IS NOT NULL)
+                       AS is_superseded
+            FROM records
+            LEFT JOIN claim_supersessions ON claim_supersessions.claim_id = records.id
+            LEFT JOIN observation_supersessions
+                ON observation_supersessions.observation_id = records.id
+            WHERE records.connection_id = ?
+            ORDER BY records.id
+            """,
+            (connection_id,),
+        ).fetchall()
+        return [_record_from_row(row) for row in rows]
 
     def _add_record(self, record: Record, epistemic_status: EpistemicStatus) -> bool:
         values = _record_values(record, epistemic_status)
@@ -145,10 +236,11 @@ class ObservationStore:
             cursor = self._connection.execute(
                 """
                 INSERT OR IGNORE INTO records (
-                    adapter, source, fact_owner, source_version, kind, subject,
-                    source_time, observed_at, temporal_status, epistemic_status,
-                    payload_json, cause_type, cause_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    connection_id, reader_type, source, fact_owner,
+                    source_version, kind, subject, source_time, observed_at,
+                    temporal_status, epistemic_status, payload_json,
+                    cause_type, cause_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 values,
             )
@@ -160,15 +252,16 @@ class ObservationStore:
 
             existing = self._connection.execute(
                 """
-                SELECT adapter, source, fact_owner, source_version, kind, subject,
-                       source_time, temporal_status, epistemic_status,
-                       payload_json, cause_type, cause_id
+                SELECT connection_id, reader_type, source, fact_owner,
+                       source_version, kind, subject, source_time,
+                       temporal_status, epistemic_status, payload_json,
+                       cause_type, cause_id
                 FROM records
-                WHERE adapter = ? AND source = ? AND kind = ? AND subject = ?
+                WHERE connection_id = ? AND source = ? AND kind = ? AND subject = ?
                       AND source_version = ? AND epistemic_status = ?
                 """,
                 (
-                    record.adapter,
+                    record.connection_id,
                     record.source,
                     record.kind,
                     record.subject,
@@ -176,8 +269,11 @@ class ObservationStore:
                     epistemic_status,
                 ),
             ).fetchone()
-            source_contents = values[:7] + values[8:]
-            if tuple(existing) != source_contents:
+            source_contents = values[:8] + values[9:]
+            existing_contents = list(existing)
+            if existing_contents[1] is None:
+                existing_contents[1] = record.reader_type
+            if tuple(existing_contents) != source_contents:
                 raise ObservationConflictError(
                     "source identity already exists with different contents"
                 )
@@ -185,11 +281,12 @@ class ObservationStore:
                 observation_id = self._connection.execute(
                     """
                     SELECT id FROM records
-                    WHERE adapter = ? AND source = ? AND kind = ? AND subject = ?
+                    WHERE connection_id = ? AND source = ? AND kind = ?
+                          AND subject = ?
                           AND source_version = ? AND epistemic_status = 'observation'
                     """,
                     (
-                        record.adapter,
+                        record.connection_id,
                         record.source,
                         record.kind,
                         record.subject,
@@ -230,8 +327,7 @@ class ObservationStore:
             (
                 (datetime.fromisoformat(candidate["source_time"]), candidate["id"])
                 for candidate in candidates
-                if datetime.fromisoformat(candidate["source_time"])
-                > record.source_time
+                if datetime.fromisoformat(candidate["source_time"]) > record.source_time
             ),
             default=None,
         )
@@ -287,11 +383,11 @@ class ObservationStore:
 
     def _create_schema(self) -> None:
         version = self._connection.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3):
+        if version not in (0, 1, 2, 3, 4):
             raise RuntimeError(
                 f"unsupported observation store schema version: {version}"
             )
-        if version == 3:
+        if version == 4:
             return
 
         with self._connection:
@@ -300,7 +396,8 @@ class ObservationStore:
                     """
                 CREATE TABLE records (
                     id INTEGER PRIMARY KEY,
-                    adapter TEXT NOT NULL,
+                    connection_id TEXT NOT NULL,
+                    reader_type TEXT NOT NULL,
                     source TEXT NOT NULL,
                     fact_owner TEXT NOT NULL,
                     source_version TEXT NOT NULL,
@@ -319,21 +416,24 @@ class ObservationStore:
                     cause_id TEXT,
                     CHECK ((cause_type IS NULL) = (cause_id IS NULL)),
                     UNIQUE (
-                        adapter, source, kind, subject, source_version,
+                        connection_id, source, kind, subject, source_version,
                         epistemic_status
                     )
                 );
 
                 CREATE TABLE collection_attempts (
                     id INTEGER PRIMARY KEY,
-                    adapter TEXT NOT NULL,
+                    connection_id TEXT NOT NULL,
                     started_at TEXT NOT NULL,
                     completed_at TEXT NOT NULL,
                     outcome TEXT NOT NULL CHECK (
                         outcome IN ('success', 'failed', 'skipped')
                     ),
                     records_seen INTEGER,
-                    records_added INTEGER
+                    records_added INTEGER,
+                    in_progress INTEGER NOT NULL DEFAULT 0 CHECK (
+                        in_progress IN (0, 1)
+                    )
                 );
                 """
                 )
@@ -353,9 +453,20 @@ class ObservationStore:
                     superseding_observation_id INTEGER NOT NULL REFERENCES records(id)
                 );
 
-                PRAGMA user_version = 3;
                 """
             )
+            if 0 < version < 4:
+                self._connection.executescript(
+                    """
+                    ALTER TABLE records RENAME COLUMN adapter TO connection_id;
+                    ALTER TABLE records ADD COLUMN reader_type TEXT;
+                    ALTER TABLE collection_attempts
+                        RENAME COLUMN adapter TO connection_id;
+                    ALTER TABLE collection_attempts ADD COLUMN in_progress INTEGER
+                        NOT NULL DEFAULT 0 CHECK (in_progress IN (0, 1));
+                    """
+                )
+            self._connection.execute("PRAGMA user_version = 4")
 
 
 def _record_values(
@@ -369,7 +480,8 @@ def _record_values(
         )
 
     return (
-        _required(record.adapter, "adapter"),
+        _required(record.connection_id, "connection_id"),
+        _required(record.reader_type, "reader_type"),
         _required(record.source, "source"),
         _required(record.fact_owner, "fact_owner"),
         _required(record.source_version, "source_version"),
@@ -388,7 +500,7 @@ def _record_values(
 
 
 def _validate_attempt(attempt: CollectionAttempt) -> None:
-    if attempt.outcome not in ("success", "failed", "skipped"):
+    if attempt.outcome not in ("success", "failed", "skipped", "interrupted"):
         raise ValueError(f"invalid attempt outcome: {attempt.outcome}")
     if attempt.completed_at < attempt.started_at:
         raise ValueError("completed_at must not be before started_at")
@@ -417,7 +529,8 @@ def _record_from_row(row: sqlite3.Row) -> StoredRecord:
     temporal_status = "superseded" if row["is_superseded"] else row["temporal_status"]
     return StoredRecord(
         id=row["id"],
-        adapter=row["adapter"],
+        connection_id=row["connection_id"],
+        reader_type=row["reader_type"] or row["connection_id"],
         source=row["source"],
         fact_owner=row["fact_owner"],
         source_version=row["source_version"],
@@ -438,10 +551,10 @@ def _record_from_row(row: sqlite3.Row) -> StoredRecord:
 def _attempt_from_row(row: sqlite3.Row) -> StoredCollectionAttempt:
     return StoredCollectionAttempt(
         id=row["id"],
-        adapter=row["adapter"],
+        connection_id=row["connection_id"],
         started_at=datetime.fromisoformat(row["started_at"]),
         completed_at=datetime.fromisoformat(row["completed_at"]),
-        outcome=row["outcome"],
+        outcome="interrupted" if row["in_progress"] else row["outcome"],
         records_seen=row["records_seen"],
         records_added=row["records_added"],
     )
