@@ -15,12 +15,10 @@ work item. An earlier attempt was built and removed — it worked, but was writt
 in the wrong language from specifications that told the implementer what to type
 rather than what to achieve. What it taught is in `docs/tasks/`, not in code.
 
-A frontend exists under `app/` and does not conform: it invents its own agents
-that no runtime knows about and attaches runs to them by keyword matching —
-depiction not derived from observed state. Its backend was removed after review
-found it exposed an unauthenticated endpoint that executed arbitrary text
-through a runtime. Treat it as prior exploration, not a reference
-implementation.
+An earlier frontend and backend were removed. The frontend invented agents no
+runtime knew about and matched runs to them by keyword — the authority mirage
+`SECURITY.md` names. The backend exposed an unauthenticated endpoint that
+executed arbitrary text. Neither is a reference for what comes next.
 
 The institutional layer described in `PRODUCT.md` — durable cases, a council,
 admission of governed work — does not exist yet, and is not depicted until it

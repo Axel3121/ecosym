@@ -170,8 +170,7 @@ that disagree.
 
 No HTTP, no UI, no scheduling, no orchestration framework. Tests use synthetic
 fixtures in temporary directories; real sources are for a final supplementary
-run. One check entry point that runs everything without an agent. Do not touch
-`app/`.
+run. One check entry point that runs everything without an agent.
 
 Out of scope: cities, mandates, cases, the council, petitions, anything visual.
 If the design seems to need one, stop and say so rather than inventing it.
