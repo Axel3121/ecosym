@@ -51,7 +51,16 @@ export async function verifyConnection(
   store: ObservationStore,
   connection: ActiveConnection,
 ): Promise<VerificationConnectionReport> {
-  const stored = deduplicate(store.factsForVerification(connection));
+  const snapshot = store.factsForVerification(connection);
+  const stored = deduplicate(snapshot.facts);
+  if (!snapshot.currentnessKnown) {
+    return {
+      connectionId: connection.config.id,
+      counts: emptyCounts(stored.length),
+      outcome: "unread",
+      unreadReason: "store_currentness_unknown",
+    };
+  }
   let source: ComparableFact[];
   try {
     const materialized: ComparableFact[] = [];

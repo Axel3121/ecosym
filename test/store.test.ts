@@ -5,9 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 import { parseConnectionConfig } from "../src/config.ts";
+import { canonicalJson, sha256 } from "../src/json.ts";
 import { defaultStateDirectory } from "../src/paths.ts";
 import {
   ConnectionConflictError,
@@ -294,7 +296,10 @@ test("disconnect during source reading prevents the stale revision from writing"
 
   const otherProcess = new ObservationStore(directory);
   try {
+    assert.equal(otherProcess.statuses()[0]?.status, "unread");
+    assert.equal(otherProcess.statuses()[0]?.reason, "incomplete");
     assert.equal(otherProcess.disconnect(parsed.config.id), true);
+    assert.equal(otherProcess.register(parsed), "connected");
   } finally {
     otherProcess.close();
   }
@@ -303,15 +308,14 @@ test("disconnect during source reading prevents the stale revision from writing"
   try {
     await assert.rejects(collection, { code: "connection_inactive" });
     assert.equal(store.countFacts(), 0);
-    store.register(parsed);
     assert.equal(store.statuses()[0]?.status, "unread");
-    assert.equal(store.statuses()[0]?.reason, "failed");
+    assert.equal(store.statuses()[0]?.reason, "never-run");
   } finally {
     store.close();
   }
 });
 
-test("process termination leaves a durable interrupted attempt and no partial facts", async () => {
+test("process termination leaves a durable incomplete attempt and no partial facts", async () => {
   const { directory, store } = temporaryStore();
   const parsed = connection();
   store.register(parsed);
@@ -340,34 +344,200 @@ test("process termination leaves a durable interrupted attempt and no partial fa
   try {
     assert.equal(reopened.countFacts(), 0);
     assert.equal(reopened.statuses()[0]?.status, "unread");
-    assert.equal(reopened.statuses()[0]?.reason, "interrupted");
+    assert.equal(reopened.statuses()[0]?.reason, "incomplete");
     assert.notEqual(reopened.statuses()[0]?.lastAttemptAt, null);
   } finally {
     reopened.close();
   }
 });
 
-test("migrates version-one facts without losing history", async () => {
-  const { directory, store } = temporaryStore();
+test("version-one correction history stays unknown until it is observed again", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-v1-store-"));
   const parsed = connection();
-  store.register(parsed);
-  await store.collect(store.getConnection(parsed.config.id), (sink) => {
-    sink.recordSourceRecord();
-    sink.writeFact(fact());
-  });
-  const path = store.path;
-  store.close();
-
+  const path = join(directory, "observations.sqlite");
   const oldStore = new DatabaseSync(path);
-  oldStore.exec(
-    "ALTER TABLE facts DROP COLUMN last_seen_attempt_order; PRAGMA user_version = 1",
+  oldStore.exec(`
+    CREATE TABLE connection_versions (
+      connection_id TEXT NOT NULL,
+      config_hash TEXT NOT NULL,
+      config_json TEXT NOT NULL,
+      registered_at TEXT NOT NULL,
+      PRIMARY KEY (connection_id, config_hash)
+    ) STRICT;
+    CREATE TABLE active_connections (
+      connection_id TEXT PRIMARY KEY,
+      config_hash TEXT NOT NULL,
+      connected_at TEXT NOT NULL
+    ) STRICT;
+    CREATE TABLE collection_attempts (
+      attempt_id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL,
+      config_hash TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      completed_at TEXT,
+      outcome TEXT NOT NULL,
+      source_records_seen INTEGER NOT NULL,
+      facts_seen INTEGER NOT NULL,
+      facts_added INTEGER NOT NULL,
+      failure_code TEXT
+    ) STRICT;
+    CREATE INDEX collection_attempts_latest
+      ON collection_attempts(connection_id, config_hash, started_at DESC);
+    CREATE TABLE facts (
+      fact_id INTEGER PRIMARY KEY,
+      connection_id TEXT NOT NULL,
+      config_hash TEXT NOT NULL,
+      attempt_id TEXT NOT NULL,
+      fact_owner TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      epistemic_status TEXT NOT NULL,
+      source_record_id TEXT NOT NULL,
+      source_recorded_at TEXT,
+      source_time_key TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      payload_hash TEXT NOT NULL,
+      collected_at TEXT NOT NULL,
+      UNIQUE (
+        connection_id, config_hash, fact_owner, kind, subject,
+        epistemic_status, source_record_id, source_time_key, payload_hash
+      )
+    ) STRICT;
+    PRAGMA user_version = 1;
+  `);
+  oldStore
+    .prepare("INSERT INTO connection_versions VALUES (?, ?, ?, ?)")
+    .run(parsed.config.id, parsed.hash, parsed.canonical, "2026-08-30T00:00:00.000Z");
+  oldStore
+    .prepare("INSERT INTO active_connections VALUES (?, ?, ?)")
+    .run(parsed.config.id, parsed.hash, "2026-08-30T00:00:00.000Z");
+  const insertAttempt = oldStore.prepare(
+    "INSERT INTO collection_attempts VALUES (?, ?, ?, ?, ?, 'success', 1, 1, ?, NULL)",
   );
+  insertAttempt.run("attempt-1", parsed.config.id, parsed.hash, "2026-08-30T00:00:00.000Z", "2026-08-30T00:00:01.000Z", 1);
+  insertAttempt.run("attempt-2", parsed.config.id, parsed.hash, "2026-08-30T00:01:00.000Z", "2026-08-30T00:01:01.000Z", 1);
+  insertAttempt.run("attempt-3", parsed.config.id, parsed.hash, "2026-08-30T00:02:00.000Z", "2026-08-30T00:02:01.000Z", 0);
+  const insertFact = oldStore.prepare(
+    `INSERT INTO facts
+       (connection_id, config_hash, attempt_id, fact_owner, kind, subject,
+        epistemic_status, source_record_id, source_recorded_at, source_time_key,
+        payload_json, payload_hash, collected_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'observation', ?, ?, ?, ?, ?, ?)`,
+  );
+  for (const [attemptId, value, collectedAt] of [
+    ["attempt-1", 7, "2026-08-30T00:00:00.000Z"],
+    ["attempt-2", 12, "2026-08-30T00:01:00.000Z"],
+  ] as const) {
+    const payload = canonicalJson({ value });
+    insertFact.run(
+      parsed.config.id,
+      parsed.hash,
+      attemptId,
+      "owner-a",
+      "example.value",
+      "subject-a",
+      "record-a",
+      "2026-08-30T00:00:00.000Z",
+      "2026-08-30T00:00:00.000Z",
+      payload,
+      sha256(payload),
+      collectedAt,
+    );
+  }
   oldStore.close();
 
   const migrated = new ObservationStore(directory);
   try {
-    assert.equal(migrated.queryObservations().length, 1);
+    assert.deepEqual(
+      migrated.queryObservations().map((record) => record.temporalStatus),
+      ["unknown", "unknown"],
+    );
+    assert.equal(
+      migrated.factsForVerification(migrated.getConnection(parsed.config.id)).currentnessKnown,
+      false,
+    );
+    await migrated.collect(migrated.getConnection(parsed.config.id), (sink) => {
+      sink.recordSourceRecord();
+      sink.writeFact(fact({ payload: { value: 7 } }));
+    });
+    assert.deepEqual(
+      migrated.queryObservations().map((record) => [record.payload.value, record.temporalStatus]),
+      [
+        [7, "current"],
+        [12, "historical"],
+      ],
+    );
   } finally {
     migrated.close();
+  }
+});
+
+test("an older concurrent attempt cannot regress a later reversion", async () => {
+  const { store } = temporaryStore();
+  const parsed = connection();
+  store.register(parsed);
+  const active = store.getConnection(parsed.config.id);
+  await store.collect(active, (sink) => sink.writeFact(fact({ payload: { value: 7 } })));
+
+  let announceBuffered: (() => void) | undefined;
+  const buffered = new Promise<void>((resolve) => {
+    announceBuffered = resolve;
+  });
+  let allowCommit: (() => void) | undefined;
+  const commit = new Promise<void>((resolve) => {
+    allowCommit = resolve;
+  });
+  const older = store.collect(active, async (sink) => {
+    sink.writeFact(fact({ payload: { value: 7 } }));
+    announceBuffered?.();
+    await commit;
+  });
+  await buffered;
+  await store.collect(active, (sink) => sink.writeFact(fact({ payload: { value: 12 } })));
+  await store.collect(active, (sink) => sink.writeFact(fact({ payload: { value: 7 } })));
+  allowCommit?.();
+  await older;
+
+  try {
+    assert.deepEqual(
+      store.queryObservations().map((record) => [record.payload.value, record.temporalStatus]),
+      [
+        [7, "current"],
+        [12, "historical"],
+      ],
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("store contention waits until a failed attempt can be recorded", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-store-contention-"));
+  const store = new ObservationStore(directory, 20);
+  const parsed = connection();
+  store.register(parsed);
+  const active = store.getConnection(parsed.config.id);
+  await store.collect(active, () => undefined);
+
+  const blocker = new DatabaseSync(store.path);
+  blocker.exec("BEGIN IMMEDIATE");
+  const attempted = assert.rejects(
+    store.collect(active, () => {
+      throw Object.assign(new Error("synthetic source failure"), {
+        code: "source_unreadable",
+      });
+    }),
+    { code: "source_unreadable" },
+  );
+  await delay(75);
+  blocker.exec("ROLLBACK");
+  blocker.close();
+
+  try {
+    await attempted;
+    assert.equal(store.statuses()[0]?.status, "unread");
+    assert.equal(store.statuses()[0]?.reason, "failed");
+  } finally {
+    store.close();
   }
 });

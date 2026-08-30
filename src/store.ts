@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync, type StatementResultingChanges } from "node:sqlite";
+import { setTimeout as delay } from "node:timers/promises";
 
 import {
   parseConnectionConfig,
@@ -11,10 +12,11 @@ import {
 import { canonicalJson, type JsonScalar, type JsonValue, sha256 } from "./json.ts";
 import { defaultStateDirectory } from "./paths.ts";
 
-const STORE_SCHEMA_VERSION = 2;
+const STORE_SCHEMA_VERSION = 3;
 const STORE_FILENAME = "observations.sqlite";
 
 export interface ActiveConnection {
+  activationId: string;
   config: ConnectionConfig;
   configHash: string;
   connectedAt: string;
@@ -63,7 +65,7 @@ export interface ConnectionStatus {
   reason:
     | "collected"
     | "failed"
-    | "interrupted"
+    | "incomplete"
     | "never-run"
     | "nothing-new"
     | "skipped";
@@ -78,6 +80,11 @@ export interface VerificationFact {
   sourceRecordedAt: null | string;
   sourceRecordId: string;
   subject: string;
+}
+
+export interface VerificationSnapshot {
+  currentnessKnown: boolean;
+  facts: VerificationFact[];
 }
 
 export interface CollectionSink {
@@ -129,11 +136,14 @@ export class ObservationStore {
   readonly #database: DatabaseSync;
   #closed = false;
 
-  constructor(stateDirectory = defaultStateDirectory()) {
+  constructor(stateDirectory = defaultStateDirectory(), busyTimeoutMilliseconds = 5_000) {
+    if (!Number.isInteger(busyTimeoutMilliseconds) || busyTimeoutMilliseconds < 0) {
+      throw new RangeError("SQLite busy timeout must be a nonnegative integer");
+    }
     mkdirSync(stateDirectory, { recursive: true, mode: 0o700 });
     chmodSync(stateDirectory, 0o700);
     this.path = join(stateDirectory, STORE_FILENAME);
-    this.#database = new DatabaseSync(this.path, { timeout: 5_000 });
+    this.#database = new DatabaseSync(this.path, { timeout: busyTimeoutMilliseconds });
     chmodSync(this.path, 0o600);
     this.#database.exec("PRAGMA foreign_keys = ON");
     this.#migrate();
@@ -149,6 +159,7 @@ export class ObservationStore {
 
   register(parsed: ParsedConnectionConfig, now = new Date()): "connected" | "unchanged" {
     const timestamp = now.toISOString();
+    const activationId = randomUUID();
     let connected = false;
     this.#transaction(() => {
       this.#database
@@ -168,10 +179,11 @@ export class ObservationStore {
       if (active === undefined) {
         this.#database
           .prepare(
-            `INSERT INTO active_connections (connection_id, config_hash, connected_at)
-             VALUES (?, ?, ?)`,
+            `INSERT INTO active_connections
+               (connection_id, config_hash, activation_id, connected_at)
+             VALUES (?, ?, ?, ?)`,
           )
-          .run(parsed.config.id, parsed.hash, timestamp);
+          .run(parsed.config.id, parsed.hash, activationId, timestamp);
         connected = true;
       }
     });
@@ -190,7 +202,7 @@ export class ObservationStore {
   getConnection(connectionId: string): ActiveConnection {
     const row = this.#database
       .prepare(
-        `SELECT c.config_hash, c.connected_at, v.config_json
+        `SELECT c.config_hash, c.activation_id, c.connected_at, v.config_json
            FROM active_connections c
            JOIN connection_versions v
              ON v.connection_id = c.connection_id
@@ -199,11 +211,17 @@ export class ObservationStore {
       )
       .get(connectionId) as
       | undefined
-      | { config_hash: string; config_json: string; connected_at: string };
+      | {
+          activation_id: string;
+          config_hash: string;
+          config_json: string;
+          connected_at: string;
+        };
     if (row === undefined) {
       throw new ConnectionNotFoundError(connectionId);
     }
     return {
+      activationId: row.activation_id,
       config: parseStoredConfig(row.config_json, row.config_hash),
       configHash: row.config_hash,
       connectedAt: row.connected_at,
@@ -213,15 +231,21 @@ export class ObservationStore {
   listConnections(): ActiveConnection[] {
     const rows = this.#database
       .prepare(
-        `SELECT c.config_hash, c.connected_at, v.config_json
+        `SELECT c.config_hash, c.activation_id, c.connected_at, v.config_json
            FROM active_connections c
            JOIN connection_versions v
              ON v.connection_id = c.connection_id
             AND v.config_hash = c.config_hash
           ORDER BY c.connection_id`,
       )
-      .all() as { config_hash: string; config_json: string; connected_at: string }[];
+      .all() as {
+      activation_id: string;
+      config_hash: string;
+      config_json: string;
+      connected_at: string;
+    }[];
     return rows.map((row) => ({
+      activationId: row.activation_id,
       config: parseStoredConfig(row.config_json, row.config_hash),
       configHash: row.config_hash,
       connectedAt: row.connected_at,
@@ -242,23 +266,7 @@ export class ObservationStore {
     let attemptOrder: number;
 
     try {
-      attemptOrder = this.#transaction(() => {
-        this.#assertActive(connection);
-        const result = this.#database
-          .prepare(
-            `INSERT INTO collection_attempts
-               (attempt_id, connection_id, config_hash, started_at, outcome,
-                source_records_seen, facts_seen, facts_added)
-             VALUES (?, ?, ?, ?, 'running', 0, 0, 0)`,
-          )
-          .run(
-            attemptId,
-            connection.config.id,
-            connection.configHash,
-            startedAt,
-          );
-        return Number(result.lastInsertRowid);
-      });
+      attemptOrder = await this.#recordRunningAttempt(connection, attemptId, startedAt);
     } catch (error) {
       throw new CollectionFailedError(attemptId, safeFailureCode(error));
     }
@@ -293,7 +301,7 @@ export class ObservationStore {
         );
         const markSeen = this.#database.prepare(
           `UPDATE facts
-              SET last_seen_attempt_order = ?
+              SET last_seen_attempt_order = MAX(last_seen_attempt_order, ?)
             WHERE connection_id = ? AND config_hash = ? AND fact_owner = ?
               AND kind = ? AND subject = ? AND epistemic_status = ?
               AND source_record_id = ? AND source_time_key = ? AND payload_hash = ?`,
@@ -385,17 +393,22 @@ export class ObservationStore {
     const attemptId = randomUUID();
     const timestamp = now.toISOString();
     this.#transaction(() => {
+      this.#assertActive(connection);
+      const attemptOrder = this.#nextAttemptOrder();
       this.#database
         .prepare(
           `INSERT INTO collection_attempts
-             (attempt_id, connection_id, config_hash, started_at, completed_at,
-              outcome, source_records_seen, facts_seen, facts_added, failure_code)
-           VALUES (?, ?, ?, ?, ?, 'skipped', 0, 0, 0, ?)`,
+             (attempt_order, attempt_id, connection_id, config_hash, activation_id,
+              started_at, completed_at, outcome, source_records_seen, facts_seen,
+              facts_added, failure_code)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'skipped', 0, 0, 0, ?)`,
         )
         .run(
+          attemptOrder,
           attemptId,
           connection.config.id,
           connection.configHash,
+          connection.activationId,
           timestamp,
           timestamp,
           reason,
@@ -413,9 +426,10 @@ export class ObservationStore {
            LEFT JOIN collection_attempts a ON a.attempt_id = (
              SELECT latest.attempt_id
                FROM collection_attempts latest
-              WHERE latest.connection_id = c.connection_id
-                AND latest.config_hash = c.config_hash
-              ORDER BY latest.rowid DESC
+               WHERE latest.connection_id = c.connection_id
+                 AND latest.config_hash = c.config_hash
+                 AND latest.activation_id = c.activation_id
+               ORDER BY latest.attempt_order DESC
               LIMIT 1
            )
           ORDER BY c.connection_id`,
@@ -440,7 +454,7 @@ export class ObservationStore {
         return {
           connectionId: row.connection_id,
           lastAttemptAt: row.last_attempt_at,
-          reason: "interrupted",
+          reason: "incomplete",
           status: "unread",
         };
       }
@@ -490,14 +504,38 @@ export class ObservationStore {
     return row.count;
   }
 
-  factsForVerification(connection: ActiveConnection): VerificationFact[] {
-    return this.#database
+  factsForVerification(connection: ActiveConnection): VerificationSnapshot {
+    const currentness = this.#database
       .prepare(
-        `SELECT epistemic_status, fact_owner, kind, subject, source_record_id,
-                source_recorded_at, payload_hash
-           FROM facts
-          WHERE connection_id = ? AND config_hash = ?
-          ORDER BY fact_id`,
+        `SELECT NOT EXISTS (
+           SELECT 1
+             FROM facts f
+            WHERE f.connection_id = ? AND f.config_hash = ?
+            GROUP BY f.fact_owner, f.kind, f.subject, f.epistemic_status,
+                     f.source_record_id, f.source_time_key
+           HAVING MAX(f.last_seen_attempt_order) = 0
+         ) AS known`,
+      )
+      .get(connection.config.id, connection.configHash) as { known: number };
+    const facts = this.#database
+      .prepare(
+        `SELECT f.epistemic_status, f.fact_owner, f.kind, f.subject,
+                f.source_record_id, f.source_recorded_at, f.payload_hash
+           FROM facts f
+          WHERE f.connection_id = ? AND f.config_hash = ?
+            AND f.last_seen_attempt_order = (
+              SELECT MAX(current.last_seen_attempt_order)
+                FROM facts current
+               WHERE current.connection_id = f.connection_id
+                 AND current.config_hash = f.config_hash
+                 AND current.fact_owner = f.fact_owner
+                 AND current.kind = f.kind
+                 AND current.subject = f.subject
+                 AND current.epistemic_status = f.epistemic_status
+                 AND current.source_record_id = f.source_record_id
+                 AND current.source_time_key = f.source_time_key
+            )
+          ORDER BY f.fact_id`,
       )
       .all(connection.config.id, connection.configHash)
       .map((row) => {
@@ -512,6 +550,7 @@ export class ObservationStore {
           subject: record.subject as string,
         };
       });
+    return { currentnessKnown: currentness.known === 1, facts };
   }
 
   #queryFacts(
@@ -542,10 +581,22 @@ export class ObservationStore {
                     SELECT 1 FROM facts newer
                      WHERE newer.fact_owner = f.fact_owner
                        AND newer.kind = f.kind
-                        AND newer.subject = f.subject
-                        AND newer.epistemic_status = f.epistemic_status
-                        AND newer.source_recorded_at > f.source_recorded_at
+                       AND newer.subject = f.subject
+                       AND newer.epistemic_status = f.epistemic_status
+                       AND newer.source_recorded_at > f.source_recorded_at
                   ) THEN 'historical'
+                  WHEN (
+                    SELECT MAX(known.last_seen_attempt_order)
+                      FROM facts known
+                     WHERE known.connection_id = f.connection_id
+                       AND known.config_hash = f.config_hash
+                       AND known.fact_owner = f.fact_owner
+                       AND known.kind = f.kind
+                       AND known.subject = f.subject
+                       AND known.epistemic_status = f.epistemic_status
+                       AND known.source_record_id = f.source_record_id
+                       AND known.source_time_key = f.source_time_key
+                  ) = 0 THEN 'unknown'
                   WHEN EXISTS (
                     SELECT 1 FROM facts corrected
                      WHERE corrected.connection_id = f.connection_id
@@ -578,7 +629,7 @@ export class ObservationStore {
       if (row.user_version === STORE_SCHEMA_VERSION) {
         return;
       }
-      if (row.user_version !== 0 && row.user_version !== 1) {
+      if (row.user_version !== 0 && row.user_version !== 1 && row.user_version !== 2) {
         throw new Error(`Unsupported observation store schema ${row.user_version}`);
       }
       if (row.user_version === 0) {
@@ -594,15 +645,18 @@ export class ObservationStore {
         CREATE TABLE active_connections (
           connection_id TEXT PRIMARY KEY,
           config_hash TEXT NOT NULL,
+          activation_id TEXT NOT NULL,
           connected_at TEXT NOT NULL,
           FOREIGN KEY (connection_id, config_hash)
             REFERENCES connection_versions(connection_id, config_hash)
         ) STRICT;
 
         CREATE TABLE collection_attempts (
-          attempt_id TEXT PRIMARY KEY,
+          attempt_order INTEGER PRIMARY KEY,
+          attempt_id TEXT NOT NULL UNIQUE,
           connection_id TEXT NOT NULL,
           config_hash TEXT NOT NULL,
+          activation_id TEXT NOT NULL,
           started_at TEXT NOT NULL,
           completed_at TEXT,
           outcome TEXT NOT NULL CHECK (outcome IN ('running', 'success', 'failed', 'skipped')),
@@ -623,7 +677,9 @@ export class ObservationStore {
         ) STRICT;
 
         CREATE INDEX collection_attempts_latest
-          ON collection_attempts(connection_id, config_hash, started_at DESC);
+          ON collection_attempts(
+            connection_id, config_hash, activation_id, attempt_order DESC
+          );
 
         CREATE TABLE facts (
           fact_id INTEGER PRIMARY KEY,
@@ -663,15 +719,90 @@ export class ObservationStore {
       }
 
       this.#database.exec(`
-        ALTER TABLE facts
-          ADD COLUMN last_seen_attempt_order INTEGER NOT NULL DEFAULT 0;
-        UPDATE facts
-           SET last_seen_attempt_order = COALESCE(
-             (SELECT collection_attempts.rowid
-                FROM collection_attempts
-               WHERE collection_attempts.attempt_id = facts.attempt_id),
-             0
+        ALTER TABLE collection_attempts ADD COLUMN attempt_order INTEGER;
+        UPDATE collection_attempts SET attempt_order = rowid;
+        CREATE UNIQUE INDEX collection_attempts_order
+          ON collection_attempts(attempt_order);
+        DROP INDEX collection_attempts_latest;
+        ALTER TABLE active_connections
+          ADD COLUMN activation_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE collection_attempts
+          ADD COLUMN activation_id TEXT NOT NULL DEFAULT '';
+      `);
+
+      const pairs = this.#database
+        .prepare(
+          `SELECT connection_id, config_hash FROM active_connections
+           UNION
+           SELECT connection_id, config_hash FROM collection_attempts`,
+        )
+        .all() as { config_hash: string; connection_id: string }[];
+      const updateActive = this.#database.prepare(
+        `UPDATE active_connections SET activation_id = ?
+          WHERE connection_id = ? AND config_hash = ?`,
+      );
+      const updateAttempts = this.#database.prepare(
+        `UPDATE collection_attempts SET activation_id = ?
+          WHERE connection_id = ? AND config_hash = ?`,
+      );
+      for (const pair of pairs) {
+        const activationId = `legacy:${sha256(
+          canonicalJson([pair.connection_id, pair.config_hash]),
+        )}`;
+        updateActive.run(activationId, pair.connection_id, pair.config_hash);
+        updateAttempts.run(activationId, pair.connection_id, pair.config_hash);
+      }
+
+      if (row.user_version === 1) {
+        this.#database.exec(`
+          ALTER TABLE facts
+            ADD COLUMN last_seen_attempt_order INTEGER NOT NULL DEFAULT 0;
+          UPDATE facts AS target
+             SET last_seen_attempt_order = COALESCE(
+               (SELECT attempt_order
+                  FROM collection_attempts
+                 WHERE collection_attempts.attempt_id = target.attempt_id),
+               0
+             )
+           WHERE NOT EXISTS (
+             SELECT 1
+               FROM facts other
+              WHERE other.fact_id <> target.fact_id
+                AND other.connection_id = target.connection_id
+                AND other.config_hash = target.config_hash
+                AND other.fact_owner = target.fact_owner
+                AND other.kind = target.kind
+                AND other.subject = target.subject
+                AND other.epistemic_status = target.epistemic_status
+                AND other.source_record_id = target.source_record_id
+                AND other.source_time_key = target.source_time_key
            );
+        `);
+      } else {
+        this.#database.exec(`
+          UPDATE facts AS target
+             SET last_seen_attempt_order = 0
+           WHERE EXISTS (
+             SELECT 1
+               FROM facts other
+              WHERE other.fact_id <> target.fact_id
+                AND other.connection_id = target.connection_id
+                AND other.config_hash = target.config_hash
+                AND other.fact_owner = target.fact_owner
+                AND other.kind = target.kind
+                AND other.subject = target.subject
+                AND other.epistemic_status = target.epistemic_status
+                AND other.source_record_id = target.source_record_id
+                AND other.source_time_key = target.source_time_key
+           );
+        `);
+      }
+
+      this.#database.exec(`
+        CREATE INDEX collection_attempts_latest
+          ON collection_attempts(
+            connection_id, config_hash, activation_id, attempt_order DESC
+          );
         PRAGMA user_version = ${STORE_SCHEMA_VERSION};
       `);
     });
@@ -679,11 +810,61 @@ export class ObservationStore {
 
   #assertActive(connection: ActiveConnection): void {
     const active = this.#database
-      .prepare("SELECT config_hash FROM active_connections WHERE connection_id = ?")
-      .get(connection.config.id) as undefined | { config_hash: string };
-    if (active?.config_hash !== connection.configHash) {
+      .prepare(
+        "SELECT config_hash, activation_id FROM active_connections WHERE connection_id = ?",
+      )
+      .get(connection.config.id) as
+      | undefined
+      | { activation_id: string; config_hash: string };
+    if (
+      active?.config_hash !== connection.configHash ||
+      active.activation_id !== connection.activationId
+    ) {
       throw new ConnectionInactiveError(connection.config.id);
     }
+  }
+
+  async #recordRunningAttempt(
+    connection: ActiveConnection,
+    attemptId: string,
+    startedAt: string,
+  ): Promise<number> {
+    while (true) {
+      try {
+        return this.#transaction(() => {
+          this.#assertActive(connection);
+          const attemptOrder = this.#nextAttemptOrder();
+          this.#database
+            .prepare(
+              `INSERT INTO collection_attempts
+                 (attempt_order, attempt_id, connection_id, config_hash, activation_id,
+                  started_at, outcome, source_records_seen, facts_seen, facts_added)
+               VALUES (?, ?, ?, ?, ?, ?, 'running', 0, 0, 0)`,
+            )
+            .run(
+              attemptOrder,
+              attemptId,
+              connection.config.id,
+              connection.configHash,
+              connection.activationId,
+              startedAt,
+            );
+          return attemptOrder;
+        });
+      } catch (error) {
+        if (!isSqliteBusy(error)) {
+          throw error;
+        }
+        await delay(10);
+      }
+    }
+  }
+
+  #nextAttemptOrder(): number {
+    const row = this.#database
+      .prepare("SELECT COALESCE(MAX(attempt_order), 0) + 1 AS next FROM collection_attempts")
+      .get() as { next: number };
+    return row.next;
   }
 
   #transaction<T>(operation: () => T): T {
@@ -777,6 +958,15 @@ function safeFailureCode(error: unknown): string {
 
 function numberOfChanges(result: StatementResultingChanges): number {
   return Number(result.changes);
+}
+
+function isSqliteBusy(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === "object" &&
+    "errcode" in error &&
+    (error.errcode === 5 || error.errcode === 6)
+  );
 }
 
 function addFilter(

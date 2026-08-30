@@ -103,6 +103,13 @@ current. Collection time is still recorded as when Ecosym looked, but is never
 substituted for source time. Where source time exists it controls temporal
 ordering, so a late older value remains historical.
 
+Two payloads under the same source identity and source time are corrections,
+not later time-series points. The payload seen by the highest admitted
+collection attempt is current; older payloads remain queryable as historical.
+Concurrent attempts cannot move that order backward. If a migrated store lacks
+enough evidence to know which correction was last, both remain `unknown` until
+the source version is observed again.
+
 `retention: "history"` means previously collected source versions must remain
 verifiable at the source. `retention: "latest"` allows a strictly newer source
 time for the same fact to supersede an older mutable record.
@@ -125,16 +132,19 @@ SQLite transaction. Registering the same ID and revision is idempotent;
 registering a different revision under an active ID fails. Disconnect first to
 change it. Disconnecting removes only the active pointer and never deletes
 facts or their configuration revision. Collection rechecks that exact active
-revision in the transaction that writes facts, so a collector that was reading
-while disconnect completed cannot persist its buffered records afterward.
+connection lifetime in the transaction that writes facts, so a collector that
+was reading while disconnect completed cannot persist its buffered records
+afterward, even if the same configuration is reconnected.
 
 Status is `changed` after a successful attempt that added facts, `quiet` after
 a successful attempt that added none, and `unread` after failure, skip,
-interruption, or no attempt. A running marker is committed before source reading;
+incomplete work, or no attempt. A marker is committed before source reading;
 facts and successful completion are then committed together. If the process
-stops between those points, the marker remains `interrupted` rather than
-revealing the previous success as current. Two connections have separate
-revisions, attempts, and status even when they use the same reader.
+stops between those points, the marker remains `incomplete` rather than
+revealing the previous success as current. `Incomplete` is deliberately neutral:
+the collector may still be alive, or it may have stopped. Two connection
+lifetimes have separate attempts and status even when they use the same revision
+and reader.
 
 ## Verification result
 
@@ -170,7 +180,10 @@ Verification rereads every active source and emits schema version 1:
 different selected payload. `missingAtSource` and `uncollected` compare the two
 sides. `advanced` is a strictly newer point in an existing fact's time series,
 not disagreement. `sourceVersionConflict` means the source itself supplied two
-payloads under one identity and time.
+payloads under one identity and time. Superseded correction payloads remain in
+history but are not compared as current expectations. If correction currentness
+is unknown, verification returns unread with `store_currentness_unknown` rather
+than inventing agreement or disagreement.
 
 Aggregate outcomes and exit codes are stable:
 

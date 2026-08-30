@@ -97,6 +97,33 @@ test("the deliberately corrupted fixture produces payload disagreement", async (
   }
 });
 
+test("a collected correction and reversion verify against only their current payload", async () => {
+  const { parsed, sourcePath, store } = setup("history");
+  try {
+    await collectConnection(store, parsed.config.id);
+    writeFileSync(
+      sourcePath,
+      '{"record_id":"record-1","subject":"subject-1","recorded_at":"2026-08-30T00:00:00Z","value":12}\n',
+    );
+    await collectConnection(store, parsed.config.id);
+    let report = await verifyConnection(store, store.getConnection(parsed.config.id));
+    assert.equal(report.outcome, "agreement");
+    assert.equal(report.counts.matched, 1);
+    assert.equal(report.counts.payloadMismatch, 0);
+    assert.equal(report.counts.storedFacts, 1);
+
+    copyFileSync(join(fixtures, "original.jsonl"), sourcePath);
+    await collectConnection(store, parsed.config.id);
+    report = await verifyConnection(store, store.getConnection(parsed.config.id));
+    assert.equal(report.outcome, "agreement");
+    assert.equal(report.counts.matched, 1);
+    assert.equal(report.counts.payloadMismatch, 0);
+    assert.equal(report.counts.storedFacts, 1);
+  } finally {
+    store.close();
+  }
+});
+
 test("distinguishes missing and never-collected records", async () => {
   const { parsed, sourcePath, store } = setup();
   try {
