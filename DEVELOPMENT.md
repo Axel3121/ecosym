@@ -127,6 +127,18 @@ history; distinct consequential corrections may remain distinct.
 Rewriting shared or published history is a separate destructive action and
 requires explicit approval.
 
+## Runtime facts do not belong in specifications
+
+A work item states what must be true, not what happened to be true when it was
+written. Row counts, current states, file listings, and similar runtime facts go
+stale between writing a specification and executing it — sometimes within
+minutes — and a stale fact written as an acceptance criterion makes correct work
+look wrong.
+
+Where a specification needs a current fact, it names the command that produces
+it or expresses it as an assertion a test evaluates. It does not copy the value
+into prose.
+
 ## Review
 
 Review challenges a completed candidate; it does not own implementation or
