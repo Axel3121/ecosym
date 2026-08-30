@@ -1,4 +1,14 @@
-"""Durable storage for source-independent observations and claims."""
+"""Durable storage for source-independent observations and claims.
+
+A fact is identified by its owner, kind, and subject. Provenance and source
+versions identify statements about that fact, not the fact itself. When an
+observation arrives, it supersedes current claims for the same fact.
+
+Stored records are immutable through this module: supersession is recorded
+separately, and the store never updates or deletes a record. This is a property
+of this code, not a guarantee enforced by the database; direct SQLite clients
+can update or delete rows.
+"""
 
 from __future__ import annotations
 
@@ -85,6 +95,9 @@ class ObservationStore:
     def claims(self) -> list[StoredRecord]:
         return self._records("claim")
 
+    def current_claims(self) -> list[StoredRecord]:
+        return self._records("claim", current_only=True)
+
     def record_attempt(self, attempt: CollectionAttempt) -> StoredCollectionAttempt:
         _validate_attempt(attempt)
         with self._connection:
@@ -134,6 +147,8 @@ class ObservationStore:
                 values,
             )
             if cursor.rowcount == 1:
+                if epistemic_status == "observation":
+                    self._supersede_claims(cursor.lastrowid, record)
                 return True
 
             existing = self._connection.execute(
@@ -159,27 +174,70 @@ class ObservationStore:
                 raise ObservationConflictError(
                     "source identity already exists with different contents"
                 )
+            if epistemic_status == "observation":
+                observation_id = self._connection.execute(
+                    """
+                    SELECT id FROM records
+                    WHERE adapter = ? AND source = ? AND kind = ? AND subject = ?
+                          AND source_version = ? AND epistemic_status = 'observation'
+                    """,
+                    (
+                        record.adapter,
+                        record.source,
+                        record.kind,
+                        record.subject,
+                        record.source_version,
+                    ),
+                ).fetchone()[0]
+                self._supersede_claims(observation_id, record)
         return False
 
-    def _records(self, epistemic_status: EpistemicStatus) -> list[StoredRecord]:
+    def _supersede_claims(self, observation_id: int, record: Record) -> None:
+        self._connection.execute(
+            """
+            INSERT OR IGNORE INTO claim_supersessions (claim_id, observation_id)
+            SELECT id, ? FROM records
+            WHERE epistemic_status = 'claim' AND temporal_status = 'current'
+                  AND fact_owner = ? AND kind = ? AND subject = ?
+            """,
+            (observation_id, record.fact_owner, record.kind, record.subject),
+        )
+
+    def _records(
+        self, epistemic_status: EpistemicStatus, current_only: bool = False
+    ) -> list[StoredRecord]:
+        current_filter = (
+            " AND records.temporal_status = 'current'"
+            " AND claim_supersessions.claim_id IS NULL"
+            if current_only
+            else ""
+        )
         rows = self._connection.execute(
-            "SELECT * FROM records WHERE epistemic_status = ? ORDER BY id",
+            f"""
+            SELECT records.*,
+                   claim_supersessions.claim_id IS NOT NULL AS is_superseded
+            FROM records
+            LEFT JOIN claim_supersessions ON claim_supersessions.claim_id = records.id
+            WHERE epistemic_status = ?{current_filter}
+            ORDER BY id
+            """,
             (epistemic_status,),
         ).fetchall()
         return [_record_from_row(row) for row in rows]
 
     def _create_schema(self) -> None:
         version = self._connection.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1):
+        if version not in (0, 1, 2):
             raise RuntimeError(
                 f"unsupported observation store schema version: {version}"
             )
-        if version == 1:
+        if version == 2:
             return
 
         with self._connection:
-            self._connection.executescript(
-                """
+            if version == 0:
+                self._connection.executescript(
+                    """
                 CREATE TABLE records (
                     id INTEGER PRIMARY KEY,
                     adapter TEXT NOT NULL,
@@ -217,8 +275,16 @@ class ObservationStore:
                     records_seen INTEGER,
                     records_added INTEGER
                 );
+                """
+                )
+            self._connection.executescript(
+                """
+                CREATE TABLE claim_supersessions (
+                    claim_id INTEGER PRIMARY KEY REFERENCES records(id),
+                    observation_id INTEGER NOT NULL REFERENCES records(id)
+                );
 
-                PRAGMA user_version = 1;
+                PRAGMA user_version = 2;
                 """
             )
 
@@ -279,6 +345,7 @@ def _time(value: datetime, name: str) -> str:
 
 
 def _record_from_row(row: sqlite3.Row) -> StoredRecord:
+    temporal_status = "superseded" if row["is_superseded"] else row["temporal_status"]
     return StoredRecord(
         id=row["id"],
         adapter=row["adapter"],
@@ -291,7 +358,7 @@ def _record_from_row(row: sqlite3.Row) -> StoredRecord:
         if row["source_time"]
         else None,
         observed_at=datetime.fromisoformat(row["observed_at"]),
-        temporal_status=row["temporal_status"],
+        temporal_status=temporal_status,
         epistemic_status=row["epistemic_status"],
         payload=json.loads(row["payload_json"]),
         cause_type=row["cause_type"],

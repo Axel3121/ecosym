@@ -1,3 +1,4 @@
+import sqlite3
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -10,9 +11,8 @@ from observation_store import CollectionAttempt, ObservationStore, Record
 class ObservationStoreTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = TemporaryDirectory()
-        self.store = ObservationStore(
-            Path(self.temporary_directory.name) / "observations.sqlite3"
-        )
+        self.store_path = Path(self.temporary_directory.name) / "observations.sqlite3"
+        self.store = ObservationStore(self.store_path)
         self.observed_at = datetime(2026, 1, 2, 12, tzinfo=timezone.utc)
 
     def tearDown(self) -> None:
@@ -56,6 +56,24 @@ class ObservationStoreTest(unittest.TestCase):
         self.assertEqual(len(self.store.claims()), 1)
         self.assertEqual(self.store.claims()[0].epistemic_status, "claim")
 
+    def test_observation_supersedes_current_claim_for_the_same_fact(self) -> None:
+        claim = self.record(cause_type=None, cause_id=None)
+        observation = self.record(
+            adapter="evidence-adapter",
+            source="fixture://owner/measurements",
+            source_version="measurement-9",
+            payload={"value": 9},
+        )
+
+        self.assertTrue(self.store.add_claim(claim))
+        self.assertTrue(self.store.add_observation(observation))
+
+        self.assertEqual(self.store.current_claims(), [])
+        historical_claims = self.store.claims()
+        self.assertEqual(len(historical_claims), 1)
+        self.assertEqual(historical_claims[0].temporal_status, "superseded")
+        self.assertEqual(len(self.store.observations()), 1)
+
     def test_unchanged_source_record_is_not_duplicated(self) -> None:
         record = self.record()
         collected_again = replace(
@@ -67,6 +85,37 @@ class ObservationStoreTest(unittest.TestCase):
 
         self.assertEqual(len(self.store.observations()), 1)
         self.assertEqual(self.store.observations()[0].observed_at, record.observed_at)
+
+    def test_unchanged_source_record_is_not_duplicated_after_reopening(self) -> None:
+        record = self.record()
+        collected_again = replace(
+            record, observed_at=record.observed_at + timedelta(minutes=5)
+        )
+
+        self.assertTrue(self.store.add_observation(record))
+        self.store.close()
+        self.store = ObservationStore(self.store_path)
+
+        self.assertFalse(self.store.add_observation(collected_again))
+        self.assertEqual(len(self.store.observations()), 1)
+        self.assertEqual(self.store.observations()[0].observed_at, record.observed_at)
+
+    def test_version_one_store_migrates_without_rewriting_records(self) -> None:
+        claim = self.record(cause_type=None, cause_id=None)
+        self.store.add_claim(claim)
+        self.store.close()
+        with sqlite3.connect(self.store_path) as connection:
+            connection.execute("DROP TABLE claim_supersessions")
+            connection.execute("PRAGMA user_version = 1")
+
+        self.store = ObservationStore(self.store_path)
+
+        self.assertEqual(len(self.store.current_claims()), 1)
+        self.store.add_observation(
+            self.record(source="fixture://owner/measurements", source_version="v2")
+        )
+        self.assertEqual(self.store.current_claims(), [])
+        self.assertEqual(self.store.claims()[0].temporal_status, "superseded")
 
     def test_changed_value_adds_to_the_time_series(self) -> None:
         first = self.record()
