@@ -135,12 +135,13 @@ cannot fail proves nothing.
 
 ## The test that decides whether this worked
 
-Freeze the contract, then connect a fifth source unlike any of the four -
-through the documented path, from outside the core, no new reader type - and
-prove no file in the store, query, or reader packages changed.
+Freeze the contract, then connect a fifth source that differs in kind from all
+four - not a fifth file of a shape already handled - through the documented
+path, from outside the core, and prove no file in the store, query, or reader
+packages changed.
 
 If that requires touching the core, the mechanism is not real. Say so rather
-than adding a special case.
+than adding a special case: what the contract could not express is the finding.
 
 ## Where state lives
 
@@ -148,6 +149,17 @@ than adding a special case.
 connection configurations that produced them. Never in the repository: what a
 user watches is as personal as what was observed. Disconnecting removes configuration and stops
 collection; it does not delete what was already observed.
+
+## Working with real sources
+
+Build and test against synthetic fixtures you write. The real sources are read
+by the code you are writing, not by you: do not dump rows, print payloads, or
+read personal content into your own context to understand a schema. Read the
+shape — table names, column names, field names — and write fixtures that match
+it.
+
+This is the same rule the product follows. Minimum personal context, and no
+personal content in logs, test output, commits, or anything you report.
 
 ## Constraints
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Launch a task specification as a sandboxed OpenCode run.
-# Usage: run-task 002-connected-sources
+# Usage: run-task 001-observation-layer
 #
 # Model, subagents, permissions and canonical reading all come from
 # opencode.json and .opencode/agent/ — not from here.
@@ -15,9 +15,9 @@ cd "$(dirname "$0")/.."
 # Run under a transient user unit so the work survives a Hermes restart.
 # The sandbox keeps --die-with-parent, but its parent is now systemd, not us.
 UNIT="axey-task-${TASK}-$(date +%s)"
-RUNS="$HOME/.local/share/axey/runs"
+RUNS="${XDG_DATA_HOME:-$HOME/.local/share}/axey/runs"
 LOG="$RUNS/${UNIT}.log"
-PORT="${AXEY_PORT:-$((4570 + RANDOM % 400))}"
+PORT="${AXEY_PORT:-$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")}"
 mkdir -p "$RUNS"
 
 echo "$PORT" > "$RUNS/${UNIT}.port"

@@ -50,22 +50,20 @@ reviews:
     - "!app/public/*.png"
 
   path_instructions:
-    - path: "app/src/**/*.{ts,tsx}"
+    - path: "**/*.ts"
       instructions: >-
-        Frontend leser Hermes-tilstand og skal aldri skrive til den.
-        Flagg skriveoperasjoner mot state.db.
-        Canvas-koden tegner til en fast pikselbuffer som skaleres opp med
-        heltall: flagg ikke-heltalls skalering, glatting som slås på igjen,
-        og sprite-størrelser som ganges med zoomnivået (sprites skal ha fast
-        pikselstørrelse).
-        Flagg tunge allokeringer inne i requestAnimationFrame-løkka.
-
-    - path: "backend/**/*.py"
-      instructions: >-
-        Backend åpner Hermes' state.db READ-ONLY. Flagg enhver tilkobling
-        uten mode=ro, samt INSERT/UPDATE/DELETE/CREATE.
-        Flagg SQL bygget med strengkonkatenering — bruk parameterbinding.
-        Flagg CORS eller binding som eksponerer tjenesten utenfor 127.0.0.1.
+        A connected source is opened read-only. Flag any SQLite connection
+        without a read-only URI, and any INSERT/UPDATE/DELETE/CREATE against a
+        source. Axey's own store is writable; a source never is.
+        Flag SQL built by string concatenation - use parameter binding.
+        Flag any field persisted that its connection did not name, and any
+        named container whose nested contents are stored wholesale: naming a
+        blob keeps nothing.
+        Flag personal content reaching logs, test output, error messages, or
+        fixtures.
+        Flag a check or verification that reports success when it verified
+        nothing - unread is not quiet, and unknown is not zero.
+        Flag CORS or a bind address exposing anything beyond 127.0.0.1.
 
     - path: ".github/workflows/**"
       instructions: >-
