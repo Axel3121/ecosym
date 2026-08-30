@@ -35,7 +35,6 @@ Axey application core
   ├── model boundary           — reasoning over selected input
   └── petition boundary        — a request leaving for an authority
        ↓
-       ↓
 each connected runtime, independently:
   ├── control plane            — admission of governed work
   └── execution                — agents, tools, delegation, enforcement
