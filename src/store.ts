@@ -64,6 +64,16 @@ export interface ConnectionStatus {
   status: "changed" | "quiet" | "unread";
 }
 
+export interface VerificationFact {
+  epistemicStatus: "claim" | "observation";
+  factOwner: string;
+  kind: string;
+  payloadHash: string;
+  sourceRecordedAt: null | string;
+  sourceRecordId: string;
+  subject: string;
+}
+
 export interface CollectionSink {
   recordSourceRecord(): void;
   writeFact(fact: FactInput): boolean;
@@ -423,6 +433,30 @@ export class ObservationStore {
       .prepare("SELECT count(*) AS count FROM facts WHERE connection_id = ?")
       .get(connectionId) as { count: number };
     return row.count;
+  }
+
+  factsForVerification(connection: ActiveConnection): VerificationFact[] {
+    return this.#database
+      .prepare(
+        `SELECT epistemic_status, fact_owner, kind, subject, source_record_id,
+                source_recorded_at, payload_hash
+           FROM facts
+          WHERE connection_id = ? AND config_hash = ?
+          ORDER BY fact_id`,
+      )
+      .all(connection.config.id, connection.configHash)
+      .map((row) => {
+        const record = row as Record<string, unknown>;
+        return {
+          epistemicStatus: record.epistemic_status as "claim" | "observation",
+          factOwner: record.fact_owner as string,
+          kind: record.kind as string,
+          payloadHash: record.payload_hash as string,
+          sourceRecordedAt: record.source_recorded_at as null | string,
+          sourceRecordId: record.source_record_id as string,
+          subject: record.subject as string,
+        };
+      });
   }
 
   #queryFacts(
