@@ -309,9 +309,7 @@ def _parse_reader(raw: object) -> ReaderConfig:
             "json",
             path=_source_locator(path, "reader.path") if path is not None else None,
             glob=(
-                _source_locator(pattern, "reader.glob")
-                if pattern is not None
-                else None
+                _source_locator(pattern, "reader.glob") if pattern is not None else None
             ),
         )
     raise ConnectionConfigError("reader.type must be sqlite, jsonl, or json")

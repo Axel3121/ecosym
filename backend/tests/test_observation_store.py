@@ -4,7 +4,9 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
+import observation_store
 from observation_store import CollectionAttempt, ObservationStore, Record
 
 
@@ -236,6 +238,78 @@ class ObservationStoreTest(unittest.TestCase):
             self.assertEqual(after_attempt, before_attempt)
             self.assertEqual(connection.total_changes, 0)
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 4)
+
+    def test_interrupted_version_three_migration_rolls_back_completely(self) -> None:
+        record = self.record()
+        self.store.add_observation(record)
+        original = self.store.observations()[0]
+        self.store.close()
+        connection = sqlite3.connect(self.store_path)
+        try:
+            with connection:
+                self._restore_legacy_column_names(connection)
+                connection.execute("PRAGMA user_version = 3")
+        finally:
+            connection.close()
+
+        real_connect = sqlite3.connect
+        alter_count = 0
+
+        def interrupted_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+            nonlocal alter_count
+            interrupted = real_connect(*args, **kwargs)
+
+            def deny_second_alter(
+                action: int,
+                _first: str | None,
+                _second: str | None,
+                _database: str | None,
+                _trigger: str | None,
+            ) -> int:
+                nonlocal alter_count
+                if action == sqlite3.SQLITE_ALTER_TABLE:
+                    alter_count += 1
+                    if alter_count == 2:
+                        return sqlite3.SQLITE_DENY
+                return sqlite3.SQLITE_OK
+
+            interrupted.set_authorizer(deny_second_alter)
+            return interrupted
+
+        with (
+            patch.object(
+                observation_store.sqlite3,
+                "connect",
+                side_effect=interrupted_connect,
+            ),
+            self.assertRaises(sqlite3.DatabaseError),
+        ):
+            ObservationStore(self.store_path)
+
+        connection = real_connect(self.store_path)
+        try:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
+            record_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(records)")
+            }
+            attempt_columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(collection_attempts)")
+            }
+        finally:
+            connection.close()
+        self.assertIn("adapter", record_columns)
+        self.assertNotIn("connection_id", record_columns)
+        self.assertNotIn("reader_type", record_columns)
+        self.assertIn("adapter", attempt_columns)
+        self.assertNotIn("connection_id", attempt_columns)
+        self.assertNotIn("in_progress", attempt_columns)
+
+        self.store = ObservationStore(self.store_path)
+        self.assertEqual(
+            self.store.observations(),
+            [replace(original, reader_type=None)],
+        )
 
     def test_changed_value_adds_to_the_time_series(self) -> None:
         first = self.record()

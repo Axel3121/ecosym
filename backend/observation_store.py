@@ -76,7 +76,11 @@ class ObservationStore:
     def __init__(self, path: str | Path) -> None:
         self._connection = sqlite3.connect(path)
         self._connection.row_factory = sqlite3.Row
-        self._create_schema()
+        try:
+            self._create_schema()
+        except BaseException:
+            self._connection.close()
+            raise
 
     def close(self) -> None:
         self._connection.close()
@@ -390,10 +394,9 @@ class ObservationStore:
         if version == 4:
             return
 
-        with self._connection:
-            if version == 0:
-                self._connection.executescript(
-                    """
+        if version == 0:
+            self._execute_schema_script(
+                """
                 CREATE TABLE records (
                     id INTEGER PRIMARY KEY,
                     connection_id TEXT NOT NULL,
@@ -435,38 +438,53 @@ class ObservationStore:
                         in_progress IN (0, 1)
                     )
                 );
-                """
-                )
-            if version < 2:
-                self._connection.executescript(
-                    """
-                CREATE TABLE IF NOT EXISTS claim_supersessions (
+                CREATE TABLE claim_supersessions (
                     claim_id INTEGER PRIMARY KEY REFERENCES records(id),
                     observation_id INTEGER NOT NULL REFERENCES records(id)
                 );
-                    """
-                )
-            self._connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS observation_supersessions (
+                CREATE TABLE observation_supersessions (
                     observation_id INTEGER PRIMARY KEY REFERENCES records(id),
                     superseding_observation_id INTEGER NOT NULL REFERENCES records(id)
                 );
-
+                PRAGMA user_version = 4;
                 """
             )
-            if 0 < version < 4:
-                self._connection.executescript(
-                    """
-                    ALTER TABLE records RENAME COLUMN adapter TO connection_id;
-                    ALTER TABLE records ADD COLUMN reader_type TEXT;
-                    ALTER TABLE collection_attempts
-                        RENAME COLUMN adapter TO connection_id;
-                    ALTER TABLE collection_attempts ADD COLUMN in_progress INTEGER
-                        NOT NULL DEFAULT 0 CHECK (in_progress IN (0, 1));
-                    """
-                )
-            self._connection.execute("PRAGMA user_version = 4")
+            return
+
+        claim_table = (
+            """
+            CREATE TABLE IF NOT EXISTS claim_supersessions (
+                claim_id INTEGER PRIMARY KEY REFERENCES records(id),
+                observation_id INTEGER NOT NULL REFERENCES records(id)
+            );
+            """
+            if version < 2
+            else ""
+        )
+        self._execute_schema_script(
+            f"""
+            {claim_table}
+            CREATE TABLE IF NOT EXISTS observation_supersessions (
+                observation_id INTEGER PRIMARY KEY REFERENCES records(id),
+                superseding_observation_id INTEGER NOT NULL REFERENCES records(id)
+            );
+            ALTER TABLE records RENAME COLUMN adapter TO connection_id;
+            ALTER TABLE records ADD COLUMN reader_type TEXT;
+            ALTER TABLE collection_attempts
+                RENAME COLUMN adapter TO connection_id;
+            ALTER TABLE collection_attempts ADD COLUMN in_progress INTEGER
+                NOT NULL DEFAULT 0 CHECK (in_progress IN (0, 1));
+            PRAGMA user_version = 4;
+            """
+        )
+
+    def _execute_schema_script(self, script: str) -> None:
+        try:
+            self._connection.executescript(f"BEGIN IMMEDIATE;\n{script}\nCOMMIT;")
+        except BaseException:
+            if self._connection.in_transaction:
+                self._connection.rollback()
+            raise
 
 
 def _record_values(

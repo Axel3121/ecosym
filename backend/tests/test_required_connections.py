@@ -489,6 +489,46 @@ class RequiredConnectionsTest(unittest.TestCase):
         self._assert_source_unchanged(source, before, before_mtime)
         self._assert_absent_from_store_and_output(sentinel, output + errors)
 
+    def test_sqlite_blob_identity_is_unread_instead_of_crashing(self) -> None:
+        source = self.root / "blob-identity.db"
+        connection = sqlite3.connect(source)
+        try:
+            with connection:
+                connection.execute(
+                    """
+                    CREATE TABLE async_delegations (
+                        delegation_id BLOB PRIMARY KEY,
+                        state TEXT NOT NULL,
+                        dispatched_at REAL NOT NULL,
+                        completed_at REAL
+                    )
+                    """
+                )
+                connection.execute(
+                    "INSERT INTO async_delegations VALUES (?, ?, ?, ?)",
+                    (sqlite3.Binary(b"not-json"), "dispatched", 1767355140, None),
+                )
+        finally:
+            connection.close()
+
+        codes, output, errors = self._install_collect_verify(
+            hermes_delegations_connection(source)
+        )
+
+        self.assertEqual(codes, (0, 1, 0))
+        self.assertEqual(errors, "")
+        self.assertEqual(
+            output.splitlines(),
+            [
+                "hermes-delegations: registered",
+                "hermes-delegations: unread",
+                "hermes-delegations: unread",
+            ],
+        )
+        with ObservationStore(self.layout.database) as store:
+            self.assertEqual(store.observations(), [])
+            self.assertEqual(store.collection_attempts()[0].outcome, "failed")
+
     def test_hermes_cron_records_failure_without_error_text(self) -> None:
         sentinel = "CRON_ERROR_SENTINEL_MUST_NOT_LEAVE_SOURCE"
         source = self.root / "executions.db"

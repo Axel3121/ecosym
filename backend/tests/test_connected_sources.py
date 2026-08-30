@@ -187,9 +187,7 @@ class ConnectedSourcesTest(unittest.TestCase):
         second_source = second_root / "events.jsonl"
         first_source.write_text("", encoding="utf-8")
         second_source.write_text("", encoding="utf-8")
-        raw = self.jsonl_config(
-            "bound-source", Path("$AXEY_FIXTURE_ROOT/events.jsonl")
-        )
+        raw = self.jsonl_config("bound-source", Path("$AXEY_FIXTURE_ROOT/events.jsonl"))
 
         with patch.dict(os.environ, {"AXEY_FIXTURE_ROOT": str(first_root)}):
             config = parse_connection(raw)
@@ -227,9 +225,7 @@ class ConnectedSourcesTest(unittest.TestCase):
             encoding="utf-8",
         )
         raw = self.jsonl_config("nested-source", source)
-        raw["inputs"][0]["mappings"][0]["payload"] = {
-            "bundle": "item.bundle"
-        }
+        raw["inputs"][0]["mappings"][0]["payload"] = {"bundle": "item.bundle"}
 
         with ObservationStore(self.layout.database) as store:
             result = collect_connection(

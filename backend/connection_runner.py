@@ -339,7 +339,7 @@ def _timestamp(value: JsonValue, format_value: str) -> datetime | None:
 
 
 def _required_scalar(value: JsonValue, context: str) -> str | int | float | bool:
-    if value is None or isinstance(value, (dict, list)):
+    if value is None or not isinstance(value, (bool, int, float, str)):
         raise SourceUnreadError(f"mapped {context} must be a scalar")
     if isinstance(value, float) and not math.isfinite(value):
         raise SourceUnreadError(f"mapped {context} must be finite")
