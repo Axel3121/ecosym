@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Launch a task specification as a sandboxed OpenCode run.
+# Usage: run-task 002-connected-sources
+set -euo pipefail
+
+TASK="${1:?usage: run-task <task-name>}"
+SPEC="docs/tasks/${TASK}.md"
+MODEL="${AXEY_MODEL:-openai/gpt-5.6-sol}"
+
+cd "$(dirname "$0")/.."
+[ -f "$SPEC" ] || { echo "no spec at $SPEC" >&2; exit 1; }
+
+MSG="Implement the attached task specification in full. It is large by design - work through it properly rather than quickly. Commit as you go, a commit per coherent piece. Report honestly what you built, what you decided, and anything in the canonical documents that turned out to be wrong."
+
+# Run under a transient user unit so the work survives a Hermes restart.
+# The sandbox keeps --die-with-parent, but its parent is now systemd, not us.
+UNIT="axey-task-${TASK}-$(date +%s)"
+LOG="$HOME/.local/share/axey/runs/${UNIT}.log"
+mkdir -p "$(dirname "$LOG")"
+
+echo "unit: $UNIT"
+echo "log:  $LOG"
+
+systemd-run --user --unit="$UNIT" --collect \
+  --working-directory="$PWD" \
+  --property=StandardOutput="append:$LOG" \
+  --property=StandardError="append:$LOG" \
+  "$HOME/bin/axey-sandbox" run --model "$MODEL" --variant max "$MSG" -f "$SPEC"
