@@ -197,3 +197,23 @@ One coherent application and one repository are the working default. A new
 process, service, language, repository, scheduler, retrieval technology, or
 security runtime must buy a concrete property that the current shape cannot
 provide. Logical separation alone is not evidence for physical separation.
+
+## Current implementation choices
+
+These are choices, not architecture. This document does not own them; they are
+recorded here so they are deliberate rather than inherited.
+
+**TypeScript throughout**, on Node for the core and the browser for the world.
+
+The reason is the domain, not tidiness. Mandate, provenance, epistemic status,
+temporal validity, observation and claim must stay distinct, and they cross the
+boundary between core and surface constantly. One type system across both makes
+that distinction harder to lose by accident; two representations of the same
+trust-bearing concept drift.
+
+Types are not a security boundary. Provenance, authority, currentness and
+effect safety are established at runtime, by validation and authorization at
+each boundary. Static types describe shape; they prove nothing about truth.
+
+Shared types must not become shared authority: the surface may know what an
+observation looks like without gaining any power over what one means.

@@ -1,201 +1,186 @@
-# Task 001 — The observation layer
+# Task 001 - The observation layer
+
+Read `PRODUCT.md`, `ARCHITECTURE.md`, `SECURITY.md` and `DEVELOPMENT.md` at the
+repository root first.
 
 ## Outcome
 
-Axey can hold what it has seen, with provenance, and prove it against the
-source. Nothing renders. This task ends at a queryable store and a verification
-command.
+Axey holds what it has seen, with provenance, and can prove it against the
+source. It can be pointed at a source it did not previously know about, and
+that source starts producing observations.
 
-Read `PRODUCT.md`, `ARCHITECTURE.md`, `SECURITY.md`, and `DEVELOPMENT.md`
-first — all four are relevant here, and all are canonical. This task does not
-override them. `DEVELOPMENT.md` governs how the work is evidenced and reviewed;
-`SECURITY.md` governs provenance and what may not leak into logs or test
-artifacts.
+Nothing renders. This ends at a queryable store, connected sources, and a
+verification command.
 
-## Where this sits
+## Why this first
 
-This is **not** the first proof described in `PRODUCT.md`. That proof is a
-vertical chain — petition, mandate, admission, enforcement, observed outcome,
-durable case, restart, resume — and this task deliberately excludes most of it.
+Everything later - cities, cases, the council - rests on observations being
+trustworthy. The hardest requirement in the product is that the world cannot
+lie, and that is discovered far too late if depiction is built first.
 
-This is the observation sub-slice of that chain: the part that can be built
-honestly today, because it depends on nothing that does not yet exist. It does
-not establish the canonical first proof and must not be reported as doing so.
+The surface-to-observation boundary is also the one `ARCHITECTURE.md` names as
+expensive to introduce later: the surface never reads a source directly.
 
-## Why this piece first
+## What must be true
 
-Every later part of Axey — cities, cases, the council — depends on observations
-being trustworthy. The hardest requirement in the product is that the world
-cannot lie, and that requirement is discovered too late if depiction is built
-first. The surface-to-observation boundary is also the one boundary
-`ARCHITECTURE.md` names as expensive to introduce later.
+**A source is connected, never shipped.** Adding one changes configuration, not
+the core. Remove every connection and Axey is intact, containing no platform
+name. The store and query layers do not know what a Hermes delegation or a
+YouTube view count is.
 
-## The boundary that must exist
+**No user-supplied code is executed.** Connections are declarative. Executable
+connectors are an untrusted-code problem under `SECURITY.md`, and package
+boundaries are not isolation.
 
-From `ARCHITECTURE.md`: **nothing above the observation layer reads a source
-directly.** Sources are reached by adapters; everything else reads the store.
-This is the one boundary that is expensive to introduce later, and it is not
-optional.
+**Nothing personal leaks in.** A field reaches the store because its connection
+named it, never because it was present in the source. The core enforces that
+rule; it never carries a list of which fields are safe for any particular
+source, because that would make one user's schema part of the product.
 
-## What an observation is
+Prove the rule, not a list: give a connection a source carrying fields it did
+not name - including something that looks like a secret - and show they are
+absent from the store. A source may hold an entire conversation history two
+fields away from what was asked for; wrong here is not a bug to fix later, it
+is personal data written to disk.
 
-Durable, timed, and attributed to a source that owns the fact.
+**A claim is not an observation.** A Hermes report that work completed is an
+assertion about the world; a view count read from a platform is evidence.
+Hermes owns its runtime state, not the external effect that work claims to have
+produced. Both are storable; a query for observations must not return claims.
 
-- **source** — which owner the fact came from, specifically enough to go back to it
-- **observed_at** — when Axey saw it
-- **source_time** — when the fact itself is true of, where the source provides one
-- **status** — whether this is current, superseded, or of unknown currency
-- **kind** — what sort of thing was seen (free-form; do not build a fixed taxonomy)
-- **subject** — a stable identifier for the thing observed, so repeated looks at
-  the same thing are recognisable as the same thing
-- **payload** — the observed values
+**Changing values are a time series.** A view count rising from 7 to 12 is two
+observations of the same subject at different times, both kept. Nothing already
+observed is overwritten when a source changes, and a late-arriving older value
+does not displace newer truth.
 
-A **claim** is a report from an intermediary rather than the fact's owner. Claims
-are stored, but stay distinguishable from observations for as long as they are
-held. Never silently promoted.
+**Quiet is not unread.** A connection is quiet when its last collection
+succeeded and found nothing new; unread when the last attempt failed, was
+skipped, or never ran. An empty result from a broken connection must never
+appear as silence. This is the property most likely to be lost by accident - do
+not collapse it into a null.
 
-**Attribution to a cause is a separate, optional property.** An observation with
-no traceable origin is fully valid and is stored without one. A cause is never
-inferred from having followed something in time.
+**Two connections never contaminate each other.** They may share a reader type
+against different sources; their attempts, coverage and status stay separate.
 
-## Sources for this slice
+## Decisions already made
 
-Two real ones, deliberately different in shape.
+These were expensive to work out. Do not re-derive them.
 
-**1. Hermes runtime** — `~/.hermes/state.db`, opened **read-only**, and
-`~/.hermes/cron/executions.db`. Axey owns nothing here and must never write.
-Delegations and cron executions are real, timed, and owned by Hermes.
+**subject** is the smallest thing a fact is about - a video id, a delegation
+id. Not a compound of channel and video.
 
-Note: `backend/axey.py` already reads state.db read-only. Its approach to
-opening the database is sound and worth keeping. Its output shape is not — it
-serves raw rows with no provenance, and it aggregates token and API-call counts,
-which are vanity telemetry and out of scope. Do not carry that forward.
+**fact_owner** is what a connection declares about its own source, never
+something Axey knows. A local JSONL file does not own view counts; it is a
+local record of a platform's fact, and the connection says so.
 
-**2. Shorts outcomes** — under `~/shorts-content/`:
-- `output/reports/uploads.jsonl` — published videos; note `deleted: true` marks
-  history, not absence
-- `output/reports/daily_snapshots.jsonl` — view counts over time
-- `output/reports/analytics_*.json` — per-video metrics
-- `scripts_data/learning_log.jsonl` — note `day7_stats: null`, an outcome not yet
-  observable
+**Measurement method belongs in `kind`.** Two YouTube APIs reported the same
+video's views differently within seconds - both true, measured differently.
+They must be distinguishable kinds so neither retires the other. Fact identity
+is `(fact_owner, kind, subject)`.
 
-These are outcomes nobody requested — views accrue on their own. They are the
-common case, and they must move through the layer without a cause.
+**A source record needs its own identity and its own time.** Fact identity says
+what a value is about; it does not say which source record produced it, or when
+the source believed it. Without both, a corrected record and the next reading in
+a series are indistinguishable - and that distinction is what verification
+rests on.
 
-## What must be demonstrably true when this is done
+Decide how a connection declares those, and say why your answer holds when a
+source has no obvious key and no timestamp of its own. Ordering must come from
+the source's own sense of time where it has one; collection time is when Axey
+looked, which is a different fact.
 
-Each of these needs a test that fails when the property is broken.
+## The sources to connect
 
-### Decisions already made — do not re-decide these
+These four exist on this machine and are the evidence the mechanism works. They
+are this user's sources, not Axey's: their configurations live in the state
+directory alongside observations, never in the repository. Axey ships with no
+connections at all, and a fresh clone knows of no platform.
 
-**Adapters.** Four, not two: Hermes sessions (`state.db`), Hermes cron
-(`executions.db`), Shorts uploads (`uploads.jsonl` plus `learning_log.jsonl`),
-Shorts metrics (`daily_snapshots.jsonl` plus `analytics_*.json`). Two families,
-four adapters. Every "per adapter" requirement below means these four.
+Hermes delegations and Hermes cron (`~/.hermes/state.db`,
+`~/.hermes/cron/executions.db`), Shorts uploads and Shorts metrics
+(`~/shorts-content/`). Read-only, always - open SQLite with a read-only URI.
 
-**Changing values are a time series, never a replacement.** A view count rising
-from 7 to 12 is two observations of the same subject at different times, both
-kept. Nothing already observed is overwritten or deleted when the source
-changes. `PRODUCT.md` requires that historical and current truth stay
-distinguishable, and superseding would destroy the trend data the chronicler
-exists to read.
+Schema knowledge about any of them - table names, field names, which fields are
+allowed - belongs in its configuration, not in code. If connecting a source
+requires the core to learn something about that source, the contract is too
+narrow: say so rather than special-casing it.
 
-**A Hermes report that work finished is a claim, not an observed outcome.**
-Hermes owns its own runtime state — that a delegation exists, its lineage, that
-a process is running or exited. It does not own the external effect that work
-claims to have produced. Store delegation state as observation of the runtime;
-store any assertion about an external effect as a claim.
+`~/.hermes/state.db` is worth naming as the sharpest case: it holds the user's
+entire conversation history, and fields like `result_json` and `event_json`
+carry subagent prose and possibly secrets. Its connection must name only what it
+needs. This is a fact about configuring that source, not something Axey knows.
 
-**Source version** is whatever the source itself offers as a stable marker of
-its own revision — a row id, a file offset, a record's own timestamp. It is not
-collection time and not a payload hash of the whole file, because a legitimate
-rewrite would then look like corruption.
+Two details worth knowing, because getting them wrong loses history: `deleted:
+true` in `uploads.jsonl` marks history rather than absence, and `day7_stats:
+null` is an outcome not yet observable - unknown, not zero.
 
-**A source is *quiet*** only when the most recent collection attempt for that
-adapter completed successfully and returned nothing new. It is *unread* whenever
-the last attempt failed, was skipped, or has never run. Coverage is per adapter,
-and the store records every attempt with its outcome, not just successes.
+## Verification
 
-**Evidence** means a record the query layer will return as an observation.
-Claims are storable and retrievable, but a query for observations must not
-return them. That is what "does not enter the store as evidence" means, and it
-is checkable.
+A command that re-reads the sources and reports disagreement between the store
+and reality: a record the store expected that the source no longer has, a
+payload differing at the same source version, or a record at the source never
+collected. A newer view count is not disagreement - it is the next point in a
+series.
 
-### What must be demonstrably true
+A source that is absent, locked or malformed is unread, not disagreement: the
+check reports what it could not see rather than inventing a verdict. But
+"we could not look" must never read as "everything is fine".
 
-**1. Identity — repeated collection does not duplicate.**
+The result must be machine-readable and stable enough that a reviewer can tell
+agreement, disagreement and unread apart without reading prose - and unread must
+never be reported as success. Say what shape you chose and why.
 
-Decide, per adapter, which source fields form a stable observation key, and
-write that decision down. Collecting twice from an unchanged source adds
-nothing; collecting after a real change adds a new observation in the series.
-Deletion or rewrite at the source must not erase what was already observed —
-`uploads.jsonl` already marks removed videos `deleted: true` rather than
-dropping them, and that is the behaviour to preserve.
+Include a deliberately corrupted fixture proving the check fails. A check that
+cannot fail proves nothing.
 
-**2. Claim and observation are distinguishable.**
+## The test that decides whether this worked
 
-Name the durable fields that carry the distinction. Include a fixture of a real
-intermediary claim — Hermes reporting that work completed is a claim, not an
-observed external outcome — and prove it does not enter the store as evidence.
+Freeze the contract, then connect a fifth source unlike any of the four -
+through the documented path, from outside the core, no new reader type - and
+prove no file in the store, query, or reader packages changed.
 
-**3. Absence of observation and absence of activity are different states.**
+If that requires touching the core, the mechanism is not real. Say so rather
+than adding a special case.
 
-Two separate tests: one proving a successful empty collection reads as quiet,
-one proving a failed or never-run collection reads as unread. An empty result
-from a broken adapter must never surface as quiet. This is the property most
-likely to be lost by accident — do not collapse it into a null.
+## Where state lives
 
-**4. Verification reports real disagreement.**
-
-Disagreement is one of: a record the store expected that the source no longer
-has, a payload differing at the same source version, or a record present at the
-source that was never collected. A newer view count is not a disagreement — it
-is the next point in the series.
-
-The command runs against the real sources and exits non-zero on disagreement.
-A source that is absent, locked, or malformed is *unread*, not disagreement, and
-exits zero with that state reported — the check reports what it could not see
-rather than inventing a verdict. Include a deliberately corrupted-store fixture
-proving it fails, and run it for real.
-
-**5. Ownership is decided per adapter.**
-
-A local JSONL file does not own YouTube's view counts — it is a local record of a
-platform fact, and its provenance must say so. Hermes does own its own runtime
-and delegation state. Write down, per adapter, who owns the fact and what the
-local file actually is.
+`${XDG_DATA_HOME:-$HOME/.local/share}/axey/` - both observations and the
+connection configurations that produced them. Never in the repository: what a
+user watches is as personal as what was observed. Disconnecting removes configuration and stops
+collection; it does not delete what was already observed.
 
 ## Constraints
 
-- Python, matching the existing `backend/`. Local store; SQLite is fine.
-- No web framework, no HTTP layer, no UI, no LangGraph, no orchestration.
-- Never write to anything under `~/.hermes/` or `~/shorts-content/`.
-- Do not touch `app/` — the existing frontend is non-conformant and out of scope.
-- Tests use synthetic fixtures, never the user's real stores. No source content
-  or personal data in logs, test output, or committed artifacts.
-- Adding a source later must not require changing the store or the query layer.
-  If it does, the boundary is in the wrong place.
-- Keep source-specific rules — what an adapter's key is, how it reads its own
-  source version — inside that adapter. The store stays generic; source
-  semantics embedded in it get expensive to change later.
-- One ordinary check entry point that runs everything (tests plus the
-  verification command), runnable without an agent, per `DEVELOPMENT.md`.
-- `SECURITY.md` requires that Axey-owned state be inspectable, correctable,
-  exportable, and deletable. This slice need not implement any of that, but the
-  store must not be shaped so those become impossible later.
+TypeScript on Node 24, ESM. `node:sqlite` is built in - prefer it over a
+dependency, and say so if you find a reason not to.
 
-## Out of scope
+Read-only against every external source, proven by a test that attempts a write
+and is refused - not by a grep for a connection string.
 
-Cities, mandates, jurisdiction, cases, the council, petitions, admission,
-rendering, and anything visual. If the design seems to need one of these, stop
-and say so rather than inventing it.
+Sources grow. Collection's cost must not rise with how much history is already
+stored: reading a large source is unavoidably proportional to that source,
+loading everything Axey has ever observed is not.
+
+Writing records and completing an attempt is one transaction. A failure must
+not leave a partially advanced history marked as a failed attempt.
+
+Registration is safe between processes. Two processes registering different
+configurations under the same id must not interleave into a config and identity
+that disagree.
+
+No HTTP, no UI, no scheduling, no orchestration framework. Tests use synthetic
+fixtures in temporary directories; real sources are for a final supplementary
+run. One check entry point that runs everything without an agent. Do not touch
+`app/`.
+
+Out of scope: cities, mandates, cases, the council, petitions, anything visual.
+If the design seems to need one, stop and say so rather than inventing it.
 
 ## Report back
 
-What was built, the shape of the store, the two decisions left to you — each
-adapter's observation key, and who owns each adapter's facts — the check entry
-point and its real output including the corrupted fixture failing, and anything
-in the canonical documents that turned out to be unimplementable as written.
+What you built and what you decided and why, the fifth source's cost, the check
+output including a deliberate failure, and anything in the canonical documents
+that turned out to be wrong or unbuildable.
 
-This work touches a trust-bearing boundary: provenance and the claim/observation
-distinction. Expect independent review before it is accepted.
+Commit each coherent piece as you go. A run can be interrupted; committed work
+survives.

@@ -10,7 +10,7 @@ on:
   pull_request:
     branches: [main]
 
-# Minste rettighet som trengs for å lese koden og rapportere status.
+# The least privilege needed to read the code and report status.
 permissions:
   contents: read
 
@@ -19,56 +19,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  frontend:
-    name: frontend (${{ matrix.node }})
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: app
-    strategy:
-      fail-fast: false
-      matrix:
-        node: ['24']
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.24.0
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: ${{ matrix.node }}
-
-      # setup-node sin pnpm-cache kjører før storen finnes og feiler med
-      # "Some specified paths were not resolved". Cacher storen selv i stedet.
-      - name: resolve pnpm store
-        id: store
-        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/cache@v4
-        with:
-          path: ${{ steps.store.outputs.path }}
-          key: pnpm-${{ runner.os }}-${{ hashFiles('app/pnpm-lock.yaml') }}
-          restore-keys: pnpm-${{ runner.os }}-
-
-      # --frozen-lockfile: CI skal aldri stilltiende endre avhengigheter.
-      - name: install
-        run: pnpm install --frozen-lockfile
-
-      # Samme inngangspunkt som kjøres lokalt — ett sted, ikke to sannheter.
-      - name: check
-        run: pnpm check
-
-      - name: upload build
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist-node${{ matrix.node }}
-          path: app/dist
-          retention-days: 7
-
   backend:
     name: backend
     runs-on: ubuntu-latest
