@@ -1,0 +1,43 @@
+name: Problem
+description: Something is wrong, or something should exist and does not.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A work record states an unresolved problem, a desired outcome, durable
+        constraints, and what would count as evidence. It does not prescribe the
+        implementation — that is the writer's to decide.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What is wrong, or missing. Concrete, not a solution in disguise.
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: What must be true when this is done.
+    validations:
+      required: true
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints that would be expensive to get wrong
+      description: >
+        Only decisions where a wrong choice is irreversible or breaks trust —
+        privacy boundaries, authority, data loss. Leave the rest open.
+    validations:
+      required: false
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: What would count as evidence
+      description: How anyone could tell afterwards whether this actually worked.
+    validations:
+      required: false

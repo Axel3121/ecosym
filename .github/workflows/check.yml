@@ -1,7 +1,7 @@
-# Verifiserer eksakt publisert head, slik DEVELOPMENT.md krever:
+# Verifies the exact published head, as DEVELOPMENT.md requires:
 #   "CI verifies the exact published head."
 #   "Merge always requires an explicit decision from a current maintainer."
-# Denne workflowen rapporterer altså status — den merger ingenting.
+# This workflow reports status. It merges nothing.
 name: check
 
 on:
@@ -101,18 +101,16 @@ jobs:
       - name: check
         run: python check.py
 
-      # SECURITY.md: eksterne SQLite-kilder åpnes read-only. Axeys egen
-      # observasjonsdatabase er derimot et skrivbart, eid lager.
+      # SECURITY.md: external SQLite sources are opened read-only. Axey's own
+      # observation store is a writable, owned store and is not covered here.
       - name: verify read-only source access
         run: |
-          if grep -nE '\b(INSERT|UPDATE|DELETE|DROP|ALTER)\b' axey.py source_readers.py; then
-            echo "::error::skrivende SQL funnet — backend skal være read-only"
+          if grep -nE '\b(INSERT|UPDATE|DELETE|DROP|ALTER)\b' source_readers.py; then
+            echo "::error::writing SQL found — source readers must be read-only"
             exit 1
           fi
-          for file in axey.py source_readers.py; do
-            if ! grep -q 'mode=ro' "$file"; then
-              echo "::error::fant ingen mode=ro i $file — tilkoblingen må være read-only"
-              exit 1
-            fi
-          done
-          echo "read-only bekreftet"
+          if ! grep -q 'mode=ro' source_readers.py; then
+            echo "::error::no mode=ro in source_readers.py — connections must be read-only"
+            exit 1
+          fi
+          echo "read-only confirmed"
