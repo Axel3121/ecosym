@@ -16,7 +16,7 @@ check() {
 
 # Run a snippet inside the sandbox and return its last line.
 inside() {
-  AXEY_SANDBOX_EXEC=/usr/bin/bash "$HOME/bin/axey-sandbox" -c "$1" 2>/dev/null | tail -1
+  ECOSYM_SANDBOX_EXEC=/usr/bin/bash "$HOME/bin/ecosym-sandbox" -c "$1" 2>/dev/null | tail -1
 }
 
 echo "=== secrets must be unreachable ==="
@@ -39,8 +39,8 @@ check "cron read-only"        readonly "$(inside 'touch "$HOME/.hermes/cron/x" 2
 
 echo
 echo "=== work areas must be writable ==="
-check "project writable"      writable "$(inside 'touch "$HOME/projects/axey/.probe" 2>/dev/null && rm -f "$HOME/projects/axey/.probe" && echo writable || echo readonly')"
-check "axey state writable"   writable "$(inside 'touch "$HOME/.local/share/axey/.probe" 2>/dev/null && rm -f "$HOME/.local/share/axey/.probe" && echo writable || echo readonly')"
+check "project writable"      writable "$(inside 'touch "$HOME/projects/ecosym/.probe" 2>/dev/null && rm -f "$HOME/projects/ecosym/.probe" && echo writable || echo readonly')"
+check "ecosym state writable"   writable "$(inside 'touch "$HOME/.local/share/ecosym/.probe" 2>/dev/null && rm -f "$HOME/.local/share/ecosym/.probe" && echo writable || echo readonly')"
 
 echo
 echo "=== network must work ==="

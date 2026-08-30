@@ -1,4 +1,4 @@
-# Axey agent bootstrap
+# Ecosym agent bootstrap
 
 This file is a non-authoritative discovery map. It owns no product,
 architecture, security, or development policy.

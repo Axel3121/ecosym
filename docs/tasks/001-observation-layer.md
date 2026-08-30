@@ -5,7 +5,7 @@ repository root first.
 
 ## Outcome
 
-Axey holds what it has seen, with provenance, and can prove it against the
+Ecosym holds what it has seen, with provenance, and can prove it against the
 source. It can be pointed at a source it did not previously know about, and
 that source starts producing observations.
 
@@ -24,7 +24,7 @@ expensive to introduce later: the surface never reads a source directly.
 ## What must be true
 
 **A source is connected, never shipped.** Adding one changes configuration, not
-the core. Remove every connection and Axey is intact, containing no platform
+the core. Remove every connection and Ecosym is intact, containing no platform
 name. The store and query layers do not know what a Hermes delegation or a
 YouTube view count is.
 
@@ -70,7 +70,7 @@ These were expensive to work out. Do not re-derive them.
 id. Not a compound of channel and video.
 
 **fact_owner** is what a connection declares about its own source, never
-something Axey knows. A local JSONL file does not own view counts; it is a
+something Ecosym knows. A local JSONL file does not own view counts; it is a
 local record of a platform's fact, and the connection says so.
 
 **Measurement method belongs in `kind`.** Two YouTube APIs reported the same
@@ -86,14 +86,14 @@ rests on.
 
 Decide how a connection declares those, and say why your answer holds when a
 source has no obvious key and no timestamp of its own. Ordering must come from
-the source's own sense of time where it has one; collection time is when Axey
+the source's own sense of time where it has one; collection time is when Ecosym
 looked, which is a different fact.
 
 ## The sources to connect
 
 These four exist on this machine and are the evidence the mechanism works. They
-are this user's sources, not Axey's: their configurations live in the state
-directory alongside observations, never in the repository. Axey ships with no
+are this user's sources, not Ecosym's: their configurations live in the state
+directory alongside observations, never in the repository. Ecosym ships with no
 connections at all, and a fresh clone knows of no platform.
 
 Hermes delegations and Hermes cron (`~/.hermes/state.db`,
@@ -108,7 +108,7 @@ narrow: say so rather than special-casing it.
 `~/.hermes/state.db` is worth naming as the sharpest case: it holds the user's
 entire conversation history, and fields like `result_json` and `event_json`
 carry subagent prose and possibly secrets. Its connection must name only what it
-needs. This is a fact about configuring that source, not something Axey knows.
+needs. This is a fact about configuring that source, not something Ecosym knows.
 
 Two details worth knowing, because getting them wrong loses history: `deleted:
 true` in `uploads.jsonl` marks history rather than absence, and `day7_stats:
@@ -145,7 +145,7 @@ than adding a special case: what the contract could not express is the finding.
 
 ## Where state lives
 
-`${XDG_DATA_HOME:-$HOME/.local/share}/axey/` - both observations and the
+`${XDG_DATA_HOME:-$HOME/.local/share}/ecosym/` - both observations and the
 connection configurations that produced them. Never in the repository: what a
 user watches is as personal as what was observed. Disconnecting removes configuration and stops
 collection; it does not delete what was already observed.
@@ -171,7 +171,7 @@ and is refused - not by a grep for a connection string.
 
 Sources grow. Collection's cost must not rise with how much history is already
 stored: reading a large source is unavoidably proportional to that source,
-loading everything Axey has ever observed is not.
+loading everything Ecosym has ever observed is not.
 
 Writing records and completing an attempt is one transaction. A failure must
 not leave a partially advanced history marked as a failed attempt.
