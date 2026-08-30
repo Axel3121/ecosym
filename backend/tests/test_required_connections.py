@@ -41,7 +41,12 @@ def hermes_delegations_connection(path: Path) -> dict[str, object]:
                             "item.delegation_id",
                             "item.state",
                             "item.dispatched_at",
-                            "item.completed_at",
+                            {
+                                "coalesce": [
+                                    "item.completed_at",
+                                    {"literal": "absent"},
+                                ]
+                            },
                         ],
                         "source_time": {
                             "coalesce": [
@@ -103,8 +108,18 @@ def hermes_cron_connection(path: Path) -> dict[str, object]:
                             "item.id",
                             "item.status",
                             "item.claimed_at",
-                            "item.started_at",
-                            "item.finished_at",
+                            {
+                                "coalesce": [
+                                    "item.started_at",
+                                    {"literal": "absent"},
+                                ]
+                            },
+                            {
+                                "coalesce": [
+                                    "item.finished_at",
+                                    {"literal": "absent"},
+                                ]
+                            },
                             "item.error_recorded",
                         ],
                         "source_time": {
@@ -260,7 +275,7 @@ def shorts_metrics_connection(
     snapshots_path: Path, analytics_glob: Path
 ) -> dict[str, object]:
     daily_version = ["root.date", "item.video_id"]
-    daily_time = {"field": "root.date", "format": "date"}
+    daily_time = {"field": "root.date", "format": "iso8601"}
     analytics_version = ["root.generated_at", "item.video_id"]
     analytics_window_version = [
         "root.generated_at",
@@ -437,9 +452,9 @@ class RequiredConnectionsTest(unittest.TestCase):
                 (
                     "delegation-1",
                     "session-not-a-delegation",
-                    "completed",
+                    "dispatched",
                     1767355140,
-                    1767355200,
+                    None,
                     sentinel,
                     sentinel,
                     sentinel,
@@ -461,9 +476,9 @@ class RequiredConnectionsTest(unittest.TestCase):
         self.assertEqual(
             records[0].payload,
             {
-                "state": "completed",
+                "state": "dispatched",
                 "dispatched_at": 1767355140,
-                "completed_at": 1767355200,
+                "completed_at": None,
             },
         )
         reader = parse_connection(raw).inputs[0].reader
@@ -505,6 +520,20 @@ class RequiredConnectionsTest(unittest.TestCase):
                     sentinel,
                 ),
             )
+            connection.execute(
+                """
+                INSERT INTO executions VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "execution-2",
+                    "job-2",
+                    "running",
+                    "2026-01-02T12:01:00+00:00",
+                    None,
+                    None,
+                    None,
+                ),
+            )
         connection.close()
         before = source.read_bytes()
         before_mtime = source.stat().st_mtime_ns
@@ -515,10 +544,14 @@ class RequiredConnectionsTest(unittest.TestCase):
         self.assertEqual(codes, (0, 0, 0))
         self.assertEqual(errors, "")
         with ObservationStore(self.layout.database) as store:
-            record = store.observations()[0]
+            records = store.observations()
+        self.assertEqual(len(records), 2)
+        record = records[0]
         self.assertEqual(record.payload["status"], "failed")
         self.assertIs(record.payload["error_recorded"], True)
         self.assertNotIn("error", record.payload)
+        self.assertEqual(records[1].payload["started_at"], None)
+        self.assertEqual(records[1].payload["finished_at"], None)
         self._assert_source_unchanged(source, before, before_mtime)
         self._assert_absent_from_store_and_output(sentinel, output + errors)
 
@@ -603,7 +636,7 @@ class RequiredConnectionsTest(unittest.TestCase):
         snapshots.write_text(
             json.dumps(
                 {
-                    "date": "2026-01-02",
+                    "date": "2026-01-02T00:00:00Z",
                     "source": sentinel,
                     "note": sentinel,
                     "videos": [
@@ -683,7 +716,7 @@ class RequiredConnectionsTest(unittest.TestCase):
             stream.write(
                 json.dumps(
                     {
-                        "date": "2026-01-03",
+                        "date": "2026-01-03T00:00:00Z",
                         "source": sentinel,
                         "note": sentinel,
                         "videos": [
