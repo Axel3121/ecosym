@@ -1,0 +1,311 @@
+"""Durable storage for source-independent observations and claims."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Literal, Self
+
+EpistemicStatus = Literal["observation", "claim"]
+TemporalStatus = Literal["current", "superseded", "unknown"]
+AttemptOutcome = Literal["success", "failed", "skipped"]
+JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
+
+
+@dataclass(frozen=True)
+class Record:
+    adapter: str
+    source: str
+    fact_owner: str
+    source_version: str
+    kind: str
+    subject: str
+    source_time: datetime | None
+    observed_at: datetime
+    temporal_status: TemporalStatus
+    payload: JsonValue
+    cause_type: str | None = None
+    cause_id: str | None = None
+
+
+@dataclass(frozen=True)
+class StoredRecord(Record):
+    id: int = 0
+    epistemic_status: EpistemicStatus = "observation"
+
+
+@dataclass(frozen=True)
+class CollectionAttempt:
+    adapter: str
+    started_at: datetime
+    completed_at: datetime
+    outcome: AttemptOutcome
+    records_seen: int | None = None
+    records_added: int | None = None
+
+
+@dataclass(frozen=True)
+class StoredCollectionAttempt(CollectionAttempt):
+    id: int = 0
+
+
+class ObservationConflictError(ValueError):
+    """The same source identity was presented with different contents."""
+
+
+class ObservationStore:
+    """SQLite-backed, source-independent observation storage."""
+
+    def __init__(self, path: str | Path) -> None:
+        self._connection = sqlite3.connect(path)
+        self._connection.row_factory = sqlite3.Row
+        self._create_schema()
+
+    def close(self) -> None:
+        self._connection.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+    def add_observation(self, record: Record) -> bool:
+        return self._add_record(record, "observation")
+
+    def add_claim(self, record: Record) -> bool:
+        return self._add_record(record, "claim")
+
+    def observations(self) -> list[StoredRecord]:
+        return self._records("observation")
+
+    def claims(self) -> list[StoredRecord]:
+        return self._records("claim")
+
+    def record_attempt(self, attempt: CollectionAttempt) -> StoredCollectionAttempt:
+        _validate_attempt(attempt)
+        with self._connection:
+            cursor = self._connection.execute(
+                """
+                INSERT INTO collection_attempts (
+                    adapter, started_at, completed_at, outcome,
+                    records_seen, records_added
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    _required(attempt.adapter, "adapter"),
+                    _time(attempt.started_at, "started_at"),
+                    _time(attempt.completed_at, "completed_at"),
+                    attempt.outcome,
+                    attempt.records_seen,
+                    attempt.records_added,
+                ),
+            )
+        return StoredCollectionAttempt(**attempt.__dict__, id=cursor.lastrowid)
+
+    def collection_attempts(
+        self, adapter: str | None = None
+    ) -> list[StoredCollectionAttempt]:
+        if adapter is None:
+            rows = self._connection.execute(
+                "SELECT * FROM collection_attempts ORDER BY id"
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                "SELECT * FROM collection_attempts WHERE adapter = ? ORDER BY id",
+                (adapter,),
+            ).fetchall()
+        return [_attempt_from_row(row) for row in rows]
+
+    def _add_record(self, record: Record, epistemic_status: EpistemicStatus) -> bool:
+        values = _record_values(record, epistemic_status)
+        with self._connection:
+            cursor = self._connection.execute(
+                """
+                INSERT OR IGNORE INTO records (
+                    adapter, source, fact_owner, source_version, kind, subject,
+                    source_time, observed_at, temporal_status, epistemic_status,
+                    payload_json, cause_type, cause_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+            if cursor.rowcount == 1:
+                return True
+
+            existing = self._connection.execute(
+                """
+                SELECT adapter, source, fact_owner, source_version, kind, subject,
+                       source_time, temporal_status, epistemic_status,
+                       payload_json, cause_type, cause_id
+                FROM records
+                WHERE adapter = ? AND source = ? AND kind = ? AND subject = ?
+                      AND source_version = ? AND epistemic_status = ?
+                """,
+                (
+                    record.adapter,
+                    record.source,
+                    record.kind,
+                    record.subject,
+                    record.source_version,
+                    epistemic_status,
+                ),
+            ).fetchone()
+            source_contents = values[:7] + values[8:]
+            if tuple(existing) != source_contents:
+                raise ObservationConflictError(
+                    "source identity already exists with different contents"
+                )
+        return False
+
+    def _records(self, epistemic_status: EpistemicStatus) -> list[StoredRecord]:
+        rows = self._connection.execute(
+            "SELECT * FROM records WHERE epistemic_status = ? ORDER BY id",
+            (epistemic_status,),
+        ).fetchall()
+        return [_record_from_row(row) for row in rows]
+
+    def _create_schema(self) -> None:
+        version = self._connection.execute("PRAGMA user_version").fetchone()[0]
+        if version not in (0, 1):
+            raise RuntimeError(
+                f"unsupported observation store schema version: {version}"
+            )
+        if version == 1:
+            return
+
+        with self._connection:
+            self._connection.executescript(
+                """
+                CREATE TABLE records (
+                    id INTEGER PRIMARY KEY,
+                    adapter TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    fact_owner TEXT NOT NULL,
+                    source_version TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    source_time TEXT,
+                    observed_at TEXT NOT NULL,
+                    temporal_status TEXT NOT NULL CHECK (
+                        temporal_status IN ('current', 'superseded', 'unknown')
+                    ),
+                    epistemic_status TEXT NOT NULL CHECK (
+                        epistemic_status IN ('observation', 'claim')
+                    ),
+                    payload_json TEXT NOT NULL,
+                    cause_type TEXT,
+                    cause_id TEXT,
+                    CHECK ((cause_type IS NULL) = (cause_id IS NULL)),
+                    UNIQUE (
+                        adapter, source, kind, subject, source_version,
+                        epistemic_status
+                    )
+                );
+
+                CREATE TABLE collection_attempts (
+                    id INTEGER PRIMARY KEY,
+                    adapter TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    outcome TEXT NOT NULL CHECK (
+                        outcome IN ('success', 'failed', 'skipped')
+                    ),
+                    records_seen INTEGER,
+                    records_added INTEGER
+                );
+
+                PRAGMA user_version = 1;
+                """
+            )
+
+
+def _record_values(
+    record: Record, epistemic_status: EpistemicStatus
+) -> tuple[object, ...]:
+    if record.temporal_status not in ("current", "superseded", "unknown"):
+        raise ValueError(f"invalid temporal_status: {record.temporal_status}")
+    if (record.cause_type is None) != (record.cause_id is None):
+        raise ValueError(
+            "cause_type and cause_id must either both be set or both be absent"
+        )
+
+    return (
+        _required(record.adapter, "adapter"),
+        _required(record.source, "source"),
+        _required(record.fact_owner, "fact_owner"),
+        _required(record.source_version, "source_version"),
+        _required(record.kind, "kind"),
+        _required(record.subject, "subject"),
+        _time(record.source_time, "source_time") if record.source_time else None,
+        _time(record.observed_at, "observed_at"),
+        record.temporal_status,
+        epistemic_status,
+        json.dumps(
+            record.payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ),
+        record.cause_type,
+        record.cause_id,
+    )
+
+
+def _validate_attempt(attempt: CollectionAttempt) -> None:
+    if attempt.outcome not in ("success", "failed", "skipped"):
+        raise ValueError(f"invalid attempt outcome: {attempt.outcome}")
+    if attempt.completed_at < attempt.started_at:
+        raise ValueError("completed_at must not be before started_at")
+    if attempt.outcome == "success":
+        if attempt.records_seen is None or attempt.records_added is None:
+            raise ValueError("successful attempts require seen and added record counts")
+        if not 0 <= attempt.records_added <= attempt.records_seen:
+            raise ValueError("record counts must satisfy 0 <= added <= seen")
+    elif attempt.records_seen is not None or attempt.records_added is not None:
+        raise ValueError("non-successful attempts cannot report record counts")
+
+
+def _required(value: str, name: str) -> str:
+    if not value:
+        raise ValueError(f"{name} must not be empty")
+    return value
+
+
+def _time(value: datetime, name: str) -> str:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{name} must include a timezone")
+    return value.isoformat()
+
+
+def _record_from_row(row: sqlite3.Row) -> StoredRecord:
+    return StoredRecord(
+        id=row["id"],
+        adapter=row["adapter"],
+        source=row["source"],
+        fact_owner=row["fact_owner"],
+        source_version=row["source_version"],
+        kind=row["kind"],
+        subject=row["subject"],
+        source_time=datetime.fromisoformat(row["source_time"])
+        if row["source_time"]
+        else None,
+        observed_at=datetime.fromisoformat(row["observed_at"]),
+        temporal_status=row["temporal_status"],
+        epistemic_status=row["epistemic_status"],
+        payload=json.loads(row["payload_json"]),
+        cause_type=row["cause_type"],
+        cause_id=row["cause_id"],
+    )
+
+
+def _attempt_from_row(row: sqlite3.Row) -> StoredCollectionAttempt:
+    return StoredCollectionAttempt(
+        id=row["id"],
+        adapter=row["adapter"],
+        started_at=datetime.fromisoformat(row["started_at"]),
+        completed_at=datetime.fromisoformat(row["completed_at"]),
+        outcome=row["outcome"],
+        records_seen=row["records_seen"],
+        records_added=row["records_added"],
+    )

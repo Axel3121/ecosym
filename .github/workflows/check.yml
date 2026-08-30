@@ -96,15 +96,18 @@ jobs:
       - name: compile
         run: python -m compileall -q .
 
-      # SECURITY.md: databasen åpnes read-only. Dette beviser at kilden
-      # ikke inneholder skrivende SQL mot Hermes-tilstand.
-      - name: verify read-only access
+      - name: test
+        run: python -m unittest discover -s tests -v
+
+      # SECURITY.md: Hermes-databasen åpnes read-only. Axeys egen
+      # observasjonsdatabase er derimot et skrivbart, eid lager.
+      - name: verify read-only Hermes access
         run: |
-          if grep -nE '\b(INSERT|UPDATE|DELETE|DROP|ALTER)\b' *.py; then
+          if grep -nE '\b(INSERT|UPDATE|DELETE|DROP|ALTER)\b' axey.py; then
             echo "::error::skrivende SQL funnet — backend skal være read-only"
             exit 1
           fi
-          if ! grep -q 'mode=ro' *.py; then
+          if ! grep -q 'mode=ro' axey.py; then
             echo "::error::fant ingen mode=ro — tilkoblingen må være read-only"
             exit 1
           fi
