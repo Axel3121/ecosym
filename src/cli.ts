@@ -128,6 +128,7 @@ async function collect(store: ObservationStore, arguments_: string[]): Promise<C
         sourceRecordsSeen: report.result.sourceRecordsSeen,
         factsSeen: report.result.factsSeen,
         factsAdded: report.result.factsAdded,
+        factsChanged: report.result.factsChanged,
       });
     } catch (error) {
       failures += 1;

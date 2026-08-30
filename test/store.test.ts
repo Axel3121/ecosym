@@ -448,6 +448,7 @@ test("version-one correction history stays unknown until it is observed again", 
 
   const migrated = new ObservationStore(directory);
   try {
+    assert.equal(migrated.statuses()[0]?.reason, "never-run");
     assert.deepEqual(
       migrated.queryObservations().map((record) => record.temporalStatus),
       ["unknown", "unknown"],
@@ -537,6 +538,61 @@ test("store contention waits until a failed attempt can be recorded", async () =
     await attempted;
     assert.equal(store.statuses()[0]?.status, "unread");
     assert.equal(store.statuses()[0]?.reason, "failed");
+  } finally {
+    store.close();
+  }
+});
+
+test("collection time starts after store-contention admission", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-collection-time-"));
+  const store = new ObservationStore(directory, 20);
+  const parsed = connection();
+  store.register(parsed);
+  const active = store.getConnection(parsed.config.id);
+  const blocker = new DatabaseSync(store.path);
+  blocker.exec("BEGIN IMMEDIATE");
+  const collected = store.collect(active, (sink) => sink.writeFact(fact()));
+  await delay(75);
+  blocker.exec("ROLLBACK");
+  const admittedAfter = Date.now();
+  blocker.close();
+
+  try {
+    await collected;
+    const observation = store.queryObservations()[0];
+    assert.ok(observation);
+    assert.ok(Date.parse(observation.collectedAt) >= admittedAfter);
+  } finally {
+    store.close();
+  }
+});
+
+test("corrections remain ordered across configuration revisions", async () => {
+  const { store } = temporaryStore();
+  const first = connection();
+  store.register(first);
+  await store.collect(store.getConnection(first.config.id), (sink) => {
+    sink.writeFact(fact({ payload: { value: 7 } }));
+  });
+  store.disconnect(first.config.id);
+  const secondInput = JSON.parse(
+    parseConnectionConfigInput(first.config.id, first.config.factOwner),
+  ) as { reader: { path: string } };
+  secondInput.reader.path = "/different-source.jsonl";
+  const second = parseConnectionConfig(secondInput);
+  store.register(second);
+  await store.collect(store.getConnection(second.config.id), (sink) => {
+    sink.writeFact(fact({ payload: { value: 12 } }));
+  });
+
+  try {
+    assert.deepEqual(
+      store.queryObservations().map((record) => [record.payload.value, record.temporalStatus]),
+      [
+        [7, "historical"],
+        [12, "current"],
+      ],
+    );
   } finally {
     store.close();
   }

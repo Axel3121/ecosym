@@ -106,9 +106,11 @@ ordering, so a late older value remains historical.
 Two payloads under the same source identity and source time are corrections,
 not later time-series points. The payload seen by the highest admitted
 collection attempt is current; older payloads remain queryable as historical.
-Concurrent attempts cannot move that order backward. If a migrated store lacks
-enough evidence to know which correction was last, both remain `unknown` until
-the source version is observed again.
+Concurrent attempts cannot move that order backward, and a configuration
+revision does not split a fact's correction history. If payloads tie at the
+latest attempt, or if a migrated store lacks enough evidence to know which
+correction was last, they remain `unknown` until the source version is observed
+again.
 
 `retention: "history"` means previously collected source versions must remain
 verifiable at the source. `retention: "latest"` allows a strictly newer source
@@ -136,9 +138,10 @@ connection lifetime in the transaction that writes facts, so a collector that
 was reading while disconnect completed cannot persist its buffered records
 afterward, even if the same configuration is reconnected.
 
-Status is `changed` after a successful attempt that added facts, `quiet` after
-a successful attempt that added none, and `unread` after failure, skip,
-incomplete work, or no attempt. A marker is committed before source reading;
+Status is `changed` after a successful attempt that added a fact or changed
+which correction is current, `quiet` after a successful attempt that did
+neither, and `unread` after failure, skip, incomplete work, or no attempt. A
+marker is committed before source reading;
 facts and successful completion are then committed together. If the process
 stops between those points, the marker remains `incomplete` rather than
 revealing the previous success as current. `Incomplete` is deliberately neutral:

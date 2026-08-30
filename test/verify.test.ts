@@ -241,3 +241,23 @@ test("a source version that asserts two payloads is disagreement", async () => {
     store.close();
   }
 });
+
+test("a collected source-version conflict is unknown in queries", async () => {
+  const { parsed, sourcePath, store } = setup();
+  try {
+    const original = readFileSync(join(fixtures, "original.jsonl"), "utf8").trim();
+    const corrupted = readFileSync(join(fixtures, "corrupted.jsonl"), "utf8").trim();
+    writeFileSync(sourcePath, `${original}\n${corrupted}\n`);
+    await collectConnection(store, parsed.config.id);
+
+    assert.deepEqual(
+      store.queryObservations().map((record) => record.temporalStatus),
+      ["unknown", "unknown"],
+    );
+    const report = await verifyConnection(store, store.getConnection(parsed.config.id));
+    assert.equal(report.outcome, "disagreement");
+    assert.equal(report.counts.sourceVersionConflict, 1);
+  } finally {
+    store.close();
+  }
+});

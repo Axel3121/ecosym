@@ -172,7 +172,10 @@ test("a corrected source version has one current payload, including after revers
       .prepare("UPDATE measurements SET public_value = ? WHERE record_id = ?")
       .run(7, "record-1");
     reversion.close();
-    await collectConnection(store, parsed.config.id);
+    const reversionReport = await collectConnection(store, parsed.config.id);
+    assert.equal(reversionReport.result.factsAdded, 0);
+    assert.equal(reversionReport.result.factsChanged, 1);
+    assert.equal(store.statuses()[0]?.status, "changed");
     assert.deepEqual(
       store.queryObservations().map((point) => [point.payload.value, point.temporalStatus]),
       [
