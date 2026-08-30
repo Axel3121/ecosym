@@ -31,3 +31,8 @@ app/dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Skill tooling, not product
+.agents/
+.claude/
+skills-lock.json
