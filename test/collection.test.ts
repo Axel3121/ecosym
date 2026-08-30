@@ -7,7 +7,11 @@ import { test } from "node:test";
 
 import { collectConnection } from "../src/collect.ts";
 import { parseConnectionConfig } from "../src/config.ts";
-import { openFileReadOnly, openSqliteReadOnly } from "../src/readers.ts";
+import {
+  openFileReadOnly,
+  openSqliteReadOnly,
+  SourceReadError,
+} from "../src/readers.ts";
 import { CollectionFailedError, ObservationStore } from "../src/store.ts";
 
 function workspace(): string {
@@ -358,6 +362,16 @@ test("source helpers refuse writes through every reader's open path", async () =
   } finally {
     check.close();
   }
+});
+
+test("an existing path SQLite cannot open is unreadable rather than absent", () => {
+  const directory = workspace();
+
+  assert.throws(
+    () => openSqliteReadOnly(directory),
+    (error: unknown) =>
+      error instanceof SourceReadError && error.code === "source_unreadable",
+  );
 });
 
 test("two connections sharing a reader keep attempts and status isolated", async () => {

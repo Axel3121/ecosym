@@ -311,7 +311,7 @@ function sourceError(error: unknown): SourceReadError {
   if (error instanceof SourceReadError) {
     return error;
   }
-  if (isErrorCode(error, "ENOENT") || sqliteErrorCode(error) === 14) {
+  if (isErrorCode(error, "ENOENT")) {
     return new SourceReadError("source_absent", error);
   }
   if (sqliteErrorCode(error) === 5 || sqliteErrorCode(error) === 6) {
@@ -319,6 +319,9 @@ function sourceError(error: unknown): SourceReadError {
   }
   if (isErrorCode(error, "EACCES") || isErrorCode(error, "EPERM")) {
     return new SourceReadError("source_unreadable", error);
+  }
+  if (sqliteErrorCode(error) === 11 || sqliteErrorCode(error) === 26) {
+    return new SourceReadError("source_malformed", error);
   }
   return new SourceReadError("source_unreadable", error);
 }
