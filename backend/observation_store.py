@@ -1,8 +1,11 @@
 """Durable storage for source-independent observations and claims.
 
 A fact is identified by its owner, kind, and subject. Provenance and source
-versions identify statements about that fact, not the fact itself. When an
-observation arrives, it supersedes current claims for the same fact.
+versions identify statements about that fact, not the fact itself. A current
+observation supersedes current observations for the same fact only when its
+source time is strictly newer, so an out-of-order backfill cannot replace newer
+truth. When an observation arrives, it also supersedes current claims for the
+same fact.
 
 Stored records are immutable through this module: supersession is recorded
 separately, and the store never updates or deletes a record. This is a property
@@ -92,6 +95,9 @@ class ObservationStore:
     def observations(self) -> list[StoredRecord]:
         return self._records("observation")
 
+    def current_observations(self) -> list[StoredRecord]:
+        return self._records("observation", current_only=True)
+
     def claims(self) -> list[StoredRecord]:
         return self._records("claim")
 
@@ -148,6 +154,7 @@ class ObservationStore:
             )
             if cursor.rowcount == 1:
                 if epistemic_status == "observation":
+                    self._supersede_observations(cursor.lastrowid, record)
                     self._supersede_claims(cursor.lastrowid, record)
                 return True
 
@@ -189,8 +196,54 @@ class ObservationStore:
                         record.source_version,
                     ),
                 ).fetchone()[0]
+                self._supersede_observations(observation_id, record)
                 self._supersede_claims(observation_id, record)
         return False
+
+    def _supersede_observations(self, observation_id: int, record: Record) -> None:
+        if record.temporal_status != "current" or record.source_time is None:
+            return
+
+        candidates = self._connection.execute(
+            """
+            SELECT id, source_time FROM records
+            WHERE id != ? AND epistemic_status = 'observation'
+                  AND temporal_status = 'current' AND source_time IS NOT NULL
+                  AND fact_owner = ? AND kind = ? AND subject = ?
+            """,
+            (observation_id, record.fact_owner, record.kind, record.subject),
+        ).fetchall()
+        earlier_ids = [
+            candidate["id"]
+            for candidate in candidates
+            if datetime.fromisoformat(candidate["source_time"]) < record.source_time
+        ]
+        self._connection.executemany(
+            """
+            INSERT OR IGNORE INTO observation_supersessions (
+                observation_id, superseding_observation_id
+            ) VALUES (?, ?)
+            """,
+            ((earlier_id, observation_id) for earlier_id in earlier_ids),
+        )
+        later = max(
+            (
+                (datetime.fromisoformat(candidate["source_time"]), candidate["id"])
+                for candidate in candidates
+                if datetime.fromisoformat(candidate["source_time"])
+                > record.source_time
+            ),
+            default=None,
+        )
+        if later is not None:
+            self._connection.execute(
+                """
+                INSERT OR IGNORE INTO observation_supersessions (
+                    observation_id, superseding_observation_id
+                ) VALUES (?, ?)
+                """,
+                (observation_id, later[1]),
+            )
 
     def _supersede_claims(self, observation_id: int, record: Record) -> None:
         self._connection.execute(
@@ -206,18 +259,25 @@ class ObservationStore:
     def _records(
         self, epistemic_status: EpistemicStatus, current_only: bool = False
     ) -> list[StoredRecord]:
+        supersession_column = (
+            "claim_supersessions.claim_id"
+            if epistemic_status == "claim"
+            else "observation_supersessions.observation_id"
+        )
         current_filter = (
-            " AND records.temporal_status = 'current'"
-            " AND claim_supersessions.claim_id IS NULL"
+            f" AND records.temporal_status = 'current'"
+            f" AND {supersession_column} IS NULL"
             if current_only
             else ""
         )
         rows = self._connection.execute(
             f"""
             SELECT records.*,
-                   claim_supersessions.claim_id IS NOT NULL AS is_superseded
+                   ({supersession_column} IS NOT NULL) AS is_superseded
             FROM records
             LEFT JOIN claim_supersessions ON claim_supersessions.claim_id = records.id
+            LEFT JOIN observation_supersessions
+                ON observation_supersessions.observation_id = records.id
             WHERE epistemic_status = ?{current_filter}
             ORDER BY id
             """,
@@ -227,11 +287,11 @@ class ObservationStore:
 
     def _create_schema(self) -> None:
         version = self._connection.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2):
+        if version not in (0, 1, 2, 3):
             raise RuntimeError(
                 f"unsupported observation store schema version: {version}"
             )
-        if version == 2:
+        if version == 3:
             return
 
         with self._connection:
@@ -277,14 +337,23 @@ class ObservationStore:
                 );
                 """
                 )
-            self._connection.executescript(
-                """
-                CREATE TABLE claim_supersessions (
+            if version < 2:
+                self._connection.executescript(
+                    """
+                CREATE TABLE IF NOT EXISTS claim_supersessions (
                     claim_id INTEGER PRIMARY KEY REFERENCES records(id),
                     observation_id INTEGER NOT NULL REFERENCES records(id)
                 );
+                    """
+                )
+            self._connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS observation_supersessions (
+                    observation_id INTEGER PRIMARY KEY REFERENCES records(id),
+                    superseding_observation_id INTEGER NOT NULL REFERENCES records(id)
+                );
 
-                PRAGMA user_version = 2;
+                PRAGMA user_version = 3;
                 """
             )
 

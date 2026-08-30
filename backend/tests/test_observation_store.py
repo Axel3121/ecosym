@@ -74,6 +74,49 @@ class ObservationStoreTest(unittest.TestCase):
         self.assertEqual(historical_claims[0].temporal_status, "superseded")
         self.assertEqual(len(self.store.observations()), 1)
 
+    def test_newer_observation_retires_earlier_without_removing_it(self) -> None:
+        earlier = self.record()
+        newer = self.record(
+            source_version="event-2",
+            source_time=earlier.source_time + timedelta(hours=1),
+            observed_at=earlier.observed_at + timedelta(hours=1),
+            payload={"value": 12},
+        )
+
+        self.store.add_observation(earlier)
+        self.store.add_observation(newer)
+
+        self.assertEqual(
+            self.store.current_observations(), [self.store.observations()[1]]
+        )
+        history = self.store.observations()
+        self.assertEqual(
+            [record.payload for record in history], [{"value": 7}, {"value": 12}]
+        )
+        self.assertEqual(
+            [record.temporal_status for record in history], ["superseded", "current"]
+        )
+
+    def test_out_of_order_observation_does_not_replace_newer_current_truth(self) -> None:
+        newer = self.record(
+            source_version="event-2",
+            source_time=self.observed_at + timedelta(hours=1),
+            payload={"value": 12},
+        )
+        backfill = self.record(observed_at=self.observed_at + timedelta(hours=2))
+
+        self.store.add_observation(newer)
+        self.store.add_observation(backfill)
+
+        self.assertEqual(
+            [record.payload for record in self.store.current_observations()],
+            [{"value": 12}],
+        )
+        self.assertEqual(
+            [record.temporal_status for record in self.store.observations()],
+            ["current", "superseded"],
+        )
+
     def test_unchanged_source_record_is_not_duplicated(self) -> None:
         record = self.record()
         collected_again = replace(
@@ -116,6 +159,21 @@ class ObservationStoreTest(unittest.TestCase):
         )
         self.assertEqual(self.store.current_claims(), [])
         self.assertEqual(self.store.claims()[0].temporal_status, "superseded")
+
+    def test_version_two_store_migrates_without_rewriting_records(self) -> None:
+        record = self.record()
+        self.store.add_observation(record)
+        original = self.store.observations()[0]
+        self.store.close()
+        with sqlite3.connect(self.store_path) as connection:
+            connection.execute("DROP TABLE observation_supersessions")
+            connection.execute("PRAGMA user_version = 2")
+
+        self.store = ObservationStore(self.store_path)
+
+        self.assertEqual(self.store.observations(), [original])
+        with sqlite3.connect(self.store_path) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
 
     def test_changed_value_adds_to_the_time_series(self) -> None:
         first = self.record()
