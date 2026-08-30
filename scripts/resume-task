@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Resume the most recent task run where it stopped.
+# Usage: resume-task [message]
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+MODEL="${AXEY_MODEL:-openai/gpt-5.6-sol}"
+RUNS="$HOME/.local/share/axey/runs"
+MSG="${1:-Continue the task you were working on, from where you stopped. Check git log and the working tree first to see what is already done.}"
+
+UNIT="axey-resume-$(date +%s)"
+LOG="$RUNS/${UNIT}.log"
+PORT="$((4570 + RANDOM % 400))"
+mkdir -p "$RUNS"
+echo "$PORT" > "$RUNS/${UNIT}.port"
+
+echo "unit: $UNIT"
+echo "log:  $LOG"
+
+systemd-run --user --unit="$UNIT" --collect \
+  --working-directory="$PWD" \
+  --property=StandardOutput="append:$LOG" \
+  --property=StandardError="append:$LOG" \
+  "$HOME/bin/axey-sandbox" run --model "$MODEL" --variant max --port "$PORT" -c "$MSG"

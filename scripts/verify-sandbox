@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Verify the sandbox filesystem boundary. No model involved: this runs a shell
+# inside the same sandbox the agent gets, and checks what it can reach.
+set -uo pipefail
+
+PASS=0
+FAIL=0
+
+check() {
+  if [ "$2" = "$3" ]; then
+    printf 'PASS  %-44s %s\n' "$1" "$3"; PASS=$((PASS+1))
+  else
+    printf 'FAIL  %-44s expected=%s got=%s\n' "$1" "$2" "$3"; FAIL=$((FAIL+1))
+  fi
+}
+
+# Run a snippet inside the sandbox and return its last line.
+inside() {
+  AXEY_SANDBOX_EXEC=/usr/bin/bash "$HOME/bin/axey-sandbox" -c "$1" 2>/dev/null | tail -1
+}
+
+echo "=== secrets must be unreachable ==="
+check "hermes auth.json"      hidden "$(inside 'test -e "$HOME/.hermes/auth.json" && echo visible || echo hidden')"
+check "ssh keys"              hidden "$(inside 'test -e "$HOME/.ssh" && echo visible || echo hidden')"
+check "shell rc"              hidden "$(inside 'test -e "$HOME/.bashrc" && echo visible || echo hidden')"
+check "browser/home at large" hidden "$(inside 'test -e "$HOME/Documents" && echo visible || echo hidden')"
+
+echo
+echo "=== sources must be readable ==="
+check "hermes state.db"       visible "$(inside 'test -r "$HOME/.hermes/state.db" && echo visible || echo hidden')"
+check "hermes cron dir"       visible "$(inside 'test -r "$HOME/.hermes/cron" && echo visible || echo hidden')"
+check "shorts-content"        visible "$(inside 'test -r "$HOME/shorts-content" && echo visible || echo hidden')"
+
+echo
+echo "=== sources must not be writable ==="
+check "state.db read-only"    readonly "$(inside 'touch "$HOME/.hermes/state.db" 2>/dev/null && echo writable || echo readonly')"
+check "shorts read-only"      readonly "$(inside 'touch "$HOME/shorts-content/x" 2>/dev/null && echo writable || echo readonly')"
+check "cron read-only"        readonly "$(inside 'touch "$HOME/.hermes/cron/x" 2>/dev/null && echo writable || echo readonly')"
+
+echo
+echo "=== work areas must be writable ==="
+check "project writable"      writable "$(inside 'touch "$HOME/projects/axey/.probe" 2>/dev/null && rm -f "$HOME/projects/axey/.probe" && echo writable || echo readonly')"
+check "axey state writable"   writable "$(inside 'touch "$HOME/.local/share/axey/.probe" 2>/dev/null && rm -f "$HOME/.local/share/axey/.probe" && echo writable || echo readonly')"
+
+echo
+echo "=== network must work ==="
+check "dns resolves"          ok "$(inside 'getent hosts api.openai.com >/dev/null 2>&1 && echo ok || echo broken')"
+
+echo
+printf '%d passed, %d failed\n' "$PASS" "$FAIL"
+[ "$FAIL" -eq 0 ]
