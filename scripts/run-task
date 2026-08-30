@@ -15,14 +15,19 @@ MSG="Implement the attached task specification in full. It is large by design - 
 # Run under a transient user unit so the work survives a Hermes restart.
 # The sandbox keeps --die-with-parent, but its parent is now systemd, not us.
 UNIT="axey-task-${TASK}-$(date +%s)"
-LOG="$HOME/.local/share/axey/runs/${UNIT}.log"
-mkdir -p "$(dirname "$LOG")"
+RUNS="$HOME/.local/share/axey/runs"
+LOG="$RUNS/${UNIT}.log"
+PORT="${AXEY_PORT:-4577}"
+mkdir -p "$RUNS"
+
+echo "$PORT" > "$RUNS/${UNIT}.port"
 
 echo "unit: $UNIT"
 echo "log:  $LOG"
+echo "port: $PORT"
 
 systemd-run --user --unit="$UNIT" --collect \
   --working-directory="$PWD" \
   --property=StandardOutput="append:$LOG" \
   --property=StandardError="append:$LOG" \
-  "$HOME/bin/axey-sandbox" run --model "$MODEL" --variant max "$MSG" -f "$SPEC"
+  "$HOME/bin/axey-sandbox" run --model "$MODEL" --variant max --port "$PORT" "$MSG" -f "$SPEC"

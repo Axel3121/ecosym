@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Send a message to a running task's OpenCode session.
+# Usage: task-say "your message"        (most recent run)
+#        task-say -u <unit> "message"
+set -euo pipefail
+
+RUNS="$HOME/.local/share/axey/runs"
+UNIT=""
+
+if [ "${1:-}" = "-u" ]; then
+  UNIT="$2"; shift 2
+fi
+
+if [ -z "$UNIT" ]; then
+  UNIT="$(ls -t "$RUNS"/*.port 2>/dev/null | head -1 | xargs -r basename | sed 's/\.port$//')"
+fi
+
+[ -n "${UNIT:-}" ] || { echo "no run with a port found" >&2; exit 1; }
+[ $# -ge 1 ] || { echo "usage: task-say [-u unit] <message>" >&2; exit 1; }
+
+PORT="$(cat "$RUNS/$UNIT.port")"
+
+exec "$HOME/.opencode/bin/opencode" run \
+  --attach "http://localhost:$PORT" "$@"
