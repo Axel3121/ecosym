@@ -83,6 +83,17 @@ export function parseConnectionConfig(input: unknown): ParsedConnectionConfig {
     sourceRecord: parseSourceRecord(root.sourceRecord),
     facts: factsInput.map((fact, index) => parseFact(fact, index)),
   };
+  if (
+    config.reader.type === "sqlite" &&
+    selectorsIn(config).some(
+      (selector) =>
+        "scope" in selector &&
+        (selector.scope === "record" || selector.scope === "root") &&
+        selector.path.includes("."),
+    )
+  ) {
+    throw new ConfigError("SQLite selectors must name top-level columns");
+  }
   const canonical = canonicalJson(config as unknown as JsonValue);
   return { config, canonical, hash: sha256(canonical) };
 }

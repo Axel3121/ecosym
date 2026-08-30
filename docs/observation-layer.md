@@ -66,6 +66,23 @@ accidentally admit all of its children. SQLite readers derive the `SELECT`
 column list from these selectors and open a `file:` URL with `mode=ro` plus
 Node's `readOnly` option. File readers open descriptors with the `r` flag.
 
+Reader objects have these exact forms:
+
+| Type | Properties | Record shape |
+| --- | --- | --- |
+| `sqlite` | `path`, `table` | One table row. Selectors name top-level columns only. |
+| `jsonl` | `path` | One object per nonblank line; `root` and `record` are the same object. |
+| `json` | `pathPattern`, `recordsPath` | The pattern must match at least one JSON file. `recordsPath` is a dot-separated path to an array; `root` is the document and `record` is an array member. |
+| `csv` | `path`, one-character `delimiter` | The first row supplies unique headers. Every selected field is a string. |
+
+A direct selector is `{ "scope": "record", "path": "field.name" }`, a
+root selector changes the scope to `root`, and source metadata is selected with
+`{ "scope": "meta", "value": "source-path" }` or `record-index`.
+`{ "coalesce": [SELECTOR, ...] }` chooses the first present non-null value.
+`{ "default": SCALAR, "selector": SELECTOR }` replaces missing or null.
+Source time formats are `iso8601`, `date`, `unix-seconds`, and
+`unix-milliseconds`.
+
 ### Identity and time without native fields
 
 Identity selectors are hashed into an opaque, deterministic source-record ID.
@@ -107,12 +124,17 @@ Registration stores a canonical configuration revision and its hash in one
 SQLite transaction. Registering the same ID and revision is idempotent;
 registering a different revision under an active ID fails. Disconnect first to
 change it. Disconnecting removes only the active pointer and never deletes
-facts or their configuration revision.
+facts or their configuration revision. Collection rechecks that exact active
+revision in the transaction that writes facts, so a collector that was reading
+while disconnect completed cannot persist its buffered records afterward.
 
 Status is `changed` after a successful attempt that added facts, `quiet` after
-a successful attempt that added none, and `unread` after failure, skip, or no
-attempt. Two connections have separate revisions, attempts, and status even
-when they use the same reader.
+a successful attempt that added none, and `unread` after failure, skip,
+interruption, or no attempt. A running marker is committed before source reading;
+facts and successful completion are then committed together. If the process
+stops between those points, the marker remains `interrupted` rather than
+revealing the previous success as current. Two connections have separate
+revisions, attempts, and status even when they use the same reader.
 
 ## Verification result
 

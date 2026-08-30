@@ -134,6 +134,37 @@ test("a newer source value is advancement rather than payload disagreement", asy
   }
 });
 
+test("a late intermediate source point is uncollected rather than advancement", async () => {
+  const { parsed, sourcePath, store } = setup("history");
+  try {
+    writeFileSync(
+      sourcePath,
+      [
+        '{"record_id":"record-1","subject":"subject-1","recorded_at":"2026-08-30T00:00:00Z","value":7}',
+        '{"record_id":"record-3","subject":"subject-1","recorded_at":"2026-09-01T00:00:00Z","value":14}',
+        "",
+      ].join("\n"),
+    );
+    await collectConnection(store, parsed.config.id);
+    writeFileSync(
+      sourcePath,
+      [
+        '{"record_id":"record-1","subject":"subject-1","recorded_at":"2026-08-30T00:00:00Z","value":7}',
+        '{"record_id":"record-2","subject":"subject-1","recorded_at":"2026-08-31T00:00:00Z","value":12}',
+        '{"record_id":"record-3","subject":"subject-1","recorded_at":"2026-09-01T00:00:00Z","value":14}',
+        "",
+      ].join("\n"),
+    );
+
+    const report = await verifyConnection(store, store.getConnection(parsed.config.id));
+    assert.equal(report.counts.advanced, 0);
+    assert.equal(report.counts.uncollected, 1);
+    assert.equal(report.outcome, "disagreement");
+  } finally {
+    store.close();
+  }
+});
+
 test("history retention still reports an older source version that disappeared", async () => {
   const { parsed, sourcePath, store } = setup("history");
   try {

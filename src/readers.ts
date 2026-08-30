@@ -23,8 +23,8 @@ export class SourceReadError extends Error {
     | "source_mapping_invalid"
     | "source_unreadable";
 
-  constructor(code: SourceReadError["code"], cause?: unknown) {
-    super(code.replaceAll("_", " "), { cause });
+  constructor(code: SourceReadError["code"], _cause?: unknown) {
+    super(code.replaceAll("_", " "));
     this.name = "SourceReadError";
     this.code = code;
   }

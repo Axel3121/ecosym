@@ -11,7 +11,7 @@ import {
 import { canonicalJson, type JsonScalar, type JsonValue, sha256 } from "./json.ts";
 import { defaultStateDirectory } from "./paths.ts";
 
-const STORE_SCHEMA_VERSION = 1;
+const STORE_SCHEMA_VERSION = 2;
 const STORE_FILENAME = "observations.sqlite";
 
 export interface ActiveConnection {
@@ -60,7 +60,13 @@ export interface CollectionResult {
 export interface ConnectionStatus {
   connectionId: string;
   lastAttemptAt: null | string;
-  reason: "collected" | "failed" | "never-run" | "nothing-new" | "skipped";
+  reason:
+    | "collected"
+    | "failed"
+    | "interrupted"
+    | "never-run"
+    | "nothing-new"
+    | "skipped";
   status: "changed" | "quiet" | "unread";
 }
 
@@ -76,18 +82,14 @@ export interface VerificationFact {
 
 export interface CollectionSink {
   recordSourceRecord(): void;
-  writeFact(fact: FactInput): boolean;
-}
-
-export interface SafeFailure {
-  readonly code: string;
+  writeFact(fact: FactInput): void;
 }
 
 export class ConnectionConflictError extends Error {
   readonly code = "connection_conflict";
 
-  constructor(connectionId: string) {
-    super(`A different configuration is already connected as ${connectionId}`);
+  constructor(_connectionId: string) {
+    super("A different configuration is already connected under this id");
     this.name = "ConnectionConflictError";
   }
 }
@@ -95,9 +97,18 @@ export class ConnectionConflictError extends Error {
 export class ConnectionNotFoundError extends Error {
   readonly code = "connection_not_found";
 
-  constructor(connectionId: string) {
-    super(`No active connection is registered as ${connectionId}`);
+  constructor(_connectionId: string) {
+    super("No active connection is registered under this id");
     this.name = "ConnectionNotFoundError";
+  }
+}
+
+export class ConnectionInactiveError extends Error {
+  readonly code = "connection_inactive";
+
+  constructor(_connectionId: string) {
+    super("The connection revision is no longer active");
+    this.name = "ConnectionInactiveError";
   }
 }
 
@@ -105,8 +116,8 @@ export class CollectionFailedError extends Error {
   readonly attemptId: string;
   readonly code: string;
 
-  constructor(attemptId: string, code: string, cause: unknown) {
-    super("Collection failed", { cause });
+  constructor(attemptId: string, code: string) {
+    super("Collection failed");
     this.name = "CollectionFailedError";
     this.attemptId = attemptId;
     this.code = code;
@@ -227,29 +238,32 @@ export class ObservationStore {
     let sourceRecordsSeen = 0;
     let factsSeen = 0;
     let factsAdded = 0;
+    const preparedFacts: PreparedFact[] = [];
+    let attemptOrder: number;
 
-    this.#database.exec("BEGIN IMMEDIATE");
     try {
-      this.#database
-        .prepare(
-          `INSERT INTO collection_attempts
-             (attempt_id, connection_id, config_hash, started_at, outcome,
-              source_records_seen, facts_seen, facts_added)
-           VALUES (?, ?, ?, ?, 'running', 0, 0, 0)`,
-        )
-        .run(
-          attemptId,
-          connection.config.id,
-          connection.configHash,
-          startedAt,
-        );
-      const insert = this.#database.prepare(
-        `INSERT OR IGNORE INTO facts
-           (connection_id, config_hash, attempt_id, fact_owner, kind, subject,
-            epistemic_status, source_record_id, source_recorded_at, source_time_key,
-            payload_json, payload_hash, collected_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      );
+      attemptOrder = this.#transaction(() => {
+        this.#assertActive(connection);
+        const result = this.#database
+          .prepare(
+            `INSERT INTO collection_attempts
+               (attempt_id, connection_id, config_hash, started_at, outcome,
+                source_records_seen, facts_seen, facts_added)
+             VALUES (?, ?, ?, ?, 'running', 0, 0, 0)`,
+          )
+          .run(
+            attemptId,
+            connection.config.id,
+            connection.configHash,
+            startedAt,
+          );
+        return Number(result.lastInsertRowid);
+      });
+    } catch (error) {
+      throw new CollectionFailedError(attemptId, safeFailureCode(error));
+    }
+
+    try {
       const sink: CollectionSink = {
         recordSourceRecord: () => {
           sourceRecordsSeen += 1;
@@ -258,6 +272,33 @@ export class ObservationStore {
           factsSeen += 1;
           validateFact(fact);
           const payloadJson = canonicalJson(fact.payload);
+          preparedFacts.push({
+            ...fact,
+            payloadJson,
+            payloadHash: sha256(payloadJson),
+          });
+        },
+      };
+
+      await producer(sink);
+      const completedAt = now().toISOString();
+      this.#transaction(() => {
+        this.#assertActive(connection);
+        const insert = this.#database.prepare(
+          `INSERT OR IGNORE INTO facts
+             (connection_id, config_hash, attempt_id, fact_owner, kind, subject,
+              epistemic_status, source_record_id, source_recorded_at, source_time_key,
+              payload_json, payload_hash, collected_at, last_seen_attempt_order)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        );
+        const markSeen = this.#database.prepare(
+          `UPDATE facts
+              SET last_seen_attempt_order = ?
+            WHERE connection_id = ? AND config_hash = ? AND fact_owner = ?
+              AND kind = ? AND subject = ? AND epistemic_status = ?
+              AND source_record_id = ? AND source_time_key = ? AND payload_hash = ?`,
+        );
+        for (const fact of preparedFacts) {
           const result = insert.run(
             connection.config.id,
             connection.configHash,
@@ -269,29 +310,40 @@ export class ObservationStore {
             fact.sourceRecordId,
             fact.sourceRecordedAt,
             fact.sourceRecordedAt ?? "",
-            payloadJson,
-            sha256(payloadJson),
+            fact.payloadJson,
+            fact.payloadHash,
             startedAt,
+            attemptOrder,
           );
-          const added = numberOfChanges(result) === 1;
-          if (added) {
+          if (numberOfChanges(result) === 1) {
             factsAdded += 1;
+          } else {
+            markSeen.run(
+              attemptOrder,
+              connection.config.id,
+              connection.configHash,
+              fact.factOwner,
+              fact.kind,
+              fact.subject,
+              fact.epistemicStatus,
+              fact.sourceRecordId,
+              fact.sourceRecordedAt ?? "",
+              fact.payloadHash,
+            );
           }
-          return added;
-        },
-      };
-
-      await producer(sink);
-      const completedAt = now().toISOString();
-      this.#database
-        .prepare(
-          `UPDATE collection_attempts
-              SET completed_at = ?, outcome = 'success', source_records_seen = ?,
-                  facts_seen = ?, facts_added = ?
-            WHERE attempt_id = ?`,
-        )
-        .run(completedAt, sourceRecordsSeen, factsSeen, factsAdded, attemptId);
-      this.#database.exec("COMMIT");
+        }
+        const completed = this.#database
+          .prepare(
+            `UPDATE collection_attempts
+                SET completed_at = ?, outcome = 'success', source_records_seen = ?,
+                    facts_seen = ?, facts_added = ?
+              WHERE attempt_id = ? AND outcome = 'running'`,
+          )
+          .run(completedAt, sourceRecordsSeen, factsSeen, factsAdded, attemptId);
+        if (numberOfChanges(completed) !== 1) {
+          throw new Error("Collection attempt is not running");
+        }
+      });
       return {
         attemptId,
         completedAt,
@@ -302,29 +354,23 @@ export class ObservationStore {
         startedAt,
       };
     } catch (error) {
-      if (this.#database.isTransaction) {
-        this.#database.exec("ROLLBACK");
-      }
       const failureCode = safeFailureCode(error);
       const completedAt = now().toISOString();
-      this.#transaction(() => {
-        this.#database
-          .prepare(
-            `INSERT INTO collection_attempts
-               (attempt_id, connection_id, config_hash, started_at, completed_at,
-                outcome, source_records_seen, facts_seen, facts_added, failure_code)
-             VALUES (?, ?, ?, ?, ?, 'failed', 0, 0, 0, ?)`,
-          )
-          .run(
-            attemptId,
-            connection.config.id,
-            connection.configHash,
-            startedAt,
-            completedAt,
-            failureCode,
-          );
-      });
-      throw new CollectionFailedError(attemptId, failureCode, error);
+      try {
+        this.#transaction(() => {
+          this.#database
+            .prepare(
+              `UPDATE collection_attempts
+                  SET completed_at = ?, outcome = 'failed', source_records_seen = ?,
+                      facts_seen = ?, facts_added = 0, failure_code = ?
+                WHERE attempt_id = ? AND outcome = 'running'`,
+            )
+            .run(completedAt, sourceRecordsSeen, factsSeen, failureCode, attemptId);
+        });
+      } catch {
+        // A durable running marker still makes the connection unread if failure recording is blocked.
+      }
+      throw new CollectionFailedError(attemptId, failureCode);
     }
   }
 
@@ -361,7 +407,8 @@ export class ObservationStore {
   statuses(): ConnectionStatus[] {
     const rows = this.#database
       .prepare(
-        `SELECT c.connection_id, a.completed_at, a.outcome, a.facts_added
+        `SELECT c.connection_id, COALESCE(a.completed_at, a.started_at) AS last_attempt_at,
+                a.outcome, a.facts_added
            FROM active_connections c
            LEFT JOIN collection_attempts a ON a.attempt_id = (
              SELECT latest.attempt_id
@@ -374,25 +421,33 @@ export class ObservationStore {
           ORDER BY c.connection_id`,
       )
       .all() as {
-      completed_at: null | string;
       connection_id: string;
       facts_added: null | number;
+      last_attempt_at: null | string;
       outcome: null | "failed" | "running" | "skipped" | "success";
     }[];
 
     return rows.map((row) => {
-      if (row.outcome === null || row.outcome === "running") {
+      if (row.outcome === null) {
         return {
           connectionId: row.connection_id,
-          lastAttemptAt: row.completed_at,
+          lastAttemptAt: null,
           reason: "never-run",
+          status: "unread",
+        };
+      }
+      if (row.outcome === "running") {
+        return {
+          connectionId: row.connection_id,
+          lastAttemptAt: row.last_attempt_at,
+          reason: "interrupted",
           status: "unread",
         };
       }
       if (row.outcome === "failed" || row.outcome === "skipped") {
         return {
           connectionId: row.connection_id,
-          lastAttemptAt: row.completed_at,
+          lastAttemptAt: row.last_attempt_at,
           reason: row.outcome,
           status: "unread",
         };
@@ -400,14 +455,14 @@ export class ObservationStore {
       if (row.facts_added === 0) {
         return {
           connectionId: row.connection_id,
-          lastAttemptAt: row.completed_at,
+          lastAttemptAt: row.last_attempt_at,
           reason: "nothing-new",
           status: "quiet",
         };
       }
       return {
         connectionId: row.connection_id,
-        lastAttemptAt: row.completed_at,
+        lastAttemptAt: row.last_attempt_at,
         reason: "collected",
         status: "changed",
       };
@@ -487,9 +542,21 @@ export class ObservationStore {
                     SELECT 1 FROM facts newer
                      WHERE newer.fact_owner = f.fact_owner
                        AND newer.kind = f.kind
-                       AND newer.subject = f.subject
-                       AND newer.epistemic_status = f.epistemic_status
-                       AND newer.source_recorded_at > f.source_recorded_at
+                        AND newer.subject = f.subject
+                        AND newer.epistemic_status = f.epistemic_status
+                        AND newer.source_recorded_at > f.source_recorded_at
+                  ) THEN 'historical'
+                  WHEN EXISTS (
+                    SELECT 1 FROM facts corrected
+                     WHERE corrected.connection_id = f.connection_id
+                       AND corrected.config_hash = f.config_hash
+                       AND corrected.fact_owner = f.fact_owner
+                       AND corrected.kind = f.kind
+                       AND corrected.subject = f.subject
+                       AND corrected.epistemic_status = f.epistemic_status
+                       AND corrected.source_record_id = f.source_record_id
+                       AND corrected.source_time_key = f.source_time_key
+                       AND corrected.last_seen_attempt_order > f.last_seen_attempt_order
                   ) THEN 'historical'
                   ELSE 'current'
                 END AS temporal_status
@@ -511,10 +578,11 @@ export class ObservationStore {
       if (row.user_version === STORE_SCHEMA_VERSION) {
         return;
       }
-      if (row.user_version !== 0) {
+      if (row.user_version !== 0 && row.user_version !== 1) {
         throw new Error(`Unsupported observation store schema ${row.user_version}`);
       }
-      this.#database.exec(`
+      if (row.user_version === 0) {
+        this.#database.exec(`
         CREATE TABLE connection_versions (
           connection_id TEXT NOT NULL,
           config_hash TEXT NOT NULL,
@@ -572,6 +640,7 @@ export class ObservationStore {
           payload_json TEXT NOT NULL,
           payload_hash TEXT NOT NULL,
           collected_at TEXT NOT NULL,
+          last_seen_attempt_order INTEGER NOT NULL,
           FOREIGN KEY (attempt_id) REFERENCES collection_attempts(attempt_id),
           FOREIGN KEY (connection_id, config_hash)
             REFERENCES connection_versions(connection_id, config_hash),
@@ -590,7 +659,31 @@ export class ObservationStore {
 
         PRAGMA user_version = ${STORE_SCHEMA_VERSION};
       `);
+        return;
+      }
+
+      this.#database.exec(`
+        ALTER TABLE facts
+          ADD COLUMN last_seen_attempt_order INTEGER NOT NULL DEFAULT 0;
+        UPDATE facts
+           SET last_seen_attempt_order = COALESCE(
+             (SELECT collection_attempts.rowid
+                FROM collection_attempts
+               WHERE collection_attempts.attempt_id = facts.attempt_id),
+             0
+           );
+        PRAGMA user_version = ${STORE_SCHEMA_VERSION};
+      `);
     });
+  }
+
+  #assertActive(connection: ActiveConnection): void {
+    const active = this.#database
+      .prepare("SELECT config_hash FROM active_connections WHERE connection_id = ?")
+      .get(connection.config.id) as undefined | { config_hash: string };
+    if (active?.config_hash !== connection.configHash) {
+      throw new ConnectionInactiveError(connection.config.id);
+    }
   }
 
   #transaction<T>(operation: () => T): T {
@@ -621,6 +714,11 @@ interface StoredFactRow {
   source_recorded_at: null | string;
   subject: string;
   temporal_status: "current" | "historical" | "unknown";
+}
+
+interface PreparedFact extends FactInput {
+  payloadHash: string;
+  payloadJson: string;
 }
 
 function storedFactFromRow(row: StoredFactRow): StoredFact {

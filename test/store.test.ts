@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -253,5 +254,120 @@ test("a successful empty repeat is quiet rather than unread", async () => {
     assert.equal(store.countFacts(), 1);
   } finally {
     store.close();
+  }
+});
+
+test("a skipped attempt is unread", () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    store.recordSkipped(store.getConnection(parsed.config.id), "already_collecting");
+
+    assert.equal(store.statuses()[0]?.status, "unread");
+    assert.equal(store.statuses()[0]?.reason, "skipped");
+  } finally {
+    store.close();
+  }
+});
+
+test("disconnect during source reading prevents the stale revision from writing", async () => {
+  const { directory, store } = temporaryStore();
+  const parsed = connection();
+  store.register(parsed);
+  const active = store.getConnection(parsed.config.id);
+  let announceStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    announceStarted = resolve;
+  });
+  let allowFinish: (() => void) | undefined;
+  const finish = new Promise<void>((resolve) => {
+    allowFinish = resolve;
+  });
+  const collection = store.collect(active, async (sink) => {
+    announceStarted?.();
+    await finish;
+    sink.recordSourceRecord();
+    sink.writeFact(fact());
+  });
+  await started;
+
+  const otherProcess = new ObservationStore(directory);
+  try {
+    assert.equal(otherProcess.disconnect(parsed.config.id), true);
+  } finally {
+    otherProcess.close();
+  }
+  allowFinish?.();
+
+  try {
+    await assert.rejects(collection, { code: "connection_inactive" });
+    assert.equal(store.countFacts(), 0);
+    store.register(parsed);
+    assert.equal(store.statuses()[0]?.status, "unread");
+    assert.equal(store.statuses()[0]?.reason, "failed");
+  } finally {
+    store.close();
+  }
+});
+
+test("process termination leaves a durable interrupted attempt and no partial facts", async () => {
+  const { directory, store } = temporaryStore();
+  const parsed = connection();
+  store.register(parsed);
+  store.close();
+  const worker = fileURLToPath(
+    new URL("helpers/interrupted-collection-worker.ts", import.meta.url),
+  );
+  const child = spawn(process.execPath, [worker, directory, parsed.config.id], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child.stdout.setEncoding("utf8");
+  await new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.stdout.once("data", (chunk: string) => {
+      if (chunk === "ready\n") {
+        resolve();
+      } else {
+        reject(new Error("interrupted collection worker emitted unexpected output"));
+      }
+    });
+  });
+  child.kill("SIGKILL");
+  await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+
+  const reopened = new ObservationStore(directory);
+  try {
+    assert.equal(reopened.countFacts(), 0);
+    assert.equal(reopened.statuses()[0]?.status, "unread");
+    assert.equal(reopened.statuses()[0]?.reason, "interrupted");
+    assert.notEqual(reopened.statuses()[0]?.lastAttemptAt, null);
+  } finally {
+    reopened.close();
+  }
+});
+
+test("migrates version-one facts without losing history", async () => {
+  const { directory, store } = temporaryStore();
+  const parsed = connection();
+  store.register(parsed);
+  await store.collect(store.getConnection(parsed.config.id), (sink) => {
+    sink.recordSourceRecord();
+    sink.writeFact(fact());
+  });
+  const path = store.path;
+  store.close();
+
+  const oldStore = new DatabaseSync(path);
+  oldStore.exec(
+    "ALTER TABLE facts DROP COLUMN last_seen_attempt_order; PRAGMA user_version = 1",
+  );
+  oldStore.close();
+
+  const migrated = new ObservationStore(directory);
+  try {
+    assert.equal(migrated.queryObservations().length, 1);
+  } finally {
+    migrated.close();
   }
 });

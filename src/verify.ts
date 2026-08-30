@@ -140,7 +140,7 @@ function compareFacts(
       continue;
     }
     const history = storedByIdentity.get(factIdentityKey(sourceFact)) ?? [];
-    if (isStrictlyNewerThanAny(sourceFact, history)) {
+    if (isStrictlyNewerThanHistory(sourceFact, history)) {
       counts.advanced += 1;
     } else {
       counts.uncollected += 1;
@@ -210,8 +210,8 @@ function sourceVersionKey(fact: ComparableFact): string {
   ]);
 }
 
-function isStrictlyNewerThanAny(candidate: ComparableFact, history: ComparableFact[]): boolean {
-  return history.some((fact) => isStrictlyNewer(candidate, fact));
+function isStrictlyNewerThanHistory(candidate: ComparableFact, history: ComparableFact[]): boolean {
+  return history.length > 0 && history.every((fact) => isStrictlyNewer(candidate, fact));
 }
 
 function isStrictlyNewer(candidate: ComparableFact, prior: ComparableFact): boolean {

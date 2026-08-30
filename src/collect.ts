@@ -1,10 +1,6 @@
 import { materializeFacts } from "./materialize.ts";
 import { readSource } from "./readers.ts";
-import {
-  type CollectionResult,
-  type ConnectionStatus,
-  ObservationStore,
-} from "./store.ts";
+import { type CollectionResult, ObservationStore } from "./store.ts";
 
 export interface CollectionReport {
   connectionId: string;
@@ -25,16 +21,4 @@ export async function collectConnection(
     }
   });
   return { connectionId, result };
-}
-
-export async function collectAll(store: ObservationStore): Promise<CollectionReport[]> {
-  const reports: CollectionReport[] = [];
-  for (const connection of store.listConnections()) {
-    reports.push(await collectConnection(store, connection.config.id));
-  }
-  return reports;
-}
-
-export function connectionStatuses(store: ObservationStore): ConnectionStatus[] {
-  return store.statuses();
 }

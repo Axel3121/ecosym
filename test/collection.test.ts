@@ -139,6 +139,52 @@ test("keeps changing values as a source-time series and does not promote a late 
   }
 });
 
+test("a corrected source version has one current payload, including after reversion", async () => {
+  const directory = workspace();
+  const sourcePath = join(directory, "source.db");
+  const source = createSqliteSource(sourcePath);
+  source
+    .prepare("INSERT INTO measurements VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run("record-1", "video-1", "2026-08-30T10:00:00Z", 7, "running", "unused", "unused");
+  source.close();
+  const store = new ObservationStore(join(directory, "state"));
+  const parsed = sqliteConnection(sourcePath);
+  try {
+    store.register(parsed);
+    await collectConnection(store, parsed.config.id);
+
+    const correction = new DatabaseSync(sourcePath);
+    correction
+      .prepare("UPDATE measurements SET public_value = ? WHERE record_id = ?")
+      .run(12, "record-1");
+    correction.close();
+    await collectConnection(store, parsed.config.id);
+    assert.deepEqual(
+      store.queryObservations().map((point) => [point.payload.value, point.temporalStatus]),
+      [
+        [7, "historical"],
+        [12, "current"],
+      ],
+    );
+
+    const reversion = new DatabaseSync(sourcePath);
+    reversion
+      .prepare("UPDATE measurements SET public_value = ? WHERE record_id = ?")
+      .run(7, "record-1");
+    reversion.close();
+    await collectConnection(store, parsed.config.id);
+    assert.deepEqual(
+      store.queryObservations().map((point) => [point.payload.value, point.temporalStatus]),
+      [
+        [7, "current"],
+        [12, "historical"],
+      ],
+    );
+  } finally {
+    store.close();
+  }
+});
+
 test("JSONL history preserves deletion markers and treats required null metrics as unknown", async () => {
   const directory = workspace();
   const sourcePath = join(directory, "history.jsonl");
@@ -372,6 +418,33 @@ test("an existing path SQLite cannot open is unreadable rather than absent", () 
     (error: unknown) =>
       error instanceof SourceReadError && error.code === "source_unreadable",
   );
+});
+
+test("a locked SQLite source records an unread attempt", async () => {
+  const directory = workspace();
+  const sourcePath = join(directory, "locked.db");
+  const source = createSqliteSource(sourcePath);
+  source
+    .prepare("INSERT INTO measurements VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run("record-1", "video-1", "2026-08-30T10:00:00Z", 7, "running", "unused", "unused");
+  source.close();
+  const parsed = sqliteConnection(sourcePath, "locked-source");
+  const store = new ObservationStore(join(directory, "state"));
+  const blocker = new DatabaseSync(sourcePath);
+  try {
+    store.register(parsed);
+    blocker.exec("BEGIN EXCLUSIVE");
+    await assert.rejects(collectConnection(store, parsed.config.id), {
+      code: "source_locked",
+    });
+    assert.equal(store.statuses()[0]?.status, "unread");
+  } finally {
+    if (blocker.isTransaction) {
+      blocker.exec("ROLLBACK");
+    }
+    blocker.close();
+    store.close();
+  }
 });
 
 test("two connections sharing a reader keep attempts and status isolated", async () => {

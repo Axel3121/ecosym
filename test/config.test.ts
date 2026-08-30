@@ -95,3 +95,17 @@ test("accepts source-local position as identity when a record has no key", () =>
   const { config } = parseConnectionConfig(input);
   assert.deepEqual(config.sourceRecord.identity, input.sourceRecord.identity);
 });
+
+test("rejects nested selectors that a SQLite reader cannot satisfy", () => {
+  const input = validConfig() as {
+    facts: { payload: Record<string, unknown> }[];
+  };
+  const firstFact = input.facts[0];
+  assert.ok(firstFact);
+  firstFact.payload.value = { scope: "record", path: "nested.value" };
+
+  assert.throws(() => parseConnectionConfig(input), {
+    name: "ConfigError",
+    message: "SQLite selectors must name top-level columns",
+  });
+});

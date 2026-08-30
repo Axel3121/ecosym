@@ -71,7 +71,15 @@ async function connect(store: ObservationStore, arguments_: string[]): Promise<C
     return invalidArguments("connect");
   }
   const input = await readConfig(arguments_[0] as string);
-  const parsed = parseConnectionConfig(JSON.parse(input) as unknown);
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(input) as unknown;
+  } catch {
+    throw Object.assign(new Error("connection input is not JSON"), {
+      code: "invalid_config",
+    });
+  }
+  const parsed = parseConnectionConfig(decoded);
   const outcome = store.register(parsed);
   return {
     exitCode: 0,
