@@ -16,7 +16,7 @@ fi
 echo "unit: $UNIT"
 systemctl --user is-active "$UNIT.service" 2>/dev/null || true
 if [ -f "$RUNS/$UNIT.port" ]; then
-  echo "port: $(cat "$RUNS/$UNIT.port")  (talk to it: scripts/task-say \"...\")"
+  echo "port: $(cat "$RUNS/$UNIT.port")  (follow up after it finishes: scripts/task-say \"...\")"
 fi
 echo "---"
 tail -40 "$RUNS/$UNIT.log" 2>/dev/null || echo "(no log yet)"

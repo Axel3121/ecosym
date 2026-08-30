@@ -17,7 +17,7 @@ MSG="Implement the attached task specification in full. It is large by design - 
 UNIT="axey-task-${TASK}-$(date +%s)"
 RUNS="$HOME/.local/share/axey/runs"
 LOG="$RUNS/${UNIT}.log"
-PORT="${AXEY_PORT:-4577}"
+PORT="${AXEY_PORT:-$((4570 + RANDOM % 400))}"
 mkdir -p "$RUNS"
 
 echo "$PORT" > "$RUNS/${UNIT}.port"
