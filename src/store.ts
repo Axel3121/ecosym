@@ -125,8 +125,8 @@ export class ObservationStore {
     this.#database = new DatabaseSync(this.path, { timeout: 5_000 });
     chmodSync(this.path, 0o600);
     this.#database.exec("PRAGMA foreign_keys = ON");
-    this.#database.exec("PRAGMA journal_mode = WAL");
     this.#migrate();
+    this.#database.exec("PRAGMA journal_mode = WAL");
   }
 
   close(): void {
@@ -504,17 +504,16 @@ export class ObservationStore {
   }
 
   #migrate(): void {
-    const row = this.#database.prepare("PRAGMA user_version").get() as {
-      user_version: number;
-    };
-    if (row.user_version === STORE_SCHEMA_VERSION) {
-      return;
-    }
-    if (row.user_version !== 0) {
-      throw new Error(`Unsupported observation store schema ${row.user_version}`);
-    }
-
     this.#transaction(() => {
+      const row = this.#database.prepare("PRAGMA user_version").get() as {
+        user_version: number;
+      };
+      if (row.user_version === STORE_SCHEMA_VERSION) {
+        return;
+      }
+      if (row.user_version !== 0) {
+        throw new Error(`Unsupported observation store schema ${row.user_version}`);
+      }
       this.#database.exec(`
         CREATE TABLE connection_versions (
           connection_id TEXT NOT NULL,
