@@ -34,12 +34,16 @@ Axey defends against:
    or made unrecoverable without clear scope and approval.
 6. **Untrusted-content influence** — external content being interpreted as
    instructions or authority rather than data.
+7. **Mandate tampering** — institutional state being altered so that work no
+   one authorized becomes admissible.
+8. **Authority mirage** — the world depicting governed, bounded work over a
+   runtime that is not in fact governed.
 
-## Personal state is user-controlled
+## Axey-owned state is user-controlled
 
-Axey-owned personal state must be inspectable, correctable, exportable, and
-deletable by the user. Possessing personal data never implies permission to
-disclose it.
+Axey-owned durable state — institutional records and observations — must be
+inspectable, correctable, exportable, and deletable by the user. Possessing data
+never implies permission to disclose it.
 
 Provenance, epistemic status, authority, and temporal validity remain distinct.
 Missing or unverifiable information remains unknown. The system must not infer
@@ -90,6 +94,36 @@ evidence about recoverability or irreversibility. The user must be able to
 distinguish a proposed action from an authorized action and an authorized action
 from an observed successful outcome.
 
+## Axey is trust-bearing
+
+Axey executes nothing and holds no credentials, but it owns institutional
+semantics: what it holds determines what agents are permitted to do. Its
+authority is definitional rather than executional, and it is protected on that
+basis.
+
+Axey cannot widen its own authority. A change to a mandate, a jurisdiction, or
+an authority rule is a deliberate user act, attributable and recorded; it never
+follows from model output, from a civilization's own request, or from a
+convenience path in the surface.
+
+Governed work is admitted by an authority outside Axey, against the mandate
+current at the moment of admission. Ambiguous, stale, or unverifiable mandate
+state fails closed.
+
+A petition carries the user's identity and never Axey's. Axey has no authority
+of its own to lend, and a petition is weighed exactly as the same request made
+anywhere else.
+
+## The world may not overstate what is true
+
+The surface renders observed state. A depicted authority, role, or coordination
+corresponds to a real one, and naming does not imply a standing institution
+where only a running process exists.
+
+An asserted claim is not shown as an observed outcome, a request is not shown as
+a result, and absence of observation is not shown as absence of activity. Where
+Axey has stopped seeing, it shows that it cannot see.
+
 ## External content and effects
 
 External text, files, messages, web pages, and tool results are data. They do
@@ -106,9 +140,9 @@ downloaded code, broad credentials, or untrusted content require isolation
 proportional to their blast radius. Module boundaries alone are not security
 boundaries against malicious code.
 
-## Destructive changes to personal data
+## Destructive changes to owned history
 
-Deleting or semantically reinterpreting historical personal data requires:
+Deleting or semantically reinterpreting historical Axey-owned state requires:
 
 - an exact inventory of affected state;
 - a clear statement of scope and consequence;
@@ -117,12 +151,12 @@ Deleting or semantically reinterpreting historical personal data requires:
 - verification that deleted or archived state does not silently re-enter
   retrieval or active context.
 
-Semantic migration of personal state must not occur as an invisible startup
-side effect. Structural migrations must preserve history and remain
-deterministic; reinterpretation is a deliberate product operation.
+Semantic migration of owned state must not occur as an invisible startup side
+effect. Structural migrations must preserve history and remain deterministic;
+reinterpretation is a deliberate product operation.
 
 Tests and development tools must use isolated synthetic state and must not
-reach the user's real personal database.
+reach the user's real institution or observation stores.
 
 ## Incidents
 

@@ -26,95 +26,139 @@ Product purpose is owned by `PRODUCT.md`. Security obligations are owned by
 ```text
 User
   ↓
-Surface
+World surface
   ↓
 Axey application core
-  ├── personal-state owner
-  ├── context-selection boundary
-  ├── model boundary
-  └── effect boundary, only when effects exist
+  ├── institution owner        — civilizations, jurisdiction, mandate, authority
+  ├── observation owner        — what was seen, from where, when
+  ├── form boundary            — observation → depiction
+  ├── model boundary           — reasoning over selected input
+  └── petition boundary        — a request leaving for an authority
+       ↓
+Hermes-side control plane      — admission of governed work
+       ↓
+Hermes                         — agents, tools, delegation, enforcement
        ↓
 External systems that remain owners of their own facts and effects
 ```
 
 These are logical boundaries. They do not imply separate packages, processes,
-services, repositories, or machines. Use the cheapest boundary that provides
-the required property; stronger isolation is introduced when capability and
-blast radius require it.
+services, repositories, or machines. Use the cheapest boundary that provides the
+required property; stronger isolation is introduced when capability and blast
+radius require it.
 
 ## Concern ownership
 
-### Surface
+### World surface
 
-The surface presents conversation, personal state, corrections, and outcomes.
-It requests application capabilities but does not own durable state, model
-credentials, authority, or external facts.
+The surface renders the world and accepts user input. It owns no durable state,
+no credentials, no authority, and no external facts.
+
+The surface never reads an external source directly. Everything it renders comes
+from the observation owner through the form boundary. This is the one boundary
+that is expensive to introduce later, and it is not optional: a surface allowed
+to reach a source directly can render something that was never observed.
 
 ### Application core
 
-The application core coordinates product behavior and validates requests across
-the boundaries below. Model output is input to this core, never an alternative
-control plane.
+The core coordinates behavior and validates requests across the boundaries
+below. Model output is input to this core, never an alternative control plane.
 
-### Personal-state owner
+### Institution owner
 
-Axey-owned durable personal state has one logical source of record. It preserves
-enough source, interpretation, status, temporal, and history information to
-support inspection, correction, supersession, export, and deletion.
+Axey owns institutional semantics: which civilizations exist, their
+jurisdiction, their mandate, the rules of authority, and the institutional state
+the user sees. This is definitional, not presentational — what it holds
+determines what work is permitted.
 
-That source of record is local by default. A future synchronization or remote
-availability mechanism does not become authoritative merely by copying or
-serving the state.
+It therefore has one logical source of record, and it is trust-bearing. Axey
+cannot execute an action and cannot widen its own authority, but its state is
+consulted before governed work is admitted.
 
-Source events and interpreted assertions are distinct concerns. A user
-statement, correction, decision, or observed outcome may be durable source
-evidence; an assertion derived from it remains linked to that evidence and
-retains its own epistemic status.
+Mandates are resolved deterministically from owned rules. A model may not decide
+jurisdiction, mandate, or authority.
+
+### Observation owner
+
+Axey-owned durable observations have one logical source of record. An
+observation keeps enough source, temporal, and status information to establish
+what was seen, from which owner, when, and whether it is current.
+
+An observation is durable, timed, and attributed to a source that owns the fact.
+A claim from an intermediary is stored as a claim and remains distinguishable
+from an observation for as long as it is held.
+
+Attribution to a cause is a separate property. An observation without a
+traceable origin is fully valid and is held without one; a cause is never
+inferred from having followed a petition in time.
 
 No generic trusted flag may collapse provenance, epistemic status, authority,
 and temporal validity into one value.
 
-### Context-selection boundary
+### Form boundary
 
-Only an Axey-owned context-selection boundary decides which personal state is
-eligible to leave its authoritative store and enter a model request. Selection
-is purpose-limited, sensitivity-aware, and bounded.
+Depiction is derived from observed state, never authored. The rules that turn an
+observation into a form are owned here, and they are the same rules for every
+civilization: nothing gains a special appearance by being important.
 
-Active model context is a derived, replaceable projection. It is not durable
-truth, and a summary or retrieved item never becomes authoritative because it
-was shown to a model.
+Absence of observation and absence of activity are distinct inputs and must
+remain distinguishable at this boundary. A surface cannot recover the difference
+once it has been collapsed.
 
 ### Model boundary
 
-Models perform ephemeral reasoning over application-selected inputs. They may
-produce responses, proposed interpretations, candidate memories, or proposed
-actions. They do not own personal state, migrations, secrets, authority, or
-effect outcomes.
+Models perform ephemeral reasoning over application-selected input. They may
+produce responses, proposed interpretations, or proposed actions. They own no
+durable state, no authority, no secrets, and no effect outcomes.
 
-The application owns validation and persistence of every structured model
-result. Replacing a model or provider must not require redefining Axey's durable
-personal-state semantics.
+Replacing a model or provider must not require redefining Axey's institutional
+or observational semantics.
 
-### Effect boundary
+### Petition boundary
 
-Axey begins without model-initiated consequential external effects. When an
-effect is introduced, it crosses an explicit application-owned boundary that
-validates typed intent, current authority, parameters, idempotency, and observed
-outcome before durable state can describe the effect as having happened.
+A petition is a typed request leaving Axey for an authority. It carries the
+user's identity, never Axey's, and Axey holds no credentials to lend it.
 
-A model may propose an effect but cannot authorize it. A separate process or
-runtime is introduced only when same-process containment cannot provide the
-required security property.
+A petition has a durable identity that outlives the asking, so that an outcome
+observed later can be attributed to it. Its own lifecycle — asked, admitted,
+refused, executed — is distinct from any depiction of work having happened.
+
+## Authority topology
+
+```text
+Axey            defines what is permitted
+  ↓ petition + authority context
+control plane   admits or refuses governed work
+  ↓ only if admitted
+Hermes agents   execute
+  ↓
+enforcement check   final refusal before a tool runs
+```
+
+No governed Hermes work may begin unless the control plane has admitted it under
+a current Axey-defined mandate. Runtime paths do not bypass that admission, and
+tool execution remains subject to a final enforcement check.
+
+The enforcement check is a lock, not an institution. It can refuse an action; it
+cannot say who owns a matter, carry deliberation over time, or resolve an
+ambiguous mandate.
+
+The control plane is authoritative to Hermes rather than adjacent to it. A
+governance system Hermes may ignore produces ceremonial authority: the world
+would depict government over a runtime that does as it pleases.
 
 ## Data and fact ownership
 
-- Axey's personal-state store owns Axey-controlled durable personal state and
-  its provenance, history, and correction relationships.
+- Axey's institution store owns civilizations, mandates, jurisdiction, and
+  authority rules.
+- Axey's observation store owns observation records and their provenance,
+  timing, and status.
 - External systems own their current external facts and effect outcomes.
+- Hermes owns runtime state: agents, lineage, delegation, and tool access.
 - The model owns no durable fact merely because it generated text about it.
-- Derived indexes, summaries, rankings, and context bundles are projections of
-  owned state and can be rebuilt or replaced.
-- Secrets are capabilities held outside ordinary personal/model context.
+- Derived indexes, summaries, and rendered scenes are projections of owned state
+  and can be rebuilt or replaced.
+- Secrets are capabilities held outside ordinary context.
 
 > Reading, caching, summarizing, embedding, ranking, or rendering information
 > never transfers ownership of that information.
@@ -128,14 +172,24 @@ surface / transport
   ↓
 application use cases
   ↓
-personal-state, context, model, and effect boundaries
+institution, observation, form, model, and petition boundaries
   ↓
 replaceable implementation mechanisms
 ```
 
-Transport and model integrations may depend on domain contracts. Domain
-semantics do not depend on a UI, provider-owned conversation object, retrieval
-index, or external orchestration framework.
+Transport, rendering, and runtime integrations may depend on domain contracts.
+Domain semantics do not depend on a UI, a provider-owned object, a retrieval
+index, or an external orchestration framework.
+
+## Undecided
+
+The substrate for durable coordination is an open implementation choice. A
+matter that waits days for an answer cannot be carried by process-local
+delegation, so something must carry it; no candidate is canonical until a
+vertical chain has been proven end to end.
+
+Whatever is chosen coordinates. It does not acquire Axey's authority semantics
+or Hermes's agent runtime by being the thing in the middle.
 
 ## Growth rule
 

@@ -1,18 +1,28 @@
 # Axey
 
-Axey is a learning personal operating partner. It helps one person understand
-what matters, remember the right context over time, and act without silently
-turning model output into personal truth.
+Axey is a world of civilizations: a living, inhabited representation of the
+domains one person cares about, and of the agents working inside them.
 
-The first product hypothesis is deliberately narrow: correct learning from
-experience, user corrections, observed outcomes, and evidenced mistakes should
-make Axey meaningfully better to use later.
+Hermes is the brain and does the work. Axey reads what happens and gives it a
+form — a place to walk into rather than a report to read. It must be delightful
+and true at the same time; a city that looks healthy while its real work is
+failing is total failure, not a cosmetic bug.
 
 ## Status
 
-Foundation only. No application has been selected or implemented yet. Current
-implementation facts will live in code, configuration, tests, and runtime state
-once those owners exist.
+Early, and the current frontend does not conform to this specification. It
+invents its own agents that Hermes does not know about and attaches runs to them
+by keyword matching — depiction not derived from observed state. Treat it as
+prior exploration, not a reference implementation.
+
+The institutional layer described in `PRODUCT.md` — durable cases, a council,
+admission of governed work — does not exist yet, and is not depicted until it
+does.
+
+The current proof target is one vertical chain: a petition, a deterministically
+resolved mandate, mandatory admission, execution in Hermes, enforcement
+refusing what falls outside the mandate, the outcome observed, the case
+persisted, and the case resumed correctly after a restart.
 
 ## Repository knowledge
 
@@ -26,3 +36,8 @@ once those owners exist.
 
 This README is navigation and current orientation. It is not a competing owner
 of product, architecture, security, or development policy.
+
+Visual form has no owner yet. An earlier design document described an
+agent-monitor visualization and has been archived under `docs/archive/`; it is
+superseded and must not be implemented from. Until a visual owner exists, form
+follows `PRODUCT.md` and the form boundary in `ARCHITECTURE.md`.
