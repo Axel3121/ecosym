@@ -157,6 +157,9 @@ would depict government over a runtime that does as it pleases.
 - A connected runtime owns its own state: agents, lineage, delegation, and tool
   access. Which runtimes are connected, and what each can enforce, is observed —
   never assumed, and never written into this document.
+- Axey's observation store also owns what Axey concluded from what it saw: a
+  derived statement is stored as derived, carrying its inputs, and is stale once
+  they change. It is never stored as something observed.
 - The model owns no durable fact merely because it generated text about it.
 - Derived indexes, summaries, and rendered scenes are projections of owned state
   and can be rebuilt or replaced.
