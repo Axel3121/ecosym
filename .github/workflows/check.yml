@@ -40,8 +40,18 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node }}
-          cache: pnpm
-          cache-dependency-path: app/pnpm-lock.yaml
+
+      # setup-node sin pnpm-cache kjører før storen finnes og feiler med
+      # "Some specified paths were not resolved". Cacher storen selv i stedet.
+      - name: resolve pnpm store
+        id: store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.store.outputs.path }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles('app/pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
 
       # --frozen-lockfile: CI skal aldri stilltiende endre avhengigheter.
       - name: install
