@@ -179,7 +179,7 @@ class ObservationStoreTest(unittest.TestCase):
 
         self.assertEqual(
             self.store.observations(),
-            [replace(original, reader_type=record.connection_id)],
+            [replace(original, reader_type=None)],
         )
         with sqlite3.connect(self.store_path) as connection:
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 4)
@@ -212,7 +212,7 @@ class ObservationStoreTest(unittest.TestCase):
         migrated_attempt = self.store.collection_attempts()[0]
         self.assertEqual(migrated_record.id, before_record[0])
         self.assertEqual(migrated_record.connection_id, before_record[1])
-        self.assertEqual(migrated_record.reader_type, before_record[1])
+        self.assertIsNone(migrated_record.reader_type)
         self.assertEqual(migrated_record.payload, record.payload)
         self.assertEqual(migrated_attempt.id, before_attempt[0])
         self.assertEqual(migrated_attempt.connection_id, before_attempt[1])

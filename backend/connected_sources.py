@@ -30,8 +30,8 @@ from observation_store import ObservationStore
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     arguments = parser.parse_args(argv)
-    layout = state_layout(arguments.state_dir)
     try:
+        layout = state_layout(arguments.state_dir)
         if arguments.command == "register":
             config = load_connection(arguments.config)
             created = register_connection(config, layout)

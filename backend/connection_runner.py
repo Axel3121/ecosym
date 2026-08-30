@@ -254,7 +254,12 @@ def _map_row(
             _evaluate(row, mapping.source_time.value), mapping.source_time.format
         )
     )
-    payload = {name: _evaluate(row, expression) for name, expression in mapping.payload}
+    payload: dict[str, JsonValue] = {}
+    for name, expression in mapping.payload:
+        value = _evaluate(row, expression)
+        if isinstance(value, (dict, list)):
+            raise SourceUnreadError("mapped payload values must be scalar")
+        payload[name] = value
     try:
         json.dumps(payload, allow_nan=False)
     except (TypeError, ValueError) as exc:
@@ -267,7 +272,7 @@ def _map_row(
         fact_owner=mapping.fact_owner,
         source_version=source_version,
         kind=mapping.kind,
-        subject=str(subject),
+        subject=_canonical_json(subject),
         source_time=source_time,
         observed_at=observed_at,
         temporal_status=mapping.temporal_status,
@@ -368,7 +373,7 @@ def _same_comparable_record(expected: Record, stored: StoredRecord) -> bool:
     return (
         expected.fact_owner == stored.fact_owner
         and expected.source_time == stored.source_time
-        and expected.payload == stored.payload
+        and _canonical_json(expected.payload) == _canonical_json(stored.payload)
     )
 
 
@@ -386,3 +391,9 @@ def _check_existing_conflicts(
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _canonical_json(value: JsonValue) -> str:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
+    )

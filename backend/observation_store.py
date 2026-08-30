@@ -31,7 +31,7 @@ JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "Jso
 @dataclass(frozen=True)
 class Record:
     connection_id: str
-    reader_type: str
+    reader_type: str | None
     source: str
     fact_owner: str
     source_version: str
@@ -513,7 +513,7 @@ def _validate_attempt(attempt: CollectionAttempt) -> None:
         raise ValueError("non-successful attempts cannot report record counts")
 
 
-def _required(value: str, name: str) -> str:
+def _required(value: str | None, name: str) -> str:
     if not value:
         raise ValueError(f"{name} must not be empty")
     return value
@@ -530,7 +530,7 @@ def _record_from_row(row: sqlite3.Row) -> StoredRecord:
     return StoredRecord(
         id=row["id"],
         connection_id=row["connection_id"],
-        reader_type=row["reader_type"] or row["connection_id"],
+        reader_type=row["reader_type"],
         source=row["source"],
         fact_owner=row["fact_owner"],
         source_version=row["source_version"],

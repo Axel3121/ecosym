@@ -1,11 +1,13 @@
 import io
 import json
+import os
 import sqlite3
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import connected_sources
 from connection_config import (
@@ -173,8 +175,97 @@ class ConnectedSourcesTest(unittest.TestCase):
         records = read_connection(config, self.observed_at)
 
         self.assertEqual(len(records), 1)
-        self.assertEqual(records[0].record.subject, "bin-1")
+        self.assertEqual(records[0].record.subject, '"bin-1"')
         self.assertEqual(records[0].record.payload, {"value": 3})
+
+    def test_source_locator_is_normalized_before_identity_is_bound(self) -> None:
+        first_root = self.root / "first"
+        second_root = self.root / "second"
+        first_root.mkdir()
+        second_root.mkdir()
+        first_source = first_root / "events.jsonl"
+        second_source = second_root / "events.jsonl"
+        first_source.write_text("", encoding="utf-8")
+        second_source.write_text("", encoding="utf-8")
+        raw = self.jsonl_config(
+            "bound-source", Path("$AXEY_FIXTURE_ROOT/events.jsonl")
+        )
+
+        with patch.dict(os.environ, {"AXEY_FIXTURE_ROOT": str(first_root)}):
+            config = parse_connection(raw)
+            register_connection(config, self.layout)
+        with patch.dict(os.environ, {"AXEY_FIXTURE_ROOT": str(second_root)}):
+            registered = registered_connections(self.layout)[0]
+
+        self.assertEqual(registered.inputs[0].reader.path, str(first_source))
+        self.assertNotIn("AXEY_FIXTURE_ROOT", registered.canonical_json)
+
+    def test_state_layout_never_uses_a_relative_data_home(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"HOME": str(self.root), "XDG_DATA_HOME": "relative-data"},
+        ):
+            self.assertEqual(
+                state_layout().root,
+                self.root / ".local" / "share" / "axey",
+            )
+        with self.assertRaises(ConnectionConfigError):
+            state_layout("relative-state")
+
+    def test_payload_cannot_copy_an_undeclared_nested_object(self) -> None:
+        sentinel = "NESTED_SENTINEL_MUST_NOT_LEAVE_SOURCE"
+        source = self.root / "nested.jsonl"
+        source.write_text(
+            json.dumps(
+                {
+                    "id": "reading-1",
+                    "measured_at": "2026-01-02T11:59:00+00:00",
+                    "bundle": {"secret": sentinel},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        raw = self.jsonl_config("nested-source", source)
+        raw["inputs"][0]["mappings"][0]["payload"] = {
+            "bundle": "item.bundle"
+        }
+
+        with ObservationStore(self.layout.database) as store:
+            result = collect_connection(
+                parse_connection(raw), store, now=lambda: self.observed_at
+            )
+            self.assertEqual(store.observations(), [])
+
+        self.assertFalse(result.readable)
+        self.assertNotIn(sentinel, self.layout.database.read_bytes().decode("latin-1"))
+
+    def test_subject_identity_preserves_json_scalar_type(self) -> None:
+        source = self.root / "typed-subjects.jsonl"
+        records = [
+            {
+                "id": 1,
+                "measured_at": "2026-01-02T11:58:00+00:00",
+                "value": 7,
+            },
+            {
+                "id": "1",
+                "measured_at": "2026-01-02T11:59:00+00:00",
+                "value": 8,
+            },
+        ]
+        source.write_text(
+            "".join(json.dumps(record) + "\n" for record in records),
+            encoding="utf-8",
+        )
+        config = parse_connection(self.jsonl_config("typed-subjects", source))
+
+        with ObservationStore(self.layout.database) as store:
+            result = collect_connection(config, store, now=lambda: self.observed_at)
+            subjects = [record.subject for record in store.current_observations()]
+
+        self.assertEqual(result.records_added, 2)
+        self.assertEqual(subjects, ["1", '"1"'])
 
     def test_repeated_known_records_and_empty_scan_are_quiet(self) -> None:
         source = self.root / "events.jsonl"
@@ -321,6 +412,26 @@ class ConnectedSourcesTest(unittest.TestCase):
             format_verification(uncollected_result),
             "uncollected-source: disagree missing=0 changed=0 uncollected=1 pending=0",
         )
+
+    def test_verification_compares_json_types(self) -> None:
+        source = self.root / "typed-values.jsonl"
+        original = {
+            "id": "reading-1",
+            "measured_at": "2026-01-02T11:59:00+00:00",
+            "value": 1,
+        }
+        source.write_text(json.dumps(original) + "\n", encoding="utf-8")
+        config = parse_connection(self.jsonl_config("typed-values", source))
+
+        with ObservationStore(self.layout.database) as store:
+            collect_connection(config, store, now=lambda: self.observed_at)
+            source.write_text(
+                json.dumps(dict(original, value=True)) + "\n", encoding="utf-8"
+            )
+            result = verify_connection(config, store)
+
+        self.assertTrue(result.disagrees)
+        self.assertEqual(result.changed, 1)
 
     def test_strictly_newer_series_point_is_pending_not_disagreement(self) -> None:
         source = self.root / "series.jsonl"

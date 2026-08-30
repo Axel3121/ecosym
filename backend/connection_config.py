@@ -8,6 +8,7 @@ import os
 import re
 import tempfile
 from collections.abc import Iterable
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -116,13 +117,16 @@ class StateLayout:
 def state_layout(root: str | Path | None = None) -> StateLayout:
     if root is None:
         data_home = os.environ.get("XDG_DATA_HOME")
+        data_home_path = Path(data_home).expanduser() if data_home else None
         root_path = (
-            Path(data_home).expanduser() / "axey"
-            if data_home
+            data_home_path / "axey"
+            if data_home_path is not None and data_home_path.is_absolute()
             else Path.home() / ".local" / "share" / "axey"
         )
     else:
         root_path = Path(root).expanduser()
+        if not root_path.is_absolute():
+            raise ConnectionConfigError("Axey state directory must be absolute")
     return StateLayout(
         root=root_path,
         database=root_path / "observations.sqlite3",
@@ -143,7 +147,7 @@ def load_connection(path: str | Path) -> ConnectionConfig:
 def parse_connection(raw: object) -> ConnectionConfig:
     config = _object(raw, "connection")
     _keys(config, {"version", "connection_id", "inputs"}, "connection")
-    if config.get("version") != 1:
+    if type(config.get("version")) is not int or config.get("version") != 1:
         raise ConnectionConfigError("connection.version must be 1")
     connection_id = _identifier(config.get("connection_id"), "connection_id")
     inputs_raw = _list(config.get("inputs"), "connection.inputs")
@@ -156,8 +160,16 @@ def parse_connection(raw: object) -> ConnectionConfig:
     _unique((mapping.mapping_id for mapping in mappings), "mapping id")
     _unique((mapping.kind for mapping in mappings), "mapping kind")
 
+    canonical_config = deepcopy(config)
+    canonical_inputs = canonical_config["inputs"]
+    for raw_input, parsed_input in zip(canonical_inputs, inputs, strict=True):
+        reader = raw_input["reader"]
+        if parsed_input.reader.path is not None:
+            reader["path"] = parsed_input.reader.path
+        if parsed_input.reader.glob is not None:
+            reader["glob"] = parsed_input.reader.glob
     canonical = json.dumps(
-        config, sort_keys=True, separators=(",", ":"), allow_nan=False
+        canonical_config, sort_keys=True, separators=(",", ":"), allow_nan=False
     )
     return ConnectionConfig(connection_id, inputs, canonical)
 
@@ -272,7 +284,7 @@ def _parse_reader(raw: object) -> ReaderConfig:
     reader_type = value.get("type")
     if reader_type == "sqlite":
         _keys(value, {"type", "path", "table", "columns"}, "SQLite reader")
-        path = _text(value.get("path"), "reader.path")
+        path = _source_locator(value.get("path"), "reader.path")
         table = _sql_name(value.get("table"), "reader.table")
         columns_raw = _list(value.get("columns"), "reader.columns")
         if not columns_raw:
@@ -282,7 +294,9 @@ def _parse_reader(raw: object) -> ReaderConfig:
         return ReaderConfig("sqlite", path=path, table=table, columns=columns)
     if reader_type == "jsonl":
         _keys(value, {"type", "path"}, "JSONL reader")
-        return ReaderConfig("jsonl", path=_text(value.get("path"), "reader.path"))
+        return ReaderConfig(
+            "jsonl", path=_source_locator(value.get("path"), "reader.path")
+        )
     if reader_type == "json":
         _keys(value, {"type", "path", "glob"}, "JSON reader")
         path = value.get("path")
@@ -293,8 +307,12 @@ def _parse_reader(raw: object) -> ReaderConfig:
             )
         return ReaderConfig(
             "json",
-            path=_text(path, "reader.path") if path is not None else None,
-            glob=_text(pattern, "reader.glob") if pattern is not None else None,
+            path=_source_locator(path, "reader.path") if path is not None else None,
+            glob=(
+                _source_locator(pattern, "reader.glob")
+                if pattern is not None
+                else None
+            ),
         )
     raise ConnectionConfigError("reader.type must be sqlite, jsonl, or json")
 
@@ -485,6 +503,13 @@ def _text(raw: object, context: str) -> str:
     if not isinstance(raw, str) or not raw:
         raise ConnectionConfigError(f"{context} must be a non-empty string")
     return raw
+
+
+def _source_locator(raw: object, context: str) -> str:
+    value = os.path.expandvars(os.path.expanduser(_text(raw, context)))
+    if not Path(value).is_absolute():
+        raise ConnectionConfigError(f"{context} must resolve to an absolute path")
+    return os.path.normpath(value)
 
 
 def _object(raw: object, context: str) -> dict[str, object]:

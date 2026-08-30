@@ -78,9 +78,15 @@ with one of:
 - `meta`: reader-owned scalar metadata such as JSONL byte `offset`, source
   `line`, or selected-item `index`.
 
-`payload` is a flat object whose fields are individually declared. There is no
-copy-all operation. An optional `when` condition supports only `is_null` and
-`is_not_null`; it controls whether that mapping emits a record.
+`payload` is a flat object whose fields are individually declared and whose
+mapped values are JSON scalars. A source object or array cannot be copied as one
+payload value. There is no copy-all operation. An optional `when` condition
+supports only `is_null` and `is_not_null`; it controls whether that mapping emits
+a record.
+
+Subjects are source scalars encoded as canonical JSON text, preserving the
+difference between values such as the number `1`, the string `"1"`, and the
+Boolean `true` in fact identity.
 
 `source_time` may be absent. When present, its format is `unix`, `iso8601`, or
 `date`. A null source value remains no source time. It is never changed to zero
@@ -110,6 +116,10 @@ Absent, locked, malformed, partially malformed, wrongly shaped, or non-finite
 sources are unread. Reader and mapping errors never include source values in
 command output.
 
+Home and environment expansion happens while configuration is parsed. The
+normalized absolute locator is what registration fingerprints and stores, so a
+later environment change cannot retarget an immutable connection identity.
+
 ## Connection identity
 
 `connection_id` is user-selected, immutable, and distinct from reader type and
@@ -123,7 +133,7 @@ keeps `reader_type` on each new record. Migration from v3 renames the old
 `adapter` columns as schema metadata and adds nullable reader metadata. Existing
 records and attempts are not updated, deleted, reinserted, or reinterpreted. A
 legacy record's old adapter value is therefore its deterministic connection
-identity.
+identity, while its reader type remains unknown.
 
 ## Runner semantics
 
@@ -162,8 +172,9 @@ Every mapping declares:
 
 Verification rereads without collecting. For append-only mappings, a stored
 identity absent from the source is `missing`; rolling snapshots may stop
-exposing old points. Different compared values at the same identity are
-`changed`. A source identity never collected is `uncollected`, except for a
+exposing old points. Different compared JSON values at the same identity are
+`changed`, including a change of JSON type such as number to Boolean. A source
+identity never collected is `uncollected`, except for a
 declared next series point whose source time is strictly newer than all stored
 points for that fact; that is reported as `pending` and is not disagreement.
 

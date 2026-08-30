@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import glob
 import json
-import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -181,10 +180,9 @@ def _source_path(raw: str | None) -> Path:
 def _expanded_absolute(raw: str | None) -> str:
     if raw is None:
         raise SourceUnreadError("source path is absent")
-    expanded = os.path.expandvars(os.path.expanduser(raw))
-    if not Path(expanded).is_absolute():
+    if not Path(raw).is_absolute():
         raise SourceUnreadError("source path must be absolute")
-    return expanded
+    return raw
 
 
 def _quote_identifier(value: str) -> str:
