@@ -140,6 +140,11 @@ downloaded code, broad credentials, or untrusted content require isolation
 proportional to their blast radius. Module boundaries alone are not security
 boundaries against malicious code.
 
+Before relying on an effect boundary, identify the mechanism that currently
+enforces it and how that enforcement can be verified. Where no enforcing owner
+exists, the boundary is unenforced and must be reported as such — a documented
+obligation with nothing implementing it is not compliance.
+
 ## Destructive changes to owned history
 
 Deleting or semantically reinterpreting historical Axey-owned state requires:

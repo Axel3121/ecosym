@@ -20,6 +20,21 @@ Stable system boundaries are owned by `ARCHITECTURE.md`. Security and privacy
 obligations are owned by `SECURITY.md`. Development obligations are owned by
 `DEVELOPMENT.md`.
 
+## Precedence
+
+These four documents are loaded together and in no fixed order. Where they
+appear to conflict:
+
+Security, privacy, and authority protections prevail over everything else. A
+product goal never overrides a protection.
+
+Otherwise each document governs what it declares it owns. A statement outside a
+document's declared ownership is context, not authority.
+
+Where owners genuinely conflict, or where no owner answers a load-bearing
+question, stop the affected consequential action and report the gap. Do not
+resolve it by picking the more convenient rule.
+
 ## Purpose
 
 Axey should reduce the work required to reconstruct personal context and decide
@@ -28,10 +43,11 @@ what deserves attention — by giving that context a place rather than a report.
 Hermes is the brain and does the work. Axey reads, and gives what it finds a
 form.
 
-Axey has no execution authority and renders only observed state. It may submit
-requests to Hermes, which decides whether and how to act. Axey is therefore not
-read-only, and is not described as such: a user action inside Axey can cause
-work to begin.
+Axey has no execution authority and renders only state it can account for:
+external state it has observed, and institutional state the user declared.
+Never operational success it inferred. It may submit requests to Hermes, which
+decides whether and how to act. Axey is therefore not read-only, and is not
+described as such: a user action inside Axey can cause work to begin.
 
 Observed state is not only finished outcomes. Live operation is observable and
 may be shown as live; a petition's own lifecycle is observable and may be shown
@@ -135,6 +151,11 @@ queue is a noticeboard the user can only shout at.
 
 A petition is visible as a petition: a thing that was asked. It is never
 depicted as a thing that happened.
+
+How that identity is established, bound to authority, scoped, expired, and
+recorded is not yet designed. Until it is, no consequential petition path is
+built: an unauthenticated request that starts work is the failure this product
+least survives.
 
 ### The council
 
@@ -462,5 +483,7 @@ current slice.
   Axey surface, and what record does a petition leave?
 - How much can the council prepare a matter on its own before the user sees it,
   and could well-evidenced matters eventually decide themselves? This is a
-  direction, not a decision — and it is Hermes's to make, since Hermes executes.
+  direction, not a decision. Any such automatic decision requires an explicit
+  mandate the user granted; Hermes enforces a mandate but never creates one,
+  and executing work confers no authority to decide what work is permitted.
   Note the tension: an empty queue removes the reason to open Axey.

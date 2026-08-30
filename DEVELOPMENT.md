@@ -152,6 +152,14 @@ and the exact candidate is frozen, the current execution mechanism should
 invoke that review automatically rather than depend on the writer remembering
 to request it.
 
+A candidate is consequential — review is mandatory, not a judgement call — when
+it touches any of: credentials or capabilities; external effects; personal data
+flow; authority or admission; migrations or otherwise irreversible change;
+concurrency or isolation; or any claim that deterministic checks cannot prove.
+
+Where mandatory review cannot be run, the status is blocked or unknown. It is
+never waived by absence.
+
 Independent review uses:
 
 - fresh or separate context from the writer;
@@ -204,6 +212,10 @@ Prefer an existing capable owner or native mechanism. Add a scheduler, workflow
 engine, agent database, risk grammar, reviewer loop, worktree manager, custom
 governance system, or separate runtime only after a repeated concrete failure
 shows that current owners cannot provide the required property.
+
+Security isolation is the exception: it is justified by an unmet invariant, a
+threat model, or blast radius, and does not wait for a failure to occur first.
+`SECURITY.md` owns when isolation is required.
 
 The sequence is:
 
