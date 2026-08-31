@@ -43,6 +43,18 @@ if [ "$USE_WORKTREE" = 1 ]; then
   WORKTREE="${XDG_DATA_HOME:-$HOME/.local/share}/ecosym/worktrees/${TASK}"
 
   if [ -d "$WORKTREE" ]; then
+    if HELD_BRANCH="$(git -C "$WORKTREE" symbolic-ref --quiet --short HEAD 2>/dev/null)"; then
+      if [ "$HELD_BRANCH" != "$BRANCH" ]; then
+        echo "worktree $WORKTREE holds branch $HELD_BRANCH; requested branch $BRANCH" >&2
+        exit 1
+      fi
+    elif HELD_COMMIT="$(git -C "$WORKTREE" rev-parse --short HEAD 2>/dev/null)"; then
+      echo "worktree $WORKTREE is detached at $HELD_COMMIT; requested branch $BRANCH" >&2
+      exit 1
+    else
+      echo "existing worktree path is not a Git worktree: $WORKTREE" >&2
+      exit 1
+    fi
     echo "reusing worktree: $WORKTREE"
   elif git show-ref --quiet --verify "refs/heads/${BRANCH}"; then
     git worktree add "$WORKTREE" "$BRANCH" >&2
