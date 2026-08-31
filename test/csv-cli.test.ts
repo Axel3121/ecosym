@@ -11,7 +11,7 @@ const fixture = fileURLToPath(
   new URL("fixtures/fifth-source/habitat-survey.csv", import.meta.url),
 );
 
-test("connects a fifth source of a different kind without a product-code adapter", async () => {
+test("connects, collects, queries, and verifies a declarative CSV source through the CLI", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-fifth-source-"));
   const sourcePath = join(directory, "habitat-survey.csv");
   const configPath = join(directory, "connection.json");

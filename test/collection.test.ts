@@ -92,11 +92,12 @@ function fileConnection(
   });
 }
 
-test("collects named SQLite fields while unselected personal fields never reach the store", async () => {
+test("SQLite collection stores configured facts and excludes sampled unselected fields", async () => {
   const directory = workspace();
   const sourcePath = join(directory, "source.db");
   const source = createSqliteSource(sourcePath);
   const secret = "SECRET-do-not-copy-47a8";
+  const privateHistory = "PRIVATE-history-do-not-copy-92b1";
   source
     .prepare(
       `INSERT INTO measurements
@@ -104,7 +105,7 @@ test("collects named SQLite fields while unselected personal fields never reach 
          secret_token, private_history)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run("record-1", "video-1", "2026-08-30T10:00:00Z", 7, "completed", secret, "private prose");
+    .run("record-1", "video-1", "2026-08-30T10:00:00Z", 7, "completed", secret, privateHistory);
   source.close();
 
   const store = new ObservationStore(join(directory, "state"));
@@ -119,7 +120,9 @@ test("collects named SQLite fields while unselected personal fields never reach 
   } finally {
     store.close();
   }
-  assert.equal(readFileSync(join(directory, "state", "observations.sqlite")).includes(secret), false);
+  const storedBytes = readFileSync(join(directory, "state", "observations.sqlite"));
+  assert.equal(storedBytes.includes(secret), false);
+  assert.equal(storedBytes.includes(privateHistory), false);
 });
 
 test("keeps changing values as a source-time series and does not promote a late older point", async () => {

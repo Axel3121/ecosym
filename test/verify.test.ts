@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { collectConnection } from "../src/collect.ts";
 import { parseConnectionConfig } from "../src/config.ts";
+import { canonicalJson, sha256 } from "../src/json.ts";
 import { ObservationStore } from "../src/store.ts";
 import {
   exitCodeForVerification,
@@ -92,6 +94,30 @@ test("the deliberately corrupted fixture produces payload disagreement", async (
     assert.equal(report.connections[0]?.counts.payloadMismatch, 1);
     assert.equal(report.connections[0]?.outcome, "disagreement");
     assert.equal(exitCodeForVerification(report), 1);
+  } finally {
+    store.close();
+  }
+});
+
+test("detects a store payload altered after collection", async () => {
+  const { parsed, store } = setup();
+  try {
+    await collectConnection(store, parsed.config.id);
+    const payloadJson = canonicalJson({ value: 999 });
+    const database = new DatabaseSync(store.path);
+    try {
+      const result = database
+        .prepare("UPDATE facts SET payload_json = ?, payload_hash = ?")
+        .run(payloadJson, sha256(payloadJson));
+      assert.equal(Number(result.changes), 1);
+    } finally {
+      database.close();
+    }
+
+    const report = await verifyConnection(store, store.getConnection(parsed.config.id));
+    assert.equal(report.outcome, "disagreement");
+    assert.equal(report.counts.payloadMismatch, 1);
+    assert.equal(report.counts.matched, 0);
   } finally {
     store.close();
   }
