@@ -233,6 +233,7 @@ test("a failed collection rolls back all facts before recording unread status", 
       { ...status, lastAttemptAt: undefined },
       {
         connectionId: "source-a",
+        connectionVersion: parsed.hash,
         lastAttemptAt: undefined,
         reason: "failed",
         status: "unread",
@@ -1454,6 +1455,7 @@ test("the ordering-index migration does not rewrite version-five facts", async (
     .map((row) => ({ ...(row as Record<string, unknown>) }));
   downgraded.exec(`
     DROP INDEX facts_identity_source_time;
+    DROP TABLE record_index_mode_resolutions;
     ALTER TABLE connection_versions DROP COLUMN jsonl_record_index_mode;
     PRAGMA user_version = 5;
   `);
@@ -1473,7 +1475,7 @@ test("the ordering-index migration does not rewrite version-five facts", async (
     const version = inspected.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(version.user_version, 8);
+    assert.equal(version.user_version, 9);
     const columns = (
       inspected.prepare("PRAGMA index_info(facts_identity_source_time)").all() as {
         name: string;
@@ -1487,6 +1489,47 @@ test("the ordering-index migration does not rewrite version-five facts", async (
       "epistemic_status",
       "source_time_key",
     ]);
+  } finally {
+    inspected.close();
+  }
+});
+
+test("schema-eight stores gain an empty resolution log without rewriting facts", async () => {
+  const { directory, store } = temporaryStore();
+  const parsed = connection();
+  store.register(parsed);
+  await store.collect(store.getConnection(parsed.config.id), (sink) => {
+    sink.recordSourceRecord(() => [fact()]);
+  });
+  const facts = store.queryObservations();
+  store.close();
+
+  const downgraded = new DatabaseSync(join(directory, "observations.sqlite"));
+  downgraded.exec(`
+    DROP TABLE record_index_mode_resolutions;
+    PRAGMA user_version = 8;
+  `);
+  downgraded.close();
+
+  const migrated = new ObservationStore(directory);
+  try {
+    assert.deepEqual(migrated.queryObservations(), facts);
+    assert.deepEqual(migrated.recordIndexModeResolutions(), []);
+  } finally {
+    migrated.close();
+  }
+  const inspected = new DatabaseSync(join(directory, "observations.sqlite"), {
+    readOnly: true,
+  });
+  try {
+    const version = inspected.prepare("PRAGMA user_version").get() as {
+      user_version: number;
+    };
+    assert.equal(version.user_version, 9);
+    const resolutions = inspected
+      .prepare("SELECT count(*) AS count FROM record_index_mode_resolutions")
+      .get() as { count: number };
+    assert.equal(resolutions.count, 0);
   } finally {
     inspected.close();
   }
@@ -1648,6 +1691,7 @@ test("version-three reversions migrate without claiming a current attempt status
   oldStore.exec(`
     DROP INDEX facts_correction_slot;
     DROP INDEX facts_identity_source_time;
+    DROP TABLE record_index_mode_resolutions;
     ALTER TABLE connection_versions DROP COLUMN jsonl_record_index_mode;
     ALTER TABLE collection_attempts DROP COLUMN facts_changed;
     PRAGMA user_version = 3;

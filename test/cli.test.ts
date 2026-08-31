@@ -3,8 +3,13 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+
+import { parseConnectionConfig } from "../src/config.ts";
+import { materializeFacts } from "../src/materialize.ts";
+import { ObservationStore } from "../src/store.ts";
 
 const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 
@@ -55,6 +60,11 @@ test("the command surface connects, collects, queries, and verifies", async () =
 
   const before = await runCli(["status"], xdgDataHome);
   assert.equal(
+    (before.output.connections as { connectionVersion: string }[])[0]
+      ?.connectionVersion,
+    connect.output.connectionVersion,
+  );
+  assert.equal(
     (before.output.connections as { status: string }[])[0]?.status,
     "unread",
   );
@@ -101,6 +111,232 @@ test("out-of-range query limits are invalid arguments", async (t) => {
       });
       assert.equal(result.stderr, "");
     });
+  }
+});
+
+test("an ambiguous legacy record index can be resolved by a recorded user choice", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-cli-resolution-"));
+  const sourcePath = join(directory, "source.jsonl");
+  const configPath = join(directory, "connection.json");
+  const xdgDataHome = join(directory, "data");
+  const stateDirectory = join(xdgDataHome, "ecosym");
+  const sourceText =
+    '{"subject":"alpha","value":1}\n\n{"subject":"beta","value":2}\n';
+  const configInput = {
+    schemaVersion: 1,
+    id: "legacy-index",
+    factOwner: "external-owner",
+    reader: { type: "jsonl", path: sourcePath },
+    sourceRecord: {
+      identity: [{ scope: "meta", value: "record-index" }],
+      retention: "history",
+      recordedAt: { unavailable: true },
+    },
+    facts: [
+      {
+        epistemicStatus: "observation",
+        kind: "api.value",
+        subject: { scope: "record", path: "subject" },
+        payload: { value: { scope: "record", path: "value" } },
+      },
+    ],
+  };
+  writeFileSync(sourcePath, sourceText);
+  writeFileSync(configPath, JSON.stringify(configInput));
+  const parsed = parseConnectionConfig(configInput);
+  const legacy = new ObservationStore(stateDirectory);
+  legacy.register(parsed);
+  await legacy.collect(legacy.getConnection(parsed.config.id), (sink) => {
+    for (const [recordIndex, line] of sourceText.split("\n").entries()) {
+      if (line.trim() === "") {
+        continue;
+      }
+      const record = JSON.parse(line) as Record<string, unknown>;
+      sink.recordSourceRecord(() =>
+        materializeFacts(parsed.config, {
+          meta: { recordIndex, sourcePath },
+          numericLexemes: null,
+          record,
+          root: record,
+        }),
+      );
+    }
+  });
+  const identities = legacy.queryObservations().map((fact) => fact.sourceRecordId);
+  legacy.close();
+  const downgraded = new DatabaseSync(join(stateDirectory, "observations.sqlite"));
+  downgraded.exec(`
+    DROP TABLE record_index_mode_resolutions;
+    ALTER TABLE connection_versions DROP COLUMN jsonl_record_index_mode;
+    PRAGMA user_version = 6;
+  `);
+  downgraded.close();
+
+  const before = await runCli(["status"], xdgDataHome);
+  assert.equal(
+    (before.output.connections as { connectionVersion: string }[])[0]
+      ?.connectionVersion,
+    parsed.hash,
+  );
+  assert.equal(
+    (before.output.connections as { reason: string }[])[0]?.reason,
+    "record-index-unknown",
+  );
+  assert.equal((await runCli(["disconnect", parsed.config.id], xdgDataHome)).code, 0);
+  assert.equal((await runCli(["connect", configPath], xdgDataHome)).code, 0);
+  const stillUnknown = await runCli(["status"], xdgDataHome);
+  assert.equal(
+    (stillUnknown.output.connections as { reason: string }[])[0]?.reason,
+    "record-index-unknown",
+  );
+
+  const preview = await runCli(
+    ["resolve-record-index", parsed.config.id, parsed.hash, "physical-line"],
+    xdgDataHome,
+  );
+  assert.equal(preview.code, 0);
+  assert.equal(preview.output.outcome, "confirmation-required");
+  assert.equal(preview.output.currentRecordIndexMode, "unknown");
+  assert.equal(preview.output.factsAffected, 2);
+  assert.equal(preview.output.collectionAttemptsRecorded, 1);
+  assert.equal(typeof preview.output.consequence, "string");
+  assert.equal(typeof preview.output.recoverability, "string");
+  const confirmationToken = preview.output.confirmationToken;
+  assert.equal(typeof confirmationToken, "string");
+
+  const replacementSourcePath = join(directory, "replacement.jsonl");
+  const replacementConfigPath = join(directory, "replacement.json");
+  writeFileSync(replacementSourcePath, sourceText);
+  const replacementInput = JSON.parse(JSON.stringify(configInput)) as {
+    reader: { path: string };
+  };
+  replacementInput.reader.path = replacementSourcePath;
+  writeFileSync(replacementConfigPath, JSON.stringify(replacementInput));
+  assert.equal((await runCli(["disconnect", parsed.config.id], xdgDataHome)).code, 0);
+  assert.equal((await runCli(["connect", replacementConfigPath], xdgDataHome)).code, 0);
+  const wrongVersion = await runCli(
+    [
+      "resolve-record-index",
+      parsed.config.id,
+      parsed.hash,
+      "physical-line",
+      "--confirm",
+      confirmationToken as string,
+    ],
+    xdgDataHome,
+  );
+  assert.equal(wrongVersion.code, 1);
+  assert.equal(wrongVersion.output.error, "connection_inactive");
+  assert.equal((await runCli(["disconnect", parsed.config.id], xdgDataHome)).code, 0);
+  assert.equal((await runCli(["connect", configPath], xdgDataHome)).code, 0);
+
+  const resolution = await runCli(
+    [
+      "resolve-record-index",
+      parsed.config.id,
+      parsed.hash,
+      "physical-line",
+      "--confirm",
+      confirmationToken as string,
+    ],
+    xdgDataHome,
+  );
+  assert.equal(resolution.code, 0);
+  assert.equal(resolution.output.outcome, "resolved");
+  assert.equal(resolution.output.connectionVersion, parsed.hash);
+  assert.equal(resolution.output.previousRecordIndexMode, "unknown");
+  assert.equal(resolution.output.recordIndexMode, "physical-line");
+  assert.equal(typeof resolution.output.resolutionId, "string");
+  assert.equal(typeof resolution.output.resolvedAt, "string");
+
+  const verification = await runCli(["verify"], xdgDataHome);
+  assert.equal(verification.code, 0);
+  assert.equal(verification.output.outcome, "agreement");
+
+  const staleCorrectionPreview = await runCli(
+    ["resolve-record-index", parsed.config.id, parsed.hash, "record-ordinal"],
+    xdgDataHome,
+  );
+  assert.equal((await runCli(["collect", parsed.config.id], xdgDataHome)).code, 0);
+  const staleCorrection = await runCli(
+    [
+      "resolve-record-index",
+      parsed.config.id,
+      parsed.hash,
+      "record-ordinal",
+      "--confirm",
+      staleCorrectionPreview.output.confirmationToken as string,
+    ],
+    xdgDataHome,
+  );
+  assert.equal(staleCorrection.code, 1);
+  assert.equal(
+    staleCorrection.output.error,
+    "record_index_resolution_state_changed",
+  );
+  const correctionPreview = await runCli(
+    ["resolve-record-index", parsed.config.id, parsed.hash, "record-ordinal"],
+    xdgDataHome,
+  );
+  const correction = await runCli(
+    [
+      "resolve-record-index",
+      parsed.config.id,
+      parsed.hash,
+      "record-ordinal",
+      "--confirm",
+      correctionPreview.output.confirmationToken as string,
+    ],
+    xdgDataHome,
+  );
+  assert.equal(correction.code, 0);
+  assert.equal(correction.output.previousRecordIndexMode, "physical-line");
+
+  const restorationPreview = await runCli(
+    ["resolve-record-index", parsed.config.id, parsed.hash, "physical-line"],
+    xdgDataHome,
+  );
+  const restoration = await runCli(
+    [
+      "resolve-record-index",
+      parsed.config.id,
+      parsed.hash,
+      "physical-line",
+      "--confirm",
+      restorationPreview.output.confirmationToken as string,
+    ],
+    xdgDataHome,
+  );
+  assert.equal(restoration.code, 0);
+  assert.equal(restoration.output.previousRecordIndexMode, "record-ordinal");
+  assert.equal((await runCli(["verify"], xdgDataHome)).code, 0);
+  assert.equal((await runCli(["disconnect", parsed.config.id], xdgDataHome)).code, 0);
+  const status = await runCli(["status"], xdgDataHome);
+  assert.deepEqual(status.output.connections, []);
+  const resolutions = status.output.recordIndexModeResolutions as {
+    previousRecordIndexMode: string;
+    recordIndexMode: string;
+  }[];
+  assert.deepEqual(
+    resolutions.map((record) => [
+      record.previousRecordIndexMode,
+      record.recordIndexMode,
+    ]),
+    [
+      ["unknown", "physical-line"],
+      ["physical-line", "record-ordinal"],
+      ["record-ordinal", "physical-line"],
+    ],
+  );
+
+  const inspected = new ObservationStore(stateDirectory);
+  try {
+    assert.deepEqual(
+      inspected.queryObservations().map((fact) => fact.sourceRecordId),
+      identities,
+    );
+  } finally {
+    inspected.close();
   }
 });
 

@@ -21,9 +21,28 @@ import {
   verificationFactFromInput,
 } from "./verification-facts.ts";
 
-const STORE_SCHEMA_VERSION = 8;
+const STORE_SCHEMA_VERSION = 9;
 const STORE_FILENAME = "observations.sqlite";
 const BUSY_RETRY_WINDOW_MILLISECONDS = 250;
+const CREATE_RECORD_INDEX_MODE_RESOLUTIONS = `
+  CREATE TABLE record_index_mode_resolutions (
+    resolution_order INTEGER PRIMARY KEY,
+    resolution_id TEXT NOT NULL UNIQUE,
+    connection_id TEXT NOT NULL,
+    config_hash TEXT NOT NULL,
+    previous_mode TEXT NOT NULL
+      CHECK (previous_mode IN ('physical-line', 'record-ordinal', 'unknown')),
+    record_index_mode TEXT NOT NULL
+      CHECK (record_index_mode IN ('physical-line', 'record-ordinal')),
+    resolved_at TEXT NOT NULL,
+    facts_affected INTEGER NOT NULL CHECK (facts_affected >= 0),
+    collection_attempts_recorded INTEGER NOT NULL
+      CHECK (collection_attempts_recorded >= 0),
+    confirmation_token TEXT NOT NULL,
+    FOREIGN KEY (connection_id, config_hash)
+      REFERENCES connection_versions(connection_id, config_hash)
+  ) STRICT;
+`;
 
 export interface ActiveConnection {
   activationId: string;
@@ -73,6 +92,7 @@ export interface CollectionResult {
 
 export interface ConnectionStatus {
   connectionId: string;
+  connectionVersion: string;
   lastAttemptAt: null | string;
   reason:
     | "collected"
@@ -101,6 +121,27 @@ export interface VerificationSnapshot {
   jsonlRecordIndexMode: JsonlRecordIndexMode | "unknown";
   payloadHashesValid: boolean;
   sourceTimeKeysValid: boolean;
+}
+
+export interface RecordIndexModeResolution {
+  collectionAttemptsRecorded: number;
+  connectionId: string;
+  connectionVersion: string;
+  factsAffected: number;
+  previousRecordIndexMode: JsonlRecordIndexMode | "unknown";
+  recordIndexMode: JsonlRecordIndexMode;
+  resolutionId: string;
+  resolvedAt: string;
+}
+
+export interface RecordIndexModeResolutionPlan {
+  collectionAttemptsRecorded: number;
+  confirmationToken: string;
+  connectionId: string;
+  connectionVersion: string;
+  currentRecordIndexMode: JsonlRecordIndexMode | "unknown";
+  factsAffected: number;
+  recordIndexMode: JsonlRecordIndexMode;
 }
 
 export interface CollectionSink {
@@ -140,6 +181,24 @@ export class StoredRecordIndexModeUnknownError extends Error {
   constructor(_connectionId: string) {
     super("The stored JSONL record-index mode cannot be determined");
     this.name = "StoredRecordIndexModeUnknownError";
+  }
+}
+
+export class StoredRecordIndexModeKnownError extends Error {
+  readonly code = "store_record_index_mode_known";
+
+  constructor(_connectionId: string) {
+    super("The stored JSONL record-index mode is already known");
+    this.name = "StoredRecordIndexModeKnownError";
+  }
+}
+
+export class RecordIndexResolutionStateChangedError extends Error {
+  readonly code = "record_index_resolution_state_changed";
+
+  constructor() {
+    super("The record-index resolution scope changed after confirmation was requested");
+    this.name = "RecordIndexResolutionStateChangedError";
   }
 }
 
@@ -241,6 +300,101 @@ export class ObservationStore {
         .prepare("DELETE FROM active_connections WHERE connection_id = ?")
         .run(connectionId);
       return numberOfChanges(result) === 1;
+    });
+  }
+
+  planRecordIndexModeResolution(
+    connectionId: string,
+    connectionVersion: string,
+    recordIndexMode: JsonlRecordIndexMode,
+  ): RecordIndexModeResolutionPlan {
+    if (recordIndexMode !== "physical-line" && recordIndexMode !== "record-ordinal") {
+      throw new TypeError("A record-index resolution must select a supported mode");
+    }
+    return this.#readTransaction(() =>
+      this.#recordIndexModeResolutionPlan(
+        connectionId,
+        connectionVersion,
+        recordIndexMode,
+      ),
+    );
+  }
+
+  resolveRecordIndexMode(
+    connectionId: string,
+    connectionVersion: string,
+    recordIndexMode: JsonlRecordIndexMode,
+    confirmationToken: string,
+    now = new Date(),
+  ): RecordIndexModeResolution {
+    if (recordIndexMode !== "physical-line" && recordIndexMode !== "record-ordinal") {
+      throw new TypeError("A record-index resolution must select a supported mode");
+    }
+    const resolvedAt = now.toISOString();
+    return this.#transaction(() => {
+      const plan = this.#recordIndexModeResolutionPlan(
+        connectionId,
+        connectionVersion,
+        recordIndexMode,
+      );
+      if (confirmationToken !== plan.confirmationToken) {
+        throw new RecordIndexResolutionStateChangedError();
+      }
+      const updated = this.#database
+        .prepare(
+          `UPDATE connection_versions
+               SET jsonl_record_index_mode = ?
+             WHERE connection_id = ? AND config_hash = ?
+               AND jsonl_record_index_mode = ?`,
+        )
+        .run(
+          recordIndexMode,
+          connectionId,
+          connectionVersion,
+          plan.currentRecordIndexMode,
+        );
+      if (numberOfChanges(updated) !== 1) {
+        throw new RecordIndexResolutionStateChangedError();
+      }
+      const resolutionOrder = (
+        this.#database
+          .prepare(
+            `SELECT COALESCE(MAX(resolution_order), 0) + 1 AS next
+               FROM record_index_mode_resolutions`,
+          )
+          .get() as { next: number }
+      ).next;
+      const resolutionId = randomUUID();
+      this.#database
+        .prepare(
+          `INSERT INTO record_index_mode_resolutions
+             (resolution_order, resolution_id, connection_id, config_hash,
+              previous_mode, record_index_mode, resolved_at, facts_affected,
+              collection_attempts_recorded, confirmation_token)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          resolutionOrder,
+          resolutionId,
+          connectionId,
+          connectionVersion,
+          plan.currentRecordIndexMode,
+          recordIndexMode,
+          resolvedAt,
+          plan.factsAffected,
+          plan.collectionAttemptsRecorded,
+          confirmationToken,
+        );
+      return {
+        collectionAttemptsRecorded: plan.collectionAttemptsRecorded,
+        connectionId,
+        connectionVersion,
+        factsAffected: plan.factsAffected,
+        previousRecordIndexMode: plan.currentRecordIndexMode,
+        recordIndexMode,
+        resolutionId,
+        resolvedAt,
+      };
     });
   }
 
@@ -550,7 +704,8 @@ export class ObservationStore {
   statuses(): ConnectionStatus[] {
     const rows = this.#database
       .prepare(
-        `SELECT c.connection_id, COALESCE(a.completed_at, a.started_at) AS last_attempt_at,
+        `SELECT c.connection_id, c.config_hash,
+                COALESCE(a.completed_at, a.started_at) AS last_attempt_at,
                 a.outcome, a.facts_added, a.facts_changed, v.jsonl_record_index_mode
            FROM active_connections c
            JOIN connection_versions v
@@ -568,6 +723,7 @@ export class ObservationStore {
           ORDER BY c.connection_id`,
       )
       .all() as {
+      config_hash: string;
       connection_id: string;
       facts_added: null | number;
       facts_changed: null | number;
@@ -577,9 +733,13 @@ export class ObservationStore {
     }[];
 
     return rows.map((row) => {
+      const connection = {
+        connectionId: row.connection_id,
+        connectionVersion: row.config_hash,
+      };
       if (row.jsonl_record_index_mode === "unknown") {
         return {
-          connectionId: row.connection_id,
+          ...connection,
           lastAttemptAt: row.last_attempt_at,
           reason: "record-index-unknown",
           status: "unread",
@@ -587,7 +747,7 @@ export class ObservationStore {
       }
       if (row.outcome === null) {
         return {
-          connectionId: row.connection_id,
+          ...connection,
           lastAttemptAt: null,
           reason: "never-run",
           status: "unread",
@@ -595,7 +755,7 @@ export class ObservationStore {
       }
       if (row.outcome === "running") {
         return {
-          connectionId: row.connection_id,
+          ...connection,
           lastAttemptAt: row.last_attempt_at,
           reason: "incomplete",
           status: "unread",
@@ -603,7 +763,7 @@ export class ObservationStore {
       }
       if (row.outcome === "failed" || row.outcome === "skipped") {
         return {
-          connectionId: row.connection_id,
+          ...connection,
           lastAttemptAt: row.last_attempt_at,
           reason: row.outcome,
           status: "unread",
@@ -611,17 +771,55 @@ export class ObservationStore {
       }
       if (row.facts_added === 0 && row.facts_changed === 0) {
         return {
-          connectionId: row.connection_id,
+          ...connection,
           lastAttemptAt: row.last_attempt_at,
           reason: "nothing-new",
           status: "quiet",
         };
       }
       return {
-        connectionId: row.connection_id,
+        ...connection,
         lastAttemptAt: row.last_attempt_at,
         reason: "collected",
         status: "changed",
+      };
+    });
+  }
+
+  recordIndexModeResolutions(): RecordIndexModeResolution[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT resolution_id, connection_id, config_hash, previous_mode,
+                record_index_mode, resolved_at, facts_affected,
+                collection_attempts_recorded
+           FROM record_index_mode_resolutions
+          ORDER BY resolution_order`,
+      )
+      .all() as {
+      collection_attempts_recorded: number;
+      config_hash: string;
+      connection_id: string;
+      facts_affected: number;
+      previous_mode: string;
+      record_index_mode: string;
+      resolution_id: string;
+      resolved_at: string;
+    }[];
+    return rows.map((row) => {
+      const recordIndexMode = parseJsonlRecordIndexMode(row.record_index_mode);
+      const previousRecordIndexMode = parseJsonlRecordIndexMode(row.previous_mode);
+      if (recordIndexMode === "unknown") {
+        throw new Error("Stored record-index resolution is invalid");
+      }
+      return {
+        collectionAttemptsRecorded: row.collection_attempts_recorded,
+        connectionId: row.connection_id,
+        connectionVersion: row.config_hash,
+        factsAffected: row.facts_affected,
+        previousRecordIndexMode,
+        recordIndexMode,
+        resolutionId: row.resolution_id,
+        resolvedAt: row.resolved_at,
       };
     });
   }
@@ -885,6 +1083,13 @@ export class ObservationStore {
       if (row.user_version === STORE_SCHEMA_VERSION) {
         return;
       }
+      if (row.user_version === 8) {
+        this.#database.exec(`
+          ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
+          PRAGMA user_version = ${STORE_SCHEMA_VERSION};
+        `);
+        return;
+      }
       // Schema 7 was the rejected candidate that guessed a mode for schema-six rows.
       if (row.user_version === 7) {
         throw new Error(
@@ -922,6 +1127,8 @@ export class ObservationStore {
           FOREIGN KEY (connection_id, config_hash)
             REFERENCES connection_versions(connection_id, config_hash)
         ) STRICT;
+
+        ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
 
         CREATE TABLE collection_attempts (
           attempt_order INTEGER PRIMARY KEY,
@@ -1035,6 +1242,7 @@ export class ObservationStore {
           updateMode.run(mode, version.connection_id, version.config_hash);
         }
         this.#database.exec(`
+          ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
           PRAGMA user_version = ${STORE_SCHEMA_VERSION};
         `);
         return;
@@ -1050,6 +1258,7 @@ export class ObservationStore {
           ALTER TABLE connection_versions ADD COLUMN jsonl_record_index_mode TEXT
             NOT NULL DEFAULT 'physical-line'
             CHECK (jsonl_record_index_mode IN ('physical-line', 'record-ordinal', 'unknown'));
+          ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
           PRAGMA user_version = ${STORE_SCHEMA_VERSION};
         `);
         return;
@@ -1217,6 +1426,7 @@ export class ObservationStore {
             connection_id, fact_owner, kind, subject, epistemic_status,
             source_time_key
           );
+        ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
         PRAGMA user_version = ${STORE_SCHEMA_VERSION};
       `);
     });
@@ -1250,6 +1460,98 @@ export class ObservationStore {
       throw new Error("Registered connection configuration is missing");
     }
     return parseStoredConfig(row.config_json, connection.configHash);
+  }
+
+  #recordIndexModeResolutionPlan(
+    connectionId: string,
+    connectionVersion: string,
+    recordIndexMode: JsonlRecordIndexMode,
+  ): RecordIndexModeResolutionPlan {
+    const active = this.#database
+      .prepare(
+        `SELECT c.config_hash, v.jsonl_record_index_mode
+           FROM active_connections c
+           JOIN connection_versions v
+             ON v.connection_id = c.connection_id
+            AND v.config_hash = c.config_hash
+          WHERE c.connection_id = ?`,
+      )
+      .get(connectionId) as
+      | undefined
+      | { config_hash: string; jsonl_record_index_mode: string };
+    if (active === undefined) {
+      throw new ConnectionNotFoundError(connectionId);
+    }
+    if (active.config_hash !== connectionVersion) {
+      throw new ConnectionInactiveError(connectionId);
+    }
+    const currentRecordIndexMode = parseJsonlRecordIndexMode(
+      active.jsonl_record_index_mode,
+    );
+    const resolutions = this.#database
+      .prepare(
+        `SELECT count(*) AS count,
+                COALESCE(MAX(resolution_order), 0) AS latest_order
+           FROM record_index_mode_resolutions
+          WHERE connection_id = ? AND config_hash = ?`,
+      )
+      .get(connectionId, connectionVersion) as {
+      count: number;
+      latest_order: number;
+    };
+    if (
+      currentRecordIndexMode === recordIndexMode ||
+      (currentRecordIndexMode !== "unknown" && resolutions.count === 0)
+    ) {
+      throw new StoredRecordIndexModeKnownError(connectionId);
+    }
+    const facts = this.#database
+      .prepare(
+        `SELECT count(*) AS count, COALESCE(MAX(fact_id), 0) AS latest_id,
+                COALESCE(MAX(last_seen_attempt_order), 0) AS latest_seen_attempt
+           FROM facts
+          WHERE connection_id = ? AND config_hash = ?`,
+      )
+      .get(connectionId, connectionVersion) as {
+      count: number;
+      latest_id: number;
+      latest_seen_attempt: number;
+    };
+    const attempts = this.#database
+      .prepare(
+        `SELECT count(*) AS count,
+                COALESCE(MAX(attempt_order), 0) AS latest_order
+           FROM collection_attempts
+          WHERE connection_id = ? AND config_hash = ?`,
+      )
+      .get(connectionId, connectionVersion) as {
+      count: number;
+      latest_order: number;
+    };
+    const confirmationToken = `sha256:${sha256(
+      canonicalJson([
+        connectionId,
+        connectionVersion,
+        currentRecordIndexMode,
+        recordIndexMode,
+        facts.count,
+        facts.latest_id,
+        facts.latest_seen_attempt,
+        attempts.count,
+        attempts.latest_order,
+        resolutions.count,
+        resolutions.latest_order,
+      ]),
+    )}`;
+    return {
+      collectionAttemptsRecorded: attempts.count,
+      confirmationToken,
+      connectionId,
+      connectionVersion,
+      currentRecordIndexMode,
+      factsAffected: facts.count,
+      recordIndexMode,
+    };
   }
 
   #assertStoredRecordIndexModeKnown(connection: ActiveConnection): void {

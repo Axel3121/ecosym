@@ -27,7 +27,15 @@ async function run(arguments_: string[]): Promise<CommandResult> {
         schemaVersion: 1,
         command: "help",
         outcome: command === "help" ? "success" : "error",
-        commands: ["connect", "disconnect", "collect", "status", "query", "verify"],
+        commands: [
+          "connect",
+          "disconnect",
+          "collect",
+          "status",
+          "query",
+          "verify",
+          "resolve-record-index",
+        ],
       },
     };
   }
@@ -48,6 +56,8 @@ async function run(arguments_: string[]): Promise<CommandResult> {
         return query(store, arguments_.slice(1));
       case "verify":
         return await verify(store, arguments_.slice(1));
+      case "resolve-record-index":
+        return resolveRecordIndex(store, arguments_.slice(1));
       default:
         return invalidArguments(command);
     }
@@ -166,6 +176,7 @@ function status(store: ObservationStore, arguments_: string[]): CommandResult {
       command: "status",
       outcome: "success",
       connections: store.statuses(),
+      recordIndexModeResolutions: store.recordIndexModeResolutions(),
     },
   };
 }
@@ -200,6 +211,67 @@ async function verify(store: ObservationStore, arguments_: string[]): Promise<Co
   return {
     exitCode: exitCodeForVerification(report),
     output: { command: "verify", ...report },
+  };
+}
+
+function resolveRecordIndex(
+  store: ObservationStore,
+  arguments_: string[],
+): CommandResult {
+  const connectionId = arguments_[0];
+  const connectionVersion = arguments_[1];
+  const recordIndexMode = arguments_[2];
+  if (
+    connectionId === undefined ||
+    connectionVersion === undefined ||
+    (recordIndexMode !== "physical-line" && recordIndexMode !== "record-ordinal")
+  ) {
+    return invalidArguments("resolve-record-index");
+  }
+  if (arguments_.length === 3) {
+    const plan = store.planRecordIndexModeResolution(
+      connectionId,
+      connectionVersion,
+      recordIndexMode,
+    );
+    return {
+      exitCode: 0,
+      output: {
+        schemaVersion: 1,
+        command: "resolve-record-index",
+        outcome: "confirmation-required",
+        ...plan,
+        consequence:
+          `This changes how ${plan.factsAffected} stored facts in the exact ` +
+          "connection version are interpreted and changes no fact rows. " +
+          `Future collection uses ${recordIndexMode}.`,
+        recoverability:
+          "A later confirmed resolution can change the mode again; facts collected under either choice remain recorded.",
+      },
+    };
+  }
+  const confirmationToken = arguments_[4];
+  if (
+    arguments_.length !== 5 ||
+    arguments_[3] !== "--confirm" ||
+    confirmationToken === undefined
+  ) {
+    return invalidArguments("resolve-record-index");
+  }
+  const resolution = store.resolveRecordIndexMode(
+    connectionId,
+    connectionVersion,
+    recordIndexMode,
+    confirmationToken,
+  );
+  return {
+    exitCode: 0,
+    output: {
+      schemaVersion: 1,
+      command: "resolve-record-index",
+      outcome: "resolved",
+      ...resolution,
+    },
   };
 }
 

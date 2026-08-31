@@ -85,6 +85,22 @@ the version remains unread rather than having its identity guessed. The
 unpublished schema-seven migration guessed that mode, so stores carrying that
 version are refused.
 
+For a version that remains ambiguous, `status` supplies its exact connection
+version. Run `resolve-record-index CONNECTION_ID CONNECTION_VERSION MODE` to
+preview a resolution. The preview changes nothing: it reports the affected fact
+and collection-attempt counts, states the consequence and recoverability, and
+returns a token bound to that inventory. Repeat the command with
+`--confirm TOKEN` to make the recorded choice. Confirmation fails if the active
+version or inventory changed after the preview.
+
+The resolution changes no fact rows. It records the old and selected modes,
+configuration hash, inventory, and time as a durable user decision. Choosing
+incorrectly can make later verification disagree or collection create
+identities that were not intended. The same preview and confirmation process
+can correct the mode later; every prior decision and facts collected under it
+remain recorded. `status` lists those decisions even after the version is
+disconnected.
+
 A direct selector is `{ "scope": "record", "path": "field.name" }`, a
 root selector changes the scope to `root`, and source metadata is selected with
 `{ "scope": "meta", "value": "source-path" }` or `record-index`.
@@ -144,6 +160,8 @@ npm run ecosym -- status
 npm run ecosym -- query observations [--connection ID] [--owner OWNER] [--kind KIND] [--subject SUBJECT] [--after ID] [--limit N]
 npm run ecosym -- query claims [same filters]
 npm run ecosym -- verify
+npm run ecosym -- resolve-record-index CONNECTION_ID CONNECTION_VERSION physical-line|record-ordinal
+npm run ecosym -- resolve-record-index CONNECTION_ID CONNECTION_VERSION physical-line|record-ordinal --confirm TOKEN
 ```
 
 Registration stores a canonical configuration revision and its hash in one
@@ -157,7 +175,8 @@ afterward, even if the same configuration is reconnected.
 
 Status is `changed` after a successful attempt that added a fact or changed
 which correction is current, `quiet` after a successful attempt that did
-neither, and `unread` after failure, skip, incomplete work, or no attempt. A
+neither, and `unread` after failure, skip, incomplete work, or no attempt. Each
+active entry includes its exact configuration hash as `connectionVersion`. A
 marker is committed before source reading;
 facts and successful completion are then committed together. If the process
 stops between those points, the marker remains `incomplete` rather than
@@ -166,6 +185,8 @@ the collector may still be alive, or it may have stopped. Two connection
 lifetimes have separate attempts and status even when they use the same revision
 and reader. A store migration that cannot prove continuity starts the active
 lifetime at `never-run`; the next collection establishes its status.
+Status also includes every recorded user resolution under
+`recordIndexModeResolutions`, scoped by connection ID and configuration hash.
 
 ## Verification result
 

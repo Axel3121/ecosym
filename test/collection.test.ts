@@ -124,6 +124,7 @@ function markStoreAsSchemaSix(stateDirectory: string): void {
   if (columns.some((column) => column.name === "jsonl_record_index_mode")) {
     database.exec("ALTER TABLE connection_versions DROP COLUMN jsonl_record_index_mode");
   }
+  database.exec("DROP TABLE IF EXISTS record_index_mode_resolutions");
   database.exec("PRAGMA user_version = 6");
   database.close();
 }
