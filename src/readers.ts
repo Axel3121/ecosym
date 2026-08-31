@@ -12,7 +12,7 @@ export interface SourceRecord {
     sourcePath: string;
   };
   record: Record<string, unknown>;
-  root: Record<string, unknown>;
+  root: unknown;
 }
 
 export class SourceReadError extends Error {
@@ -155,11 +155,11 @@ async function* readJsonFiles(config: ConnectionConfig): AsyncGenerator<SourceRe
       } catch (error) {
         throw new SourceReadError("source_malformed", error);
       }
-      const root = requireRecord(parsed);
+      const root = parsed;
       const records =
         config.reader.recordsPath === ""
-          ? parsed
-          : valueAtPath(root, config.reader.recordsPath);
+          ? root
+          : valueAtPath(requireRecord(root), config.reader.recordsPath);
       if (!Array.isArray(records)) {
         throw new SourceReadError("source_malformed");
       }
@@ -182,7 +182,13 @@ async function* readCsv(config: ConnectionConfig): AsyncGenerator<SourceRecord> 
   }
   const handle = await openFileReadOnly(config.reader.path);
   try {
-    const rows = parseCsv(await handle.readFile({ encoding: "utf8" }), config.reader.delimiter);
+    let contents: string;
+    try {
+      contents = await handle.readFile({ encoding: "utf8" });
+    } catch (error) {
+      throw sourceError(error);
+    }
+    const rows = parseCsv(contents, config.reader.delimiter);
     const headers = rows.shift();
     if (headers === undefined || headers.length === 0) {
       throw new SourceReadError("source_malformed");
@@ -195,7 +201,7 @@ async function* readCsv(config: ConnectionConfig): AsyncGenerator<SourceRecord> 
       if (row.length !== headers.length) {
         throw new SourceReadError("source_malformed");
       }
-      const record: Record<string, unknown> = {};
+      const record = Object.create(null) as Record<string, unknown>;
       for (const [index, header] of headers.entries()) {
         record[header] = row[index];
       }
@@ -262,6 +268,7 @@ function parseCsv(text: string, delimiter: string): string[][] {
   let row: string[] = [];
   let field = "";
   let quoted = false;
+  let quoteClosed = false;
 
   for (let index = 0; index < text.length; index += 1) {
     const character = text[index];
@@ -272,9 +279,27 @@ function parseCsv(text: string, delimiter: string): string[][] {
           index += 1;
         } else {
           quoted = false;
+          quoteClosed = true;
         }
       } else {
         field += character;
+      }
+      continue;
+    }
+
+    if (quoteClosed) {
+      if (character === delimiter) {
+        row.push(field);
+        field = "";
+        quoteClosed = false;
+      } else if (character === "\n") {
+        row.push(field);
+        rows.push(row);
+        row = [];
+        field = "";
+        quoteClosed = false;
+      } else if (character !== "\r" || text[index + 1] !== "\n") {
+        throw new SourceReadError("source_malformed");
       }
       continue;
     }
@@ -300,7 +325,7 @@ function parseCsv(text: string, delimiter: string): string[][] {
   if (quoted) {
     throw new SourceReadError("source_malformed");
   }
-  if (field !== "" || row.length > 0) {
+  if (field !== "" || row.length > 0 || quoteClosed) {
     row.push(field.endsWith("\r") ? field.slice(0, -1) : field);
     rows.push(row);
   }

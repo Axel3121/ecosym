@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { collectConnection } from "../src/collect.ts";
-import { parseConnectionConfig } from "../src/config.ts";
+import { parseConnectionConfig, type ConnectionConfig } from "../src/config.ts";
 import {
   openFileReadOnly,
   openSqliteReadOnly,
@@ -63,6 +63,33 @@ function createSqliteSource(path: string): DatabaseSync {
     ) STRICT;
   `);
   return database;
+}
+
+function fileConnection(
+  id: string,
+  reader: ConnectionConfig["reader"],
+  payloadPath = "value",
+  recordedAt: ConnectionConfig["sourceRecord"]["recordedAt"] = { unavailable: true },
+) {
+  return parseConnectionConfig({
+    schemaVersion: 1,
+    id,
+    factOwner: "source-owner",
+    reader,
+    sourceRecord: {
+      identity: [{ scope: "record", path: "id" }],
+      retention: "history",
+      recordedAt,
+    },
+    facts: [
+      {
+        epistemicStatus: "observation",
+        kind: "example.value",
+        subject: { scope: "record", path: "subject" },
+        payload: { value: { scope: "record", path: payloadPath } },
+      },
+    ],
+  });
 }
 
 test("collects named SQLite fields while unselected personal fields never reach the store", async () => {
@@ -324,6 +351,154 @@ test("reads quoted CSV records through the same declarative contract", async () 
     store.register(parsed);
     await collectConnection(store, parsed.config.id);
     assert.deepEqual(store.queryObservations().map((fact) => fact.payload), [{ value: "green" }]);
+  } finally {
+    store.close();
+  }
+});
+
+test("rejects characters after a closing CSV quote", async () => {
+  const directory = workspace();
+  const sourcePath = join(directory, "malformed.csv");
+  writeFileSync(sourcePath, 'id,subject,value\n1,item,"abc"x\n');
+  const parsed = fileConnection("malformed-csv", {
+    type: "csv",
+    path: sourcePath,
+    delimiter: ",",
+  });
+  const store = new ObservationStore(join(directory, "state"));
+  try {
+    store.register(parsed);
+    await assert.rejects(collectConnection(store, parsed.config.id), {
+      code: "source_malformed",
+    });
+    assert.equal(store.countFacts(), 0);
+  } finally {
+    store.close();
+  }
+});
+
+test("preserves a selected __proto__ CSV column", async () => {
+  const directory = workspace();
+  const sourcePath = join(directory, "prototype-header.csv");
+  writeFileSync(sourcePath, "id,__proto__,subject\n1,kept,item\n");
+  const parsed = fileConnection(
+    "prototype-header",
+    { type: "csv", path: sourcePath, delimiter: "," },
+    "__proto__",
+  );
+  const store = new ObservationStore(join(directory, "state"));
+  try {
+    store.register(parsed);
+    await collectConnection(store, parsed.config.id);
+    assert.deepEqual(store.queryObservations().map((fact) => fact.payload), [
+      { value: "kept" },
+    ]);
+  } finally {
+    store.close();
+  }
+});
+
+test("collects a top-level JSON record array", async () => {
+  const directory = workspace();
+  const sourcePath = join(directory, "records.json");
+  writeFileSync(sourcePath, JSON.stringify([{ id: "one", subject: "item", value: 7 }]));
+  const parsed = fileConnection("json-array", {
+    type: "json",
+    pathPattern: sourcePath,
+    recordsPath: "",
+  });
+  const store = new ObservationStore(join(directory, "state"));
+  try {
+    store.register(parsed);
+    await collectConnection(store, parsed.config.id);
+    assert.deepEqual(store.queryObservations().map((fact) => fact.payload), [{ value: 7 }]);
+  } finally {
+    store.close();
+  }
+});
+
+for (const scenario of [
+  { name: "an impossible calendar date", format: "date", value: "2026-02-30" },
+  { name: "a non-leap-year February 29", format: "date", value: "2026-02-29" },
+  {
+    name: "an impossible ISO calendar date",
+    format: "iso8601",
+    value: "2026-02-30T00:00:00Z",
+  },
+  {
+    name: "a finite out-of-range Unix timestamp",
+    format: "unix-milliseconds",
+    value: 8_640_000_000_000_001,
+  },
+] as const) {
+  test(`rejects ${scenario.name} as malformed source time`, async () => {
+    const directory = workspace();
+    const sourcePath = join(directory, "time.jsonl");
+    writeFileSync(
+      sourcePath,
+      `${JSON.stringify({ id: "one", subject: "item", at: scenario.value, value: 7 })}\n`,
+    );
+    const parsed = fileConnection(
+      `invalid-time-${scenario.format}`,
+      { type: "jsonl", path: sourcePath },
+      "value",
+      {
+        selector: { scope: "record", path: "at" },
+        format: scenario.format,
+      },
+    );
+    const store = new ObservationStore(join(directory, "state"));
+    try {
+      store.register(parsed);
+      await assert.rejects(collectConnection(store, parsed.config.id), {
+        code: "source_malformed",
+      });
+      assert.equal(store.countFacts(), 0);
+    } finally {
+      store.close();
+    }
+  });
+}
+
+test("accepts a valid leap-day source time", async () => {
+  const directory = workspace();
+  const sourcePath = join(directory, "leap-day.jsonl");
+  writeFileSync(
+    sourcePath,
+    `${JSON.stringify({ id: "one", subject: "item", at: "2028-02-29", value: 7 })}\n`,
+  );
+  const parsed = fileConnection(
+    "valid-leap-day",
+    { type: "jsonl", path: sourcePath },
+    "value",
+    {
+      selector: { scope: "record", path: "at" },
+      format: "date",
+    },
+  );
+  const store = new ObservationStore(join(directory, "state"));
+  try {
+    store.register(parsed);
+    await collectConnection(store, parsed.config.id);
+    assert.equal(store.queryObservations()[0]?.sourceRecordedAt, "2028-02-29T00:00:00.000Z");
+  } finally {
+    store.close();
+  }
+});
+
+test("maps a post-open CSV read failure to source_unreadable", async () => {
+  const directory = workspace();
+  const parsed = fileConnection("unreadable-csv", {
+    type: "csv",
+    path: directory,
+    delimiter: ",",
+  });
+  const store = new ObservationStore(join(directory, "state"));
+  try {
+    store.register(parsed);
+    await assert.rejects(collectConnection(store, parsed.config.id), {
+      code: "source_unreadable",
+    });
   } finally {
     store.close();
   }
