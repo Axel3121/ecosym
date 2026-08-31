@@ -295,13 +295,19 @@ export class ObservationStore {
     const attemptId = randomUUID();
     let sourceRecordsSeen = 0;
     let factsSeen = 0;
-    let factsAdded = 0;
-    let factsChanged = 0;
     const preparedFacts: PreparedFact[] = [];
+    const contentionBudget: CollectionContentionBudget = {
+      remainingMilliseconds: BUSY_RETRY_WINDOW_MILLISECONDS,
+    };
     let admitted: { attemptOrder: number; startedAt: string };
 
     try {
-      admitted = await this.#recordRunningAttempt(connection, attemptId, now);
+      admitted = await this.#recordRunningAttempt(
+        connection,
+        attemptId,
+        now,
+        contentionBudget,
+      );
     } catch (error) {
       throw new CollectionFailedError(attemptId, safeFailureCode(error));
     }
@@ -332,7 +338,9 @@ export class ObservationStore {
 
       await producer(sink);
       const completedAt = now().toISOString();
-      this.#transaction(() => {
+      const complete = () => {
+        let transactionFactsAdded = 0;
+        let transactionFactsChanged = 0;
         this.#assertActive(connection);
         const correctionSlots = new Map<string, PreparedFact>();
         for (const fact of preparedFacts) {
@@ -394,7 +402,7 @@ export class ObservationStore {
             attemptOrder,
           );
           if (numberOfChanges(result) === 1) {
-            factsAdded += 1;
+            transactionFactsAdded += 1;
           } else {
             markSeen.run(
               attemptOrder,
@@ -423,7 +431,7 @@ export class ObservationStore {
             correctionStateBefore.get(key) !==
             this.#correctionSignature(connection.config.id, fact)
           ) {
-            factsChanged += 1;
+            transactionFactsChanged += 1;
           }
         }
         const completed = this.#database
@@ -437,29 +445,37 @@ export class ObservationStore {
             completedAt,
             sourceRecordsSeen,
             factsSeen,
-            factsAdded,
-            factsChanged,
+            transactionFactsAdded,
+            transactionFactsChanged,
             attemptId,
           );
         if (numberOfChanges(completed) !== 1) {
           throw new Error("Collection attempt is not running");
         }
-      });
+        return {
+          factsAdded: transactionFactsAdded,
+          factsChanged: transactionFactsChanged,
+        };
+      };
+      const completion = await this.#retryTransactionWithinContentionBudget(
+        contentionBudget,
+        complete,
+      );
       return {
         attemptId,
         completedAt,
-        factsAdded,
-        factsChanged,
+        factsAdded: completion.factsAdded,
+        factsChanged: completion.factsChanged,
         factsSeen,
         outcome: "success",
         sourceRecordsSeen,
         startedAt,
       };
     } catch (error) {
-      const failureCode = safeFailureCode(error);
+      let failureCode = safeFailureCode(error);
       const completedAt = now().toISOString();
       try {
-        this.#transaction(() => {
+        await this.#retryTransactionWithinContentionBudget(contentionBudget, () => {
           this.#database
             .prepare(
               `UPDATE collection_attempts
@@ -470,8 +486,11 @@ export class ObservationStore {
             )
             .run(completedAt, sourceRecordsSeen, factsSeen, failureCode, attemptId);
         });
-      } catch {
+      } catch (recordingError) {
         // A durable running marker still makes the connection unread if failure recording is blocked.
+        if (safeFailureCode(recordingError) === "store_contention") {
+          failureCode = "store_contention";
+        }
       }
       throw new CollectionFailedError(attemptId, failureCode);
     }
@@ -1126,51 +1145,68 @@ export class ObservationStore {
     connection: ActiveConnection,
     attemptId: string,
     now: () => Date,
+    contentionBudget: CollectionContentionBudget,
   ): Promise<{ attemptOrder: number; startedAt: string }> {
-    const retryDeadline = performance.now() + BUSY_RETRY_WINDOW_MILLISECONDS;
+    return this.#retryTransactionWithinContentionBudget(contentionBudget, () => {
+      this.#assertActive(connection);
+      const attemptOrder = this.#nextAttemptOrder();
+      const startedAt = now().toISOString();
+      this.#database
+        .prepare(
+          `INSERT INTO collection_attempts
+              (attempt_order, attempt_id, connection_id, config_hash, activation_id,
+               started_at, outcome, source_records_seen, facts_seen, facts_added,
+               facts_changed)
+           VALUES (?, ?, ?, ?, ?, ?, 'running', 0, 0, 0, 0)`,
+        )
+        .run(
+          attemptOrder,
+          attemptId,
+          connection.config.id,
+          connection.configHash,
+          connection.activationId,
+          startedAt,
+        );
+      return { attemptOrder, startedAt };
+    });
+  }
+
+  async #retryTransactionWithinContentionBudget<T>(
+    contentionBudget: CollectionContentionBudget,
+    retryableOperation: () => T,
+  ): Promise<T> {
     while (true) {
-      const remainingMilliseconds = retryDeadline - performance.now();
-      if (remainingMilliseconds <= 0) {
-        throw new StoreContentionError(new Error("Store contention deadline elapsed"));
-      }
       const attemptTimeoutMilliseconds = Math.min(
         this.#busyTimeoutMilliseconds,
-        Math.max(0, Math.floor(remainingMilliseconds)),
+        Math.max(0, Math.floor(contentionBudget.remainingMilliseconds)),
       );
+      const attemptStartedAt = performance.now();
+      let chargedMilliseconds = 0;
       try {
         return this.#withBusyTimeout(attemptTimeoutMilliseconds, () =>
-          this.#transaction(() => {
-            this.#assertActive(connection);
-            const attemptOrder = this.#nextAttemptOrder();
-            const startedAt = now().toISOString();
-            this.#database
-              .prepare(
-                `INSERT INTO collection_attempts
-                    (attempt_order, attempt_id, connection_id, config_hash, activation_id,
-                     started_at, outcome, source_records_seen, facts_seen, facts_added,
-                     facts_changed)
-                 VALUES (?, ?, ?, ?, ?, ?, 'running', 0, 0, 0, 0)`,
-              )
-              .run(
-                attemptOrder,
-                attemptId,
-                connection.config.id,
-                connection.configHash,
-                connection.activationId,
-                startedAt,
-              );
-            return { attemptOrder, startedAt };
+          this.#transaction(retryableOperation, (elapsedMilliseconds) => {
+            chargedMilliseconds += elapsedMilliseconds;
+            consumeContentionBudget(contentionBudget, elapsedMilliseconds);
           }),
         );
       } catch (error) {
         if (!isSqliteBusy(error)) {
           throw error;
         }
-        const retryDelay = Math.min(10, retryDeadline - performance.now());
+        consumeContentionBudget(
+          contentionBudget,
+          Math.max(0, performance.now() - attemptStartedAt - chargedMilliseconds),
+        );
+        const retryDelay = Math.min(10, contentionBudget.remainingMilliseconds);
         if (retryDelay <= 0) {
           throw new StoreContentionError(error);
         }
+        const retryStartedAt = performance.now();
         await delay(retryDelay);
+        consumeContentionBudget(
+          contentionBudget,
+          performance.now() - retryStartedAt,
+        );
       }
     }
   }
@@ -1208,8 +1244,13 @@ export class ObservationStore {
     return row.next;
   }
 
-  #transaction<T>(operation: () => T): T {
-    this.#database.exec("BEGIN IMMEDIATE");
+  #transaction<T>(operation: () => T, recordWait?: (milliseconds: number) => void): T {
+    const startedAt = performance.now();
+    try {
+      this.#database.exec("BEGIN IMMEDIATE");
+    } finally {
+      recordWait?.(performance.now() - startedAt);
+    }
     try {
       const result = operation();
       this.#database.exec("COMMIT");
@@ -1262,6 +1303,10 @@ interface StoredFactRow {
   source_recorded_at: null | string;
   subject: string;
   temporal_status: "current" | "historical" | "unknown";
+}
+
+interface CollectionContentionBudget {
+  remainingMilliseconds: number;
 }
 
 interface PreparedFact extends FactInput {
@@ -1424,6 +1469,16 @@ function isSqliteBusy(error: unknown): boolean {
   }
   const primaryResultCode = error.errcode & 0xff;
   return primaryResultCode === 5 || primaryResultCode === 6;
+}
+
+function consumeContentionBudget(
+  budget: CollectionContentionBudget,
+  elapsedMilliseconds: number,
+): void {
+  budget.remainingMilliseconds = Math.max(
+    0,
+    budget.remainingMilliseconds - elapsedMilliseconds,
+  );
 }
 
 function addFilter(

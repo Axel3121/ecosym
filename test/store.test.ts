@@ -1207,6 +1207,68 @@ test("store contention waits until a failed attempt can be recorded", async () =
   }
 });
 
+test("failure-marker contention retries within the collection budget", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-failure-marker-contention-"));
+  const store = new ObservationStore(directory, 20);
+  const parsed = connection();
+  store.register(parsed);
+  const active = store.getConnection(parsed.config.id);
+  const blocker = new DatabaseSync(store.path);
+  const attempted = store.collect(active, () => {
+    blocker.exec("BEGIN IMMEDIATE");
+    throw Object.assign(new Error("synthetic source failure"), {
+      code: "source_unreadable",
+    });
+  });
+  const rejected = assert.rejects(attempted, { code: "source_unreadable" });
+  await delay(75);
+  blocker.exec("ROLLBACK");
+  blocker.close();
+
+  try {
+    await rejected;
+    assert.equal(store.statuses()[0]?.status, "unread");
+    assert.equal(store.statuses()[0]?.reason, "failed");
+  } finally {
+    store.close();
+  }
+});
+
+test("post-admission contention has one bounded machine-readable failure", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-completion-contention-"));
+  const store = new ObservationStore(directory);
+  const parsed = connection();
+  store.register(parsed);
+  const active = store.getConnection(parsed.config.id);
+  const blocker = new DatabaseSync(store.path);
+  const startedAt = Date.now();
+  const collection = store.collect(active, () => {
+    blocker.exec("BEGIN IMMEDIATE");
+  });
+  const outcome = await Promise.race([
+    collection.then(
+      () => "success",
+      (error: unknown) =>
+        error !== null && typeof error === "object" && "code" in error
+          ? String(error.code)
+          : "unclassified_failure",
+    ),
+    delay(750).then(() => "deadline"),
+  ]);
+  const elapsedMilliseconds = Date.now() - startedAt;
+  blocker.exec("ROLLBACK");
+  blocker.close();
+  await collection.catch(() => undefined);
+
+  try {
+    assert.equal(outcome, "store_contention");
+    assert.ok(elapsedMilliseconds < 350);
+    assert.equal(store.statuses()[0]?.reason, "incomplete");
+  } finally {
+    store.close();
+  }
+});
+
 test("store contention returns a bounded machine-readable failure", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-store-contention-bound-"));
   const store = new ObservationStore(directory);
