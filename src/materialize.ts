@@ -91,9 +91,12 @@ function materializeTime(sourceTime: SourceTime, source: SourceRecord): null | s
         throw new SourceMappingError();
       }
       milliseconds = value * 1_000;
+      if (!Number.isInteger(milliseconds) || milliseconds / 1_000 !== value) {
+        throw new SourceMappingError();
+      }
       break;
     case "unix-milliseconds":
-      if (typeof value !== "number") {
+      if (typeof value !== "number" || !Number.isInteger(value)) {
         throw new SourceMappingError();
       }
       milliseconds = value;

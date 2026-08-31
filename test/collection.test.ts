@@ -504,6 +504,41 @@ for (const scenario of [
   });
 }
 
+test("rejects numeric source times with sub-millisecond precision", async (t) => {
+  for (const scenario of [
+    { format: "unix-seconds", value: 1_756_550_400.0005 },
+    { format: "unix-milliseconds", value: 1_756_550_400_000.5 },
+  ] as const) {
+    await t.test(scenario.format, async () => {
+      const directory = workspace();
+      const sourcePath = join(directory, "time.jsonl");
+      writeFileSync(
+        sourcePath,
+        `${JSON.stringify({ id: "one", subject: "item", at: scenario.value, value: 7 })}\n`,
+      );
+      const parsed = fileConnection(
+        `sub-millisecond-${scenario.format}`,
+        { type: "jsonl", path: sourcePath },
+        "value",
+        {
+          selector: { scope: "record", path: "at" },
+          format: scenario.format,
+        },
+      );
+      const store = new ObservationStore(join(directory, "state"));
+      try {
+        store.register(parsed);
+        await assert.rejects(collectConnection(store, parsed.config.id), {
+          code: "source_malformed",
+        });
+        assert.equal(store.countFacts(), 0);
+      } finally {
+        store.close();
+      }
+    });
+  }
+});
+
 test("collects representable UTC spellings without rewriting them", async () => {
   const directory = workspace();
   const sourcePath = join(directory, "utc-spellings.jsonl");

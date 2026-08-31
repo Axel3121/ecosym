@@ -81,7 +81,8 @@ root selector changes the scope to `root`, and source metadata is selected with
 `{ "coalesce": [SELECTOR, ...] }` chooses the first present non-null value.
 `{ "default": SCALAR, "selector": SELECTOR }` replaces missing or null.
 Source time formats are `iso8601`, `date`, `unix-seconds`, and
-`unix-milliseconds`.
+`unix-milliseconds`. Numeric source times must convert exactly to a whole
+millisecond; values requiring sub-millisecond truncation are malformed.
 
 ### Identity and time without native fields
 
