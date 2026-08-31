@@ -339,14 +339,19 @@ test("the persisted declaration enforces fact owner and kind strings", async (t)
         const parsed = connection();
         store.register(parsed);
         const active = store.getConnection(parsed.config.id);
+        // Forge a well-formed string, not a malformed value. A non-string is
+        // refused by the identity check alone, which would let this test pass
+        // even if admission consulted the caller's mutable copy instead of the
+        // declaration the connection was registered with.
+        const forged = "forged-but-well-formed";
         const malformed = fact();
-        (malformed as unknown as Record<string, unknown>)[field] = 42;
+        (malformed as unknown as Record<string, unknown>)[field] = forged;
         if (field === "factOwner") {
-          (active.config as unknown as Record<string, unknown>).factOwner = 42;
+          (active.config as unknown as Record<string, unknown>).factOwner = forged;
         } else {
           const callerFact = active.config.facts[0];
           assert.ok(callerFact);
-          (callerFact as unknown as Record<string, unknown>).kind = 42;
+          (callerFact as unknown as Record<string, unknown>).kind = forged;
         }
 
         await assert.rejects(
@@ -472,6 +477,21 @@ test("representable UTC spellings persist without being rewritten", async () => 
     assert.deepEqual(stored, spellings);
     for (const [index, sourceRecordedAt] of spellings.entries()) {
       assert.equal(Date.parse(stored[index] ?? ""), Date.parse(sourceRecordedAt));
+    }
+
+    // Read the database directly. Comparing through the query API cannot show
+    // a value rewritten on the way in if the same code normalises on the way
+    // out; only the stored bytes can.
+    const database = new DatabaseSync(store.path, { readOnly: true });
+    try {
+      const persisted = (
+        database
+          .prepare("select source_recorded_at from facts order by source_record_id")
+          .all() as { source_recorded_at: string }[]
+      ).map((row) => row.source_recorded_at);
+      assert.deepEqual(persisted, spellings);
+    } finally {
+      database.close();
     }
   } finally {
     store.close();
