@@ -77,9 +77,13 @@ Reader objects have these exact forms:
 
 For new JSONL connection versions, `record-index` is the ordinal among nonblank
 records. Schema-six stores did not record whether they used that rule or a
-physical line number; an affected version with stored facts remains unread
-rather than having its identity guessed. The unpublished schema-seven
-migration guessed that mode, so stores carrying that version are refused.
+physical line number. On the first collection or verification of an affected
+version, Ecosym reads the source under both rules. It records `record-ordinal`
+and continues only when both rules produce the same selected fact set and that
+set exactly matches the store's integrity-checked current snapshot. Otherwise
+the version remains unread rather than having its identity guessed. The
+unpublished schema-seven migration guessed that mode, so stores carrying that
+version are refused.
 
 A direct selector is `{ "scope": "record", "path": "field.name" }`, a
 root selector changes the scope to `root`, and source metadata is selected with

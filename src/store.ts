@@ -16,6 +16,10 @@ import { canonicalJson, type JsonScalar, type JsonValue, sha256 } from "./json.t
 import { defaultStateDirectory } from "./paths.ts";
 import type { JsonlRecordIndexMode } from "./readers.ts";
 import { utcInstantOrderingKey } from "./time.ts";
+import {
+  sameVerificationFactSet,
+  verificationFactFromInput,
+} from "./verification-facts.ts";
 
 const STORE_SCHEMA_VERSION = 8;
 const STORE_FILENAME = "observations.sqlite";
@@ -652,6 +656,46 @@ export class ObservationStore {
     const snapshot = this.#readTransaction(() => this.#verificationSnapshot(connection));
     this.#assertActive(connection);
     return snapshot;
+  }
+
+  resolveRecordIndexModeFromEquivalentFacts(
+    connection: ActiveConnection,
+    physicalLineFacts: readonly FactInput[],
+    recordOrdinalFacts: readonly FactInput[],
+  ): boolean {
+    return this.#transaction(() => {
+      this.#assertActive(connection);
+      if (this.#storedRecordIndexMode(connection) !== "unknown") {
+        return true;
+      }
+      const config = this.#registeredConfig(connection);
+      if (!usesJsonlRecordIndex(config)) {
+        return false;
+      }
+      const physicalLines = verificationFactsFromInputs(physicalLineFacts, config);
+      const recordOrdinals = verificationFactsFromInputs(recordOrdinalFacts, config);
+      if (!sameVerificationFactSet(physicalLines, recordOrdinals)) {
+        return false;
+      }
+      const snapshot = this.#verificationSnapshot(connection);
+      if (
+        !snapshot.currentnessKnown ||
+        !snapshot.payloadHashesValid ||
+        !snapshot.sourceTimeKeysValid ||
+        !sameVerificationFactSet(snapshot.facts, recordOrdinals)
+      ) {
+        return false;
+      }
+      const updated = this.#database
+        .prepare(
+          `UPDATE connection_versions
+              SET jsonl_record_index_mode = 'record-ordinal'
+            WHERE connection_id = ? AND config_hash = ?
+              AND jsonl_record_index_mode = 'unknown'`,
+        )
+        .run(connection.config.id, connection.configHash);
+      return numberOfChanges(updated) === 1;
+    });
   }
 
   #verificationSnapshot(connection: ActiveConnection): VerificationSnapshot {
@@ -1467,6 +1511,17 @@ function usesJsonlRecordIndex(config: ConnectionConfig): boolean {
         selector.value === "record-index",
     )
   );
+}
+
+function verificationFactsFromInputs(
+  facts: readonly FactInput[],
+  config: ConnectionConfig,
+): VerificationFact[] {
+  return facts.map((fact) => {
+    const snapshot = snapshotFact(fact);
+    validateFactAndDeriveSourceTimeKey(snapshot, config);
+    return verificationFactFromInput(snapshot);
+  });
 }
 
 function snapshotFact(fact: FactInput): FactInput {

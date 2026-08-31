@@ -491,6 +491,65 @@ test("an ambiguous ordinal JSONL store is refused without rewriting identity", a
   }
 });
 
+test("a schema-six physical-line store without blank lines remains readable", async () => {
+  const directory = workspace();
+  const stateDirectory = join(directory, "state");
+  const sourcePath = join(directory, "records.jsonl");
+  writeFileSync(
+    sourcePath,
+    '{"subject":"alpha","value":1}\n{"subject":"beta","value":2}\n',
+  );
+  const parsed = indexedJsonlConnection(sourcePath);
+  const oldStore = new ObservationStore(stateDirectory);
+  oldStore.register(parsed);
+  await oldStore.collect(oldStore.getConnection(parsed.config.id), (sink) => {
+    for (const [recordIndex, line] of readFileSync(sourcePath, "utf8").split("\n").entries()) {
+      if (line.trim() === "") {
+        continue;
+      }
+      const record = JSON.parse(line) as Record<string, unknown>;
+      sink.recordSourceRecord(() =>
+        materializeFacts(parsed.config, {
+          meta: { recordIndex, sourcePath },
+          numericLexemes: null,
+          record,
+          root: record,
+        }),
+      );
+    }
+  });
+  const identities = oldStore.queryObservations().map((fact) => fact.sourceRecordId);
+  oldStore.close();
+  markStoreAsSchemaSix(stateDirectory);
+
+  const migrated = new ObservationStore(stateDirectory);
+  try {
+    assert.equal(
+      migrated.getConnection(parsed.config.id).jsonlRecordIndexMode,
+      "unknown",
+    );
+    const verification = await verifyConnection(
+      migrated,
+      migrated.getConnection(parsed.config.id),
+    );
+    assert.equal(verification.outcome, "agreement");
+    assert.equal(verification.counts.matched, 2);
+    assert.equal(
+      migrated.getConnection(parsed.config.id).jsonlRecordIndexMode,
+      "record-ordinal",
+    );
+    const repeated = await collectConnection(migrated, parsed.config.id);
+    assert.equal(repeated.result.factsAdded, 0);
+    assert.equal(repeated.result.factsChanged, 0);
+    assert.deepEqual(
+      migrated.queryObservations().map((fact) => fact.sourceRecordId),
+      identities,
+    );
+  } finally {
+    migrated.close();
+  }
+});
+
 test("a schema-six JSONL store without record-index remains readable", async () => {
   const directory = workspace();
   const stateDirectory = join(directory, "state");

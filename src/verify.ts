@@ -1,7 +1,8 @@
 import { type ConnectionConfig } from "./config.ts";
-import { canonicalJson, sha256 } from "./json.ts";
+import { canonicalJson } from "./json.ts";
 import { materializeFacts } from "./materialize.ts";
 import { readSource } from "./readers.ts";
+import { resolveLegacyRecordIndexMode } from "./record-index.ts";
 import {
   type ActiveConnection,
   ObservationStore,
@@ -9,6 +10,10 @@ import {
   type VerificationSnapshot,
 } from "./store.ts";
 import { utcInstantOrderingKey } from "./time.ts";
+import {
+  verificationFactFromInput,
+  verificationFactKey,
+} from "./verification-facts.ts";
 
 export interface VerificationCounts {
   advanced: number;
@@ -97,6 +102,11 @@ export async function verifyConnection(
   store: ObservationStore,
   connection: ActiveConnection,
 ): Promise<VerificationConnectionReport> {
+  try {
+    connection = await resolveLegacyRecordIndexMode(store, connection);
+  } catch (error) {
+    return unreadReport(connection.config.id, 0, safeFailureCode(error));
+  }
   let snapshot: VerificationSnapshot;
   try {
     snapshot = store.factsForVerification(connection);
@@ -124,16 +134,7 @@ export async function verifyConnection(
       recordIndexMode,
     )) {
       for (const fact of materializeFacts(connection.config, sourceRecord)) {
-        const payloadJson = canonicalJson(fact.payload);
-        materialized.push({
-          epistemicStatus: fact.epistemicStatus,
-          factOwner: fact.factOwner,
-          kind: fact.kind,
-          payloadHash: sha256(payloadJson),
-          sourceRecordedAt: fact.sourceRecordedAt,
-          sourceRecordId: fact.sourceRecordId,
-          subject: fact.subject,
-        });
+        materialized.push(verificationFactFromInput(fact));
       }
     }
     source = deduplicate(materialized);
@@ -269,7 +270,7 @@ function compareFacts(
 function deduplicate(facts: ComparableFact[]): ComparableFact[] {
   const unique = new Map<string, ComparableFact>();
   for (const fact of facts) {
-    unique.set(`${sourceVersionKey(fact)}\u0000${fact.payloadHash}`, fact);
+    unique.set(verificationFactKey(fact), fact);
   }
   return [...unique.values()];
 }

@@ -1,5 +1,6 @@
 import { materializeFacts } from "./materialize.ts";
 import { readSource } from "./readers.ts";
+import { resolveLegacyRecordIndexMode } from "./record-index.ts";
 import {
   type CollectionResult,
   ObservationStore,
@@ -15,7 +16,10 @@ export async function collectConnection(
   store: ObservationStore,
   connectionId: string,
 ): Promise<CollectionReport> {
-  const connection = store.getConnection(connectionId);
+  let connection = store.getConnection(connectionId);
+  if (connection.jsonlRecordIndexMode === "unknown") {
+    connection = await resolveLegacyRecordIndexMode(store, connection);
+  }
   const recordIndexMode = connection.jsonlRecordIndexMode;
   if (recordIndexMode === "unknown") {
     throw new StoredRecordIndexModeUnknownError(connectionId);
