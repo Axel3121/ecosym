@@ -7,7 +7,6 @@ import { test } from "node:test";
 
 import { collectConnection } from "../src/collect.ts";
 import { parseConnectionConfig, type ConnectionConfig } from "../src/config.ts";
-import { materializeFacts, SourceMappingError } from "../src/materialize.ts";
 import {
   openFileReadOnly,
   openSqliteReadOnly,
@@ -401,6 +400,47 @@ test("reads nested JSON snapshots with source-root metadata", async () => {
   assert.equal(storedBytes.includes("private title"), false);
 });
 
+test("rejects lossy numeric source time selected from a JSON root", async () => {
+  const directory = workspace();
+  const sourcePath = join(directory, "snapshot.json");
+  writeFileSync(
+    sourcePath,
+    '{"generated":{"at":1756550400000.0001},"records":[{"id":"one","subject":"item","value":7}]}',
+  );
+  const parsed = parseConnectionConfig({
+    schemaVersion: 1,
+    id: "numeric-root-time",
+    factOwner: "source-owner",
+    reader: { type: "json", pathPattern: sourcePath, recordsPath: "records" },
+    sourceRecord: {
+      identity: [{ scope: "record", path: "id" }],
+      retention: "history",
+      recordedAt: {
+        selector: { scope: "root", path: "generated.at" },
+        format: "unix-milliseconds",
+      },
+    },
+    facts: [
+      {
+        epistemicStatus: "observation",
+        kind: "example.value",
+        subject: { scope: "record", path: "subject" },
+        payload: { value: { scope: "record", path: "value" } },
+      },
+    ],
+  });
+  const store = new ObservationStore(join(directory, "state"));
+  try {
+    store.register(parsed);
+    await assert.rejects(collectConnection(store, parsed.config.id), {
+      code: "source_malformed",
+    });
+    assert.equal(store.countFacts(), 0);
+  } finally {
+    store.close();
+  }
+});
+
 test("reads quoted CSV records through the same declarative contract", async () => {
   const directory = workspace();
   const sourcePath = join(directory, "readings.csv");
@@ -665,35 +705,52 @@ test("rejects JSON numeric source times whose lexical precision would be lost", 
   }
 });
 
-test("checks non-lexical Unix seconds as exact binary values", () => {
-  const parsed = fileConnection(
-    "binary-time",
-    { type: "jsonl", path: "/unused.jsonl" },
-    "value",
-    {
-      selector: { scope: "record", path: "at" },
-      format: "unix-seconds",
-    },
-  );
-  const source = (at: number) => {
-    const record = { at, id: "one", subject: "item", value: 7 };
-    return {
-      meta: { recordIndex: 0, sourcePath: "/unused.jsonl" },
-      record,
-      root: record,
-    };
-  };
-
-  assert.equal(
-    materializeFacts(parsed.config, source(0.125))[0]?.sourceRecordedAt,
-    "1970-01-01T00:00:00.125Z",
-  );
-  for (const value of [
-    1.001,
-    2 ** 30 + 12_583 * 2 ** -22,
-    -34_359_738_368.001,
-  ]) {
-    assert.throws(() => materializeFacts(parsed.config, source(value)), SourceMappingError);
+test("checks SQLite REAL Unix seconds as exact binary values", async (t) => {
+  for (const scenario of [
+    { expected: "1970-01-01T00:00:00.125Z", value: 0.125 },
+    { expected: null, value: 1.001 },
+    { expected: null, value: 2 ** 30 + 12_583 * 2 ** -22 },
+    { expected: null, value: -34_359_738_368.001 },
+  ] as const) {
+    await t.test(String(scenario.value), async () => {
+      const directory = workspace();
+      const sourcePath = join(directory, "time.db");
+      const source = new DatabaseSync(sourcePath);
+      source.exec(
+        "CREATE TABLE times (id TEXT, subject TEXT, at REAL, value INTEGER) STRICT",
+      );
+      source
+        .prepare("INSERT INTO times (id, subject, at, value) VALUES (?, ?, ?, ?)")
+        .run("one", "item", scenario.value, 7);
+      source.close();
+      const parsed = fileConnection(
+        "binary-time",
+        { type: "sqlite", path: sourcePath, table: "times" },
+        "value",
+        {
+          selector: { scope: "record", path: "at" },
+          format: "unix-seconds",
+        },
+      );
+      const store = new ObservationStore(join(directory, "state"));
+      try {
+        store.register(parsed);
+        if (scenario.expected === null) {
+          await assert.rejects(collectConnection(store, parsed.config.id), {
+            code: "source_malformed",
+          });
+          assert.equal(store.countFacts(), 0);
+        } else {
+          await collectConnection(store, parsed.config.id);
+          assert.equal(
+            store.queryObservations()[0]?.sourceRecordedAt,
+            scenario.expected,
+          );
+        }
+      } finally {
+        store.close();
+      }
+    });
   }
 });
 

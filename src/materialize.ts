@@ -6,6 +6,7 @@ import { sha256 } from "./json.ts";
 import { isRepresentableUtcInstant, parseCalendarInstant } from "./time.ts";
 
 const MISSING = Symbol("missing source field");
+const MAX_SAFE_INTEGER_DECIMAL_DIGITS = Number.MAX_SAFE_INTEGER.toString().length;
 
 export class SourceMappingError extends Error {
   readonly code = "source_malformed";
@@ -177,15 +178,15 @@ function selectWithNumericLexeme(selector: Selector, source: SourceRecord): Sele
 function exactMilliseconds(
   value: unknown,
   numericLexeme: string | undefined,
-  decimalPlaces: 0 | 3,
+  millisecondScalePower: 0 | 3,
 ): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new SourceMappingError();
   }
   const milliseconds =
     numericLexeme === undefined
-      ? millisecondsFromBinary(value, decimalPlaces)
-      : millisecondsFromDecimal(numericLexeme, decimalPlaces);
+      ? millisecondsFromBinary(value, millisecondScalePower)
+      : millisecondsFromDecimal(numericLexeme, millisecondScalePower);
   const result = Number(milliseconds);
   if (!Number.isSafeInteger(result) || BigInt(result) !== milliseconds) {
     throw new SourceMappingError();
@@ -193,7 +194,7 @@ function exactMilliseconds(
   return result;
 }
 
-function millisecondsFromDecimal(value: string, decimalPlaces: 0 | 3): bigint {
+function millisecondsFromDecimal(value: string, millisecondScalePower: 0 | 3): bigint {
   const match = /^(-?)(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(value);
   if (match === null) {
     throw new SourceMappingError();
@@ -207,18 +208,19 @@ function millisecondsFromDecimal(value: string, decimalPlaces: 0 | 3): bigint {
     coefficient = -coefficient;
   }
   const exponent = Number(match[4] ?? "0");
-  const shift = exponent - fraction.length + decimalPlaces;
+  const shift = exponent - fraction.length + millisecondScalePower;
   if (!Number.isSafeInteger(exponent) || !Number.isSafeInteger(shift)) {
     throw new SourceMappingError();
   }
+  const coefficientDigits = (coefficient < 0n ? -coefficient : coefficient).toString().length;
   if (shift >= 0) {
-    if (coefficient.toString().replace("-", "").length + shift > 16) {
+    if (coefficientDigits + shift > MAX_SAFE_INTEGER_DECIMAL_DIGITS) {
       throw new SourceMappingError();
     }
     return coefficient * 10n ** BigInt(shift);
   }
   const divisorPlaces = -shift;
-  if (divisorPlaces > coefficient.toString().replace("-", "").length) {
+  if (divisorPlaces > coefficientDigits) {
     throw new SourceMappingError();
   }
   const divisor = 10n ** BigInt(divisorPlaces);
@@ -228,7 +230,7 @@ function millisecondsFromDecimal(value: string, decimalPlaces: 0 | 3): bigint {
   return coefficient / divisor;
 }
 
-function millisecondsFromBinary(value: number, decimalPlaces: 0 | 3): bigint {
+function millisecondsFromBinary(value: number, millisecondScalePower: 0 | 3): bigint {
   const bytes = new DataView(new ArrayBuffer(8));
   bytes.setFloat64(0, value);
   const high = bytes.getUint32(0);
@@ -242,7 +244,7 @@ function millisecondsFromBinary(value: number, decimalPlaces: 0 | 3): bigint {
 
   // Decode the Number's exact integer-times-power-of-two value before scaling.
   const binaryExponent = exponentBits === 0 ? -1074 : exponentBits - 1023 - 52;
-  const numerator = significand * (decimalPlaces === 3 ? 1_000n : 1n);
+  const numerator = significand * (millisecondScalePower === 3 ? 1_000n : 1n);
   let milliseconds: bigint;
   if (binaryExponent >= 0) {
     milliseconds = numerator << BigInt(binaryExponent);

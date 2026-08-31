@@ -11,7 +11,7 @@ export interface SourceRecord {
     recordIndex: number;
     sourcePath: string;
   };
-  numericLexemes?: WeakMap<object, Map<string, string>>;
+  numericLexemes: null | WeakMap<object, Map<string, string>>;
   record: Record<string, unknown>;
   root: unknown;
 }
@@ -85,6 +85,7 @@ async function* readSqlite(config: ConnectionConfig): AsyncGenerator<SourceRecor
       const record = row as Record<string, unknown>;
       yield {
         meta: { recordIndex, sourcePath: config.reader.path },
+        numericLexemes: null,
         record,
         root: record,
       };
@@ -209,6 +210,7 @@ async function* readCsv(config: ConnectionConfig): AsyncGenerator<SourceRecord> 
       }
       yield {
         meta: { recordIndex, sourcePath: config.reader.path },
+        numericLexemes: null,
         record,
         root: record,
       };
