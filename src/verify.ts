@@ -53,6 +53,14 @@ export async function verifyConnection(
   connection: ActiveConnection,
 ): Promise<VerificationConnectionReport> {
   const snapshot = store.factsForVerification(connection);
+  if (!snapshot.sourceTimeKeysValid) {
+    return {
+      connectionId: connection.config.id,
+      counts: emptyCounts(snapshot.facts.length),
+      outcome: "unread",
+      unreadReason: "store_source_time_invalid",
+    };
+  }
   const stored = deduplicate(snapshot.facts);
   if (!snapshot.currentnessKnown) {
     return {

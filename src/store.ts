@@ -88,6 +88,7 @@ export interface VerificationFact {
 export interface VerificationSnapshot {
   currentnessKnown: boolean;
   facts: VerificationFact[];
+  sourceTimeKeysValid: boolean;
 }
 
 export interface CollectionSink {
@@ -566,6 +567,24 @@ export class ObservationStore {
          ) AS known`,
       )
       .get(connection.config.id, connection.configHash) as { known: number };
+    const sourceTimeKeysValid = this.#database
+      .prepare(
+        `SELECT source_recorded_at, source_time_key
+           FROM facts
+          WHERE connection_id = ? AND config_hash = ?`,
+      )
+      .all(connection.config.id, connection.configHash)
+      .every((row) => {
+        const record = row as Record<string, unknown>;
+        const expectedSourceTimeKey =
+          record.source_recorded_at === null
+            ? ""
+            : utcInstantOrderingKey(record.source_recorded_at);
+        return (
+          expectedSourceTimeKey !== null &&
+          expectedSourceTimeKey === record.source_time_key
+        );
+      });
     const facts = this.#database
       .prepare(
         `SELECT f.epistemic_status, f.fact_owner, f.kind, f.subject,
@@ -598,7 +617,11 @@ export class ObservationStore {
           subject: record.subject as string,
         };
       });
-    return { currentnessKnown: currentness.known === 1, facts };
+    return {
+      currentnessKnown: currentness.known === 1,
+      facts,
+      sourceTimeKeysValid,
+    };
   }
 
   #queryFacts(

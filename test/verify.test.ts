@@ -18,7 +18,10 @@ import {
 
 const fixtures = fileURLToPath(new URL("fixtures/verification/", import.meta.url));
 
-function setup(retention: "history" | "latest" = "history") {
+function setup(
+  retention: "history" | "latest" = "history",
+  sourceTime: "recorded" | "unavailable" = "recorded",
+) {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-verify-"));
   const sourcePath = join(directory, "source.jsonl");
   copyFileSync(join(fixtures, "original.jsonl"), sourcePath);
@@ -30,10 +33,13 @@ function setup(retention: "history" | "latest" = "history") {
     sourceRecord: {
       identity: [{ scope: "record", path: "record_id" }],
       retention,
-      recordedAt: {
-        selector: { scope: "record", path: "recorded_at" },
-        format: "iso8601",
-      },
+      recordedAt:
+        sourceTime === "recorded"
+          ? {
+              selector: { scope: "record", path: "recorded_at" },
+              format: "iso8601",
+            }
+          : { unavailable: true },
     },
     facts: [
       {
@@ -223,6 +229,60 @@ test("equivalent UTC spellings identify the same source version", async () => {
     assert.equal(report.counts.matched, 1);
     assert.equal(report.counts.missingAtSource, 0);
     assert.equal(report.counts.uncollected, 0);
+  } finally {
+    store.close();
+  }
+});
+
+test("a corrupted stored source-time key makes verification unread", async () => {
+  const { parsed, sourcePath, store } = setup();
+  try {
+    writeFileSync(
+      sourcePath,
+      [
+        '{"record_id":"record-1","subject":"subject-1","recorded_at":"2026-08-30T00:00:00Z","value":7}',
+        '{"record_id":"record-2","subject":"subject-1","recorded_at":"2026-08-30T00:00:01Z","value":12}',
+        "",
+      ].join("\n"),
+    );
+    await collectConnection(store, parsed.config.id);
+    const older = store.queryObservations()[0];
+    assert.ok(older);
+    const database = new DatabaseSync(store.path);
+    try {
+      database
+        .prepare("UPDATE facts SET source_time_key = ? WHERE source_record_id = ?")
+        .run("2026-08-30T00:00:02.000Z", older.sourceRecordId);
+    } finally {
+      database.close();
+    }
+    assert.deepEqual(
+      store.queryObservations().map((record) => record.temporalStatus),
+      ["current", "historical"],
+    );
+
+    const report = await verifyConnection(store, store.getConnection(parsed.config.id));
+    assert.equal(report.outcome, "unread");
+    assert.equal(report.unreadReason, "store_source_time_invalid");
+  } finally {
+    store.close();
+  }
+});
+
+test("malformed stored text is not equivalent to unavailable source time", async () => {
+  const { parsed, store } = setup("history", "unavailable");
+  try {
+    await collectConnection(store, parsed.config.id);
+    const database = new DatabaseSync(store.path);
+    try {
+      database.prepare("UPDATE facts SET source_recorded_at = ?").run("not-an-instant");
+    } finally {
+      database.close();
+    }
+
+    const report = await verifyConnection(store, store.getConnection(parsed.config.id));
+    assert.equal(report.outcome, "unread");
+    assert.equal(report.unreadReason, "store_source_time_invalid");
   } finally {
     store.close();
   }
