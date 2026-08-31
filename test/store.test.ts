@@ -1207,6 +1207,133 @@ test("store contention waits until a failed attempt can be recorded", async () =
   }
 });
 
+test("store contention returns a bounded machine-readable failure", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-store-contention-bound-"));
+  const store = new ObservationStore(directory, 20);
+  const parsed = connection();
+  store.register(parsed);
+  const active = store.getConnection(parsed.config.id);
+  const blocker = new DatabaseSync(store.path);
+  blocker.exec("BEGIN IMMEDIATE");
+  const startedAt = Date.now();
+  const collection = store.collect(active, () => undefined);
+  const outcome = await Promise.race([
+    collection.then(
+      () => "success",
+      (error: unknown) =>
+        error !== null && typeof error === "object" && "code" in error
+          ? String(error.code)
+          : "unclassified_failure",
+    ),
+    delay(750).then(() => "deadline"),
+  ]);
+  const elapsedMilliseconds = Date.now() - startedAt;
+  blocker.exec("ROLLBACK");
+  blocker.close();
+  await collection.catch(() => undefined);
+
+  try {
+    assert.equal(outcome, "store_contention");
+    assert.ok(elapsedMilliseconds < 750);
+  } finally {
+    store.close();
+  }
+});
+
+test("historical ordering uses an index for identity and source time", (t) => {
+  const { store } = temporaryStore();
+  const database = new DatabaseSync(store.path, { readOnly: true });
+  try {
+    const plan = database
+      .prepare(
+        `EXPLAIN QUERY PLAN
+         SELECT f.fact_id
+           FROM facts f
+          WHERE EXISTS (
+            SELECT 1
+              FROM facts newer
+             WHERE newer.connection_id = f.connection_id
+               AND newer.fact_owner = f.fact_owner
+               AND newer.kind = f.kind
+               AND newer.subject = f.subject
+               AND newer.epistemic_status = f.epistemic_status
+               AND newer.source_time_key > f.source_time_key
+          )`,
+      )
+      .all()
+      .map((row) => ({ ...(row as Record<string, unknown>) }));
+    t.diagnostic(`historical ordering plan: ${JSON.stringify(plan)}`);
+    const search = plan.find(
+      (step) => typeof step.detail === "string" && step.detail.includes("SEARCH newer"),
+    );
+    assert.ok(search);
+    const detail = String(search.detail);
+    for (const column of [
+      "connection_id",
+      "fact_owner",
+      "kind",
+      "subject",
+      "epistemic_status",
+    ]) {
+      assert.match(detail, new RegExp(`${column}=\\?`));
+    }
+    assert.match(detail, /source_time_key>\?/);
+  } finally {
+    database.close();
+    store.close();
+  }
+});
+
+test("the ordering-index migration does not rewrite version-five facts", async () => {
+  const { directory, store } = temporaryStore();
+  const parsed = connection();
+  store.register(parsed);
+  await store.collect(store.getConnection(parsed.config.id), (sink) => {
+    sink.recordSourceRecord(() => [fact()]);
+  });
+  store.close();
+
+  const downgraded = new DatabaseSync(join(directory, "observations.sqlite"));
+  const before = downgraded
+    .prepare("SELECT * FROM facts ORDER BY fact_id")
+    .all()
+    .map((row) => ({ ...(row as Record<string, unknown>) }));
+  downgraded.exec("DROP INDEX facts_identity_source_time; PRAGMA user_version = 5");
+  downgraded.close();
+
+  const migrated = new ObservationStore(directory);
+  migrated.close();
+  const inspected = new DatabaseSync(join(directory, "observations.sqlite"), {
+    readOnly: true,
+  });
+  try {
+    const after = inspected
+      .prepare("SELECT * FROM facts ORDER BY fact_id")
+      .all()
+      .map((row) => ({ ...(row as Record<string, unknown>) }));
+    assert.deepEqual(after, before);
+    const version = inspected.prepare("PRAGMA user_version").get() as {
+      user_version: number;
+    };
+    assert.equal(version.user_version, 6);
+    const columns = (
+      inspected.prepare("PRAGMA index_info(facts_identity_source_time)").all() as {
+        name: string;
+      }[]
+    ).map((column) => column.name);
+    assert.deepEqual(columns, [
+      "connection_id",
+      "fact_owner",
+      "kind",
+      "subject",
+      "epistemic_status",
+      "source_time_key",
+    ]);
+  } finally {
+    inspected.close();
+  }
+});
+
 test("collection time starts after store-contention admission", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-collection-time-"));
   const store = new ObservationStore(directory, 20);
@@ -1349,6 +1476,7 @@ test("version-three reversions migrate without claiming a current attempt status
   const oldStore = new DatabaseSync(path);
   oldStore.exec(`
     DROP INDEX facts_correction_slot;
+    DROP INDEX facts_identity_source_time;
     ALTER TABLE collection_attempts DROP COLUMN facts_changed;
     PRAGMA user_version = 3;
   `);

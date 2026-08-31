@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { DatabaseSync, type StatementResultingChanges } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -14,8 +15,9 @@ import { canonicalJson, type JsonScalar, type JsonValue, sha256 } from "./json.t
 import { defaultStateDirectory } from "./paths.ts";
 import { utcInstantOrderingKey } from "./time.ts";
 
-const STORE_SCHEMA_VERSION = 5;
+const STORE_SCHEMA_VERSION = 6;
 const STORE_FILENAME = "observations.sqlite";
+const BUSY_RETRY_WINDOW_MILLISECONDS = 250;
 
 export interface ActiveConnection {
   activationId: string;
@@ -132,6 +134,15 @@ export class CollectionFailedError extends Error {
     this.name = "CollectionFailedError";
     this.attemptId = attemptId;
     this.code = code;
+  }
+}
+
+class StoreContentionError extends Error {
+  readonly code = "store_contention";
+
+  constructor(cause: unknown) {
+    super("Observation store remained busy", { cause });
+    this.name = "StoreContentionError";
   }
 }
 
@@ -766,7 +777,8 @@ export class ObservationStore {
         row.user_version !== 1 &&
         row.user_version !== 2 &&
         row.user_version !== 3 &&
-        row.user_version !== 4
+        row.user_version !== 4 &&
+        row.user_version !== 5
       ) {
         throw new Error(`Unsupported observation store schema ${row.user_version}`);
       }
@@ -849,6 +861,11 @@ export class ObservationStore {
           ON facts(epistemic_status, fact_id);
         CREATE INDEX facts_identity_time
           ON facts(fact_owner, kind, subject, epistemic_status, source_recorded_at);
+        CREATE INDEX facts_identity_source_time
+          ON facts(
+            connection_id, fact_owner, kind, subject, epistemic_status,
+            source_time_key
+          );
         CREATE INDEX facts_source_version
           ON facts(connection_id, config_hash, source_record_id, source_time_key);
         CREATE INDEX facts_correction_slot
@@ -859,6 +876,18 @@ export class ObservationStore {
 
         PRAGMA user_version = ${STORE_SCHEMA_VERSION};
       `);
+        return;
+      }
+
+      if (row.user_version === 5) {
+        this.#database.exec(`
+          CREATE INDEX facts_identity_source_time
+            ON facts(
+              connection_id, fact_owner, kind, subject, epistemic_status,
+              source_time_key
+            );
+          PRAGMA user_version = ${STORE_SCHEMA_VERSION};
+        `);
         return;
       }
 
@@ -1016,6 +1045,11 @@ export class ObservationStore {
         resetActivation.run(activationId, active.connection_id);
       }
       this.#database.exec(`
+        CREATE INDEX facts_identity_source_time
+          ON facts(
+            connection_id, fact_owner, kind, subject, epistemic_status,
+            source_time_key
+          );
         PRAGMA user_version = ${STORE_SCHEMA_VERSION};
       `);
     });
@@ -1056,6 +1090,7 @@ export class ObservationStore {
     attemptId: string,
     now: () => Date,
   ): Promise<{ attemptOrder: number; startedAt: string }> {
+    const retryDeadline = performance.now() + BUSY_RETRY_WINDOW_MILLISECONDS;
     while (true) {
       try {
         return this.#transaction(() => {
@@ -1084,7 +1119,11 @@ export class ObservationStore {
         if (!isSqliteBusy(error)) {
           throw error;
         }
-        await delay(10);
+        const retryDelay = Math.min(10, retryDeadline - performance.now());
+        if (retryDelay <= 0) {
+          throw new StoreContentionError(error);
+        }
+        await delay(retryDelay);
       }
     }
   }
