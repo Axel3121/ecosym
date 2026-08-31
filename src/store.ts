@@ -88,6 +88,7 @@ export interface VerificationFact {
 export interface VerificationSnapshot {
   currentnessKnown: boolean;
   facts: VerificationFact[];
+  payloadHashesValid: boolean;
   sourceTimeKeysValid: boolean;
 }
 
@@ -569,7 +570,10 @@ export class ObservationStore {
   }
 
   factsForVerification(connection: ActiveConnection): VerificationSnapshot {
-    return this.#readTransaction(() => this.#verificationSnapshot(connection));
+    this.#assertActive(connection);
+    const snapshot = this.#readTransaction(() => this.#verificationSnapshot(connection));
+    this.#assertActive(connection);
+    return snapshot;
   }
 
   #verificationSnapshot(connection: ActiveConnection): VerificationSnapshot {
@@ -593,24 +597,33 @@ export class ObservationStore {
          ) AS known`,
       )
       .get(connection.config.id, connection.configHash) as { known: number };
-    const sourceTimeKeysValid = this.#database
+    const integrityRows = this.#database
       .prepare(
-        `SELECT source_recorded_at, source_time_key
+        `SELECT source_recorded_at, source_time_key, payload_json, payload_hash
            FROM facts
-          WHERE connection_id = ? AND config_hash = ?`,
+          WHERE connection_id = ?`,
       )
-      .all(connection.config.id, connection.configHash)
-      .every((row) => {
-        const record = row as Record<string, unknown>;
-        const expectedSourceTimeKey =
-          record.source_recorded_at === null
-            ? ""
-            : utcInstantOrderingKey(record.source_recorded_at);
-        return (
-          expectedSourceTimeKey !== null &&
-          expectedSourceTimeKey === record.source_time_key
-        );
-      });
+      .all(connection.config.id) as Record<string, unknown>[];
+    let payloadHashesValid = true;
+    let sourceTimeKeysValid = true;
+    for (const record of integrityRows) {
+      const expectedSourceTimeKey =
+        record.source_recorded_at === null
+          ? ""
+          : utcInstantOrderingKey(record.source_recorded_at);
+      if (
+        expectedSourceTimeKey === null ||
+        expectedSourceTimeKey !== record.source_time_key
+      ) {
+        sourceTimeKeysValid = false;
+      }
+      if (
+        typeof record.payload_json !== "string" ||
+        record.payload_hash !== sha256(record.payload_json)
+      ) {
+        payloadHashesValid = false;
+      }
+    }
     const facts = this.#database
       .prepare(
         `SELECT f.epistemic_status, f.fact_owner, f.kind, f.subject,
@@ -646,6 +659,7 @@ export class ObservationStore {
     return {
       currentnessKnown: currentness.known === 1,
       facts,
+      payloadHashesValid,
       sourceTimeKeysValid,
     };
   }

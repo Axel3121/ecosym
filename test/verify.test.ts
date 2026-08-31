@@ -129,6 +129,30 @@ test("detects a store payload altered after collection", async () => {
   }
 });
 
+test("payload bytes changed without their hash make verification unread", async () => {
+  const { parsed, store } = setup();
+  try {
+    await collectConnection(store, parsed.config.id);
+    const database = new DatabaseSync(store.path);
+    try {
+      database
+        .prepare("UPDATE facts SET payload_json = ?")
+        .run(canonicalJson({ value: 999 }));
+    } finally {
+      database.close();
+    }
+    assert.deepEqual(store.queryObservations().map((fact) => fact.payload), [
+      { value: 999 },
+    ]);
+
+    const report = await verifyConnection(store, store.getConnection(parsed.config.id));
+    assert.equal(report.outcome, "unread");
+    assert.equal(report.unreadReason, "store_payload_invalid");
+  } finally {
+    store.close();
+  }
+});
+
 test("a collected correction and reversion verify against only their current payload", async () => {
   const { parsed, sourcePath, store } = setup("history");
   try {
@@ -283,6 +307,62 @@ test("malformed stored text is not equivalent to unavailable source time", async
     const report = await verifyConnection(store, store.getConnection(parsed.config.id));
     assert.equal(report.outcome, "unread");
     assert.equal(report.unreadReason, "store_source_time_invalid");
+  } finally {
+    store.close();
+  }
+});
+
+test("historical revision time-key corruption makes verification unread", async () => {
+  const { directory, parsed, store } = setup();
+  try {
+    await collectConnection(store, parsed.config.id);
+    assert.equal(store.disconnect(parsed.config.id), true);
+    const secondSourcePath = join(directory, "second-source.jsonl");
+    writeFileSync(
+      secondSourcePath,
+      '{"record_id":"record-1","subject":"subject-1","recorded_at":"2026-08-31T00:00:00Z","value":12}\n',
+    );
+    const secondInput = JSON.parse(parsed.canonical) as { reader: { path: string } };
+    secondInput.reader.path = secondSourcePath;
+    const second = parseConnectionConfig(secondInput);
+    store.register(second);
+    await collectConnection(store, second.config.id);
+
+    const database = new DatabaseSync(store.path);
+    try {
+      database
+        .prepare("UPDATE facts SET source_time_key = ? WHERE config_hash = ?")
+        .run("2026-09-01T00:00:00.000Z", parsed.hash);
+    } finally {
+      database.close();
+    }
+    assert.deepEqual(
+      store.queryObservations().map((record) => record.temporalStatus),
+      ["current", "historical"],
+    );
+
+    const report = await verifyConnection(store, store.getConnection(second.config.id));
+    assert.equal(report.outcome, "unread");
+    assert.equal(report.unreadReason, "store_source_time_invalid");
+  } finally {
+    store.close();
+  }
+});
+
+test("an inactive connection revision cannot verify as agreement", async () => {
+  const { directory, parsed, store } = setup();
+  try {
+    await collectConnection(store, parsed.config.id);
+    const stale = store.getConnection(parsed.config.id);
+    assert.equal(store.disconnect(parsed.config.id), true);
+    const secondInput = JSON.parse(parsed.canonical) as { reader: { path: string } };
+    secondInput.reader.path = join(directory, "replacement-source.jsonl");
+    const second = parseConnectionConfig(secondInput);
+    store.register(second);
+
+    const report = await verifyConnection(store, stale);
+    assert.equal(report.outcome, "unread");
+    assert.equal(report.unreadReason, "connection_inactive");
   } finally {
     store.close();
   }

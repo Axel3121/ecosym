@@ -6,6 +6,7 @@ import {
   type ActiveConnection,
   ObservationStore,
   type VerificationFact,
+  type VerificationSnapshot,
 } from "./store.ts";
 import { utcInstantOrderingKey } from "./time.ts";
 
@@ -52,23 +53,16 @@ export async function verifyConnection(
   store: ObservationStore,
   connection: ActiveConnection,
 ): Promise<VerificationConnectionReport> {
-  const snapshot = store.factsForVerification(connection);
-  if (!snapshot.sourceTimeKeysValid) {
-    return {
-      connectionId: connection.config.id,
-      counts: emptyCounts(snapshot.facts.length),
-      outcome: "unread",
-      unreadReason: "store_source_time_invalid",
-    };
+  let snapshot: VerificationSnapshot;
+  try {
+    snapshot = store.factsForVerification(connection);
+  } catch (error) {
+    return unreadReport(connection.config.id, 0, safeFailureCode(error));
   }
-  const stored = deduplicate(snapshot.facts);
-  if (!snapshot.currentnessKnown) {
-    return {
-      connectionId: connection.config.id,
-      counts: emptyCounts(stored.length),
-      outcome: "unread",
-      unreadReason: "store_currentness_unknown",
-    };
+  let stored = deduplicate(snapshot.facts);
+  let unreadReason = snapshotUnreadReason(snapshot);
+  if (unreadReason !== null) {
+    return unreadReport(connection.config.id, stored.length, unreadReason);
   }
   let source: ComparableFact[];
   try {
@@ -89,12 +83,18 @@ export async function verifyConnection(
     }
     source = deduplicate(materialized);
   } catch (error) {
-    return {
-      connectionId: connection.config.id,
-      counts: emptyCounts(stored.length),
-      outcome: "unread",
-      unreadReason: safeFailureCode(error),
-    };
+    return unreadReport(connection.config.id, stored.length, safeFailureCode(error));
+  }
+
+  try {
+    snapshot = store.factsForVerification(connection);
+  } catch (error) {
+    return unreadReport(connection.config.id, stored.length, safeFailureCode(error));
+  }
+  stored = deduplicate(snapshot.facts);
+  unreadReason = snapshotUnreadReason(snapshot);
+  if (unreadReason !== null) {
+    return unreadReport(connection.config.id, stored.length, unreadReason);
   }
 
   const counts = compareFacts(connection.config, stored, source);
@@ -109,6 +109,29 @@ export async function verifyConnection(
         ? "disagreement"
         : "agreement",
     unreadReason: null,
+  };
+}
+
+function snapshotUnreadReason(snapshot: VerificationSnapshot): null | string {
+  if (!snapshot.sourceTimeKeysValid) {
+    return "store_source_time_invalid";
+  }
+  if (!snapshot.payloadHashesValid) {
+    return "store_payload_invalid";
+  }
+  return snapshot.currentnessKnown ? null : "store_currentness_unknown";
+}
+
+function unreadReport(
+  connectionId: string,
+  storedFacts: number,
+  unreadReason: string,
+): VerificationConnectionReport {
+  return {
+    connectionId,
+    counts: emptyCounts(storedFacts),
+    outcome: "unread",
+    unreadReason,
   };
 }
 
