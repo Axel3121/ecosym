@@ -36,7 +36,9 @@ reviews:
 
   auto_review:
     enabled: true
-    # Ny review på hver push til PR-en — CI verifiserer eksakt publisert head.
+    # Ny review på hver push til PR-en. Reviews er ubegrenset her, så det
+    # billigste er å la den se hver kandidat framfor å spare på den:
+    # CI verifiserer eksakt publisert head, og review bør gjøre det samme.
     auto_incremental_review: true
     drafts: false
     base_branches:
