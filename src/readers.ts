@@ -110,10 +110,8 @@ async function* readJsonLines(config: ConnectionConfig): AsyncGenerator<SourceRe
       crlfDelay: Number.POSITIVE_INFINITY,
       input: handle.createReadStream({ autoClose: false, encoding: "utf8" }),
     });
-    let lineIndex = 0;
+    let recordIndex = 0;
     for await (const line of lines) {
-      const recordIndex = lineIndex;
-      lineIndex += 1;
       if (line.trim() === "") {
         continue;
       }
@@ -124,6 +122,7 @@ async function* readJsonLines(config: ConnectionConfig): AsyncGenerator<SourceRe
         record: parsed.record,
         root: parsed.record,
       };
+      recordIndex += 1;
     }
   } finally {
     await handle.close();

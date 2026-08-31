@@ -14,6 +14,7 @@ import {
   SourceReadError,
 } from "../src/readers.ts";
 import { CollectionFailedError, ObservationStore } from "../src/store.ts";
+import { verifyConnection } from "../src/verify.ts";
 
 function workspace(): string {
   return mkdtempSync(join(tmpdir(), "ecosym-collection-"));
@@ -291,6 +292,61 @@ test("JSONL history preserves deletion markers and treats required null metrics 
     assert.deepEqual(store.queryObservations().map((fact) => [fact.kind, fact.payload]), [
       ["upload.history", { deleted: true }],
     ]);
+  } finally {
+    store.close();
+  }
+});
+
+test("JSONL blank lines do not change record-index identity", async () => {
+  const directory = workspace();
+  const sourcePath = join(directory, "records.jsonl");
+  const records = [
+    '{"subject":"alpha","value":1}',
+    '{"subject":"beta","value":2}',
+  ];
+  writeFileSync(sourcePath, `${records.join("\n")}\n`);
+  const parsed = parseConnectionConfig({
+    schemaVersion: 1,
+    id: "indexed-jsonl",
+    factOwner: "source-owner",
+    reader: { type: "jsonl", path: sourcePath },
+    sourceRecord: {
+      identity: [{ scope: "meta", value: "record-index" }],
+      retention: "history",
+      recordedAt: { unavailable: true },
+    },
+    facts: [
+      {
+        epistemicStatus: "observation",
+        kind: "example.value",
+        subject: { scope: "record", path: "subject" },
+        payload: { value: { scope: "record", path: "value" } },
+      },
+    ],
+  });
+  const store = new ObservationStore(join(directory, "state"));
+  try {
+    store.register(parsed);
+    await collectConnection(store, parsed.config.id);
+    const identities = store.queryObservations().map((fact) => fact.sourceRecordId);
+
+    writeFileSync(sourcePath, `${records[0]}\n\n${records[1]}\n`);
+    const verification = await verifyConnection(
+      store,
+      store.getConnection(parsed.config.id),
+    );
+    assert.equal(verification.outcome, "agreement");
+    assert.equal(verification.counts.matched, 2);
+    assert.equal(verification.counts.missingAtSource, 0);
+    assert.equal(verification.counts.uncollected, 0);
+
+    const repeated = await collectConnection(store, parsed.config.id);
+    assert.equal(repeated.result.factsAdded, 0);
+    assert.equal(repeated.result.factsChanged, 0);
+    assert.deepEqual(
+      store.queryObservations().map((fact) => fact.sourceRecordId),
+      identities,
+    );
   } finally {
     store.close();
   }
