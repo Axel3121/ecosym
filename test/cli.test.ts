@@ -83,6 +83,27 @@ test("the command surface connects, collects, queries, and verifies", async () =
   assert.equal(disagreement.stderr, "");
 });
 
+test("out-of-range query limits are invalid arguments", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-cli-limit-"));
+  const xdgDataHome = join(directory, "data");
+  for (const limit of ["0", "1001"]) {
+    await t.test(limit, async () => {
+      const result = await runCli(
+        ["query", "observations", "--limit", limit],
+        xdgDataHome,
+      );
+      assert.equal(result.code, 64);
+      assert.deepEqual(result.output, {
+        schemaVersion: 1,
+        command: "query",
+        outcome: "error",
+        error: "invalid_arguments",
+      });
+      assert.equal(result.stderr, "");
+    });
+  }
+});
+
 async function runCli(arguments_: string[], xdgDataHome: string): Promise<CliResult> {
   const child = spawn(process.execPath, [cli, ...arguments_], {
     env: { ...process.env, XDG_DATA_HOME: xdgDataHome },

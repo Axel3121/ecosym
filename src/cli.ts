@@ -52,13 +52,17 @@ async function run(arguments_: string[]): Promise<CommandResult> {
         return invalidArguments(command);
     }
   } catch (error) {
+    const errorCode = safeErrorCode(error);
+    if (errorCode === "invalid_arguments") {
+      return invalidArguments(command);
+    }
     return {
       exitCode: 1,
       output: {
         schemaVersion: 1,
         command,
         outcome: "error",
-        error: safeErrorCode(error),
+        error: errorCode,
       },
     };
   } finally {
@@ -222,6 +226,11 @@ function parseQueryOptions(arguments_: string[]): QueryOptions {
         break;
       case "--limit":
         options.limit = integerAt(value);
+        if (options.limit < 1 || options.limit > 1_000) {
+          throw Object.assign(new Error("query limit is outside the supported range"), {
+            code: "invalid_arguments",
+          });
+        }
         break;
       case "--subject":
         options.subject = value;
