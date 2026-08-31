@@ -155,8 +155,14 @@ export class ObservationStore {
     stateDirectory = defaultStateDirectory(),
     busyTimeoutMilliseconds = BUSY_RETRY_WINDOW_MILLISECONDS,
   ) {
-    if (!Number.isInteger(busyTimeoutMilliseconds) || busyTimeoutMilliseconds < 0) {
-      throw new RangeError("SQLite busy timeout must be a nonnegative integer");
+    if (
+      !Number.isInteger(busyTimeoutMilliseconds) ||
+      busyTimeoutMilliseconds < 0 ||
+      busyTimeoutMilliseconds > BUSY_RETRY_WINDOW_MILLISECONDS
+    ) {
+      throw new RangeError(
+        `SQLite busy timeout must be an integer from 0 through ${BUSY_RETRY_WINDOW_MILLISECONDS}`,
+      );
     }
     mkdirSync(stateDirectory, { recursive: true, mode: 0o700 });
     chmodSync(stateDirectory, 0o700);

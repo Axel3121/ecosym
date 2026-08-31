@@ -1234,10 +1234,15 @@ test("store contention returns a bounded machine-readable failure", async () => 
 
   try {
     assert.equal(outcome, "store_contention");
-    assert.ok(elapsedMilliseconds < 750);
+    assert.ok(elapsedMilliseconds < 500);
   } finally {
     store.close();
   }
+});
+
+test("a configured SQLite timeout cannot outlive the contention window", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-store-timeout-bound-"));
+  assert.throws(() => new ObservationStore(directory, 251), RangeError);
 });
 
 test("extended SQLite busy snapshots retain the contention failure code", async () => {
