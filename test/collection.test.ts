@@ -513,6 +513,7 @@ test("collects representable UTC spellings without rewriting them", async () => 
     "2026-08-30T10:00:00.25Z",
     "2026-08-30T10:00:00.000Z",
     "2026-08-30T10:00:00+00:00",
+    "2026-08-30T24:00:00Z",
   ];
   writeFileSync(
     sourcePath,

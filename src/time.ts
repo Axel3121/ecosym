@@ -40,7 +40,7 @@ export function utcInstantOrderingKey(value: unknown): null | string {
     /^\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(?:Z|\+00:00)$/.exec(
       value,
     );
-  if (match === null || Number(match[1]) > 23 || Number(match[2]) > 59) {
+  if (match === null || Number(match[1]) > 24 || Number(match[2]) > 59) {
     return null;
   }
   // Leap seconds are deliberately refused: Date cannot represent, order, or compare them.

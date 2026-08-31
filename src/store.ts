@@ -325,7 +325,21 @@ export class ObservationStore {
         );
         const markSeen = this.#database.prepare(
           `UPDATE facts
-              SET last_seen_attempt_order = MAX(last_seen_attempt_order, ?)
+              SET attempt_id = CASE
+                    WHEN last_seen_attempt_order <= ?
+                     AND source_recorded_at IS NOT ? THEN ?
+                    ELSE attempt_id
+                  END,
+                  collected_at = CASE
+                    WHEN last_seen_attempt_order <= ?
+                     AND source_recorded_at IS NOT ? THEN ?
+                    ELSE collected_at
+                  END,
+                  source_recorded_at = CASE
+                    WHEN last_seen_attempt_order <= ? THEN ?
+                    ELSE source_recorded_at
+                  END,
+                  last_seen_attempt_order = MAX(last_seen_attempt_order, ?)
             WHERE connection_id = ? AND config_hash = ? AND fact_owner = ?
               AND kind = ? AND subject = ? AND epistemic_status = ?
               AND source_record_id = ? AND source_time_key = ? AND payload_hash = ?`,
@@ -351,6 +365,14 @@ export class ObservationStore {
             factsAdded += 1;
           } else {
             markSeen.run(
+              attemptOrder,
+              fact.sourceRecordedAt,
+              attemptId,
+              attemptOrder,
+              fact.sourceRecordedAt,
+              startedAt,
+              attemptOrder,
+              fact.sourceRecordedAt,
               attemptOrder,
               connection.config.id,
               connection.configHash,
@@ -547,6 +569,10 @@ export class ObservationStore {
   }
 
   factsForVerification(connection: ActiveConnection): VerificationSnapshot {
+    return this.#readTransaction(() => this.#verificationSnapshot(connection));
+  }
+
+  #verificationSnapshot(connection: ActiveConnection): VerificationSnapshot {
     const currentness = this.#database
       .prepare(
         `SELECT NOT EXISTS (
@@ -1084,6 +1110,20 @@ export class ObservationStore {
 
   #transaction<T>(operation: () => T): T {
     this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      const result = operation();
+      this.#database.exec("COMMIT");
+      return result;
+    } catch (error) {
+      if (this.#database.isTransaction) {
+        this.#database.exec("ROLLBACK");
+      }
+      throw error;
+    }
+  }
+
+  #readTransaction<T>(operation: () => T): T {
+    this.#database.exec("BEGIN");
     try {
       const result = operation();
       this.#database.exec("COMMIT");

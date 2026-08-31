@@ -397,6 +397,9 @@ test("source times must be representable real UTC instants or null", async (t) =
     "2026-08-30T12:00:00+02:00",
     "2026-08-30T10:00:00.1234Z",
     "2016-12-31T23:59:60Z",
+    "2026-08-30T24:01:00Z",
+    "2026-08-30T24:00:01Z",
+    "2026-08-30T24:00:00.001Z",
     "+010000-01-01T00:00:00.000Z",
     42,
   ] as const) {
@@ -447,6 +450,7 @@ test("representable UTC spellings persist without being rewritten", async () => 
     "2026-08-30T10:00:00.000Z",
     "2026-08-30T10:00:00+00:00",
     "2026-08-30T10:00:00.5+00:00",
+    "2026-08-30T24:00:00Z",
   ];
   try {
     const parsed = connection();
@@ -468,6 +472,101 @@ test("representable UTC spellings persist without being rewritten", async () => 
     assert.deepEqual(stored, spellings);
     for (const [index, sourceRecordedAt] of spellings.entries()) {
       assert.equal(Date.parse(stored[index] ?? ""), Date.parse(sourceRecordedAt));
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test("a repeated instant retains the latest supplied spelling", async () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+    await store.collect(active, (sink) => {
+      sink.recordSourceRecord(() => [
+        fact({ sourceRecordedAt: "2026-08-30T10:00:00.000Z" }),
+      ]);
+    });
+    const repeated = await store.collect(active, (sink) => {
+      sink.recordSourceRecord(() => [
+        fact({ sourceRecordedAt: "2026-08-30T10:00:00Z" }),
+      ]);
+    });
+
+    assert.equal(repeated.factsAdded, 0);
+    assert.equal(store.countFacts(), 1);
+    assert.equal(
+      store.queryObservations()[0]?.sourceRecordedAt,
+      "2026-08-30T10:00:00Z",
+    );
+    const inspected = new DatabaseSync(store.path, { readOnly: true });
+    try {
+      const provenance = inspected
+        .prepare(
+          `SELECT a.attempt_order, f.collected_at, a.started_at
+             FROM facts f
+             JOIN collection_attempts a ON a.attempt_id = f.attempt_id`,
+        )
+        .get() as {
+        attempt_order: number;
+        collected_at: string;
+        started_at: string;
+      };
+      assert.equal(provenance.attempt_order, 2);
+      assert.equal(provenance.collected_at, provenance.started_at);
+    } finally {
+      inspected.close();
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test("an older concurrent repeat cannot restore an earlier spelling", async () => {
+  const { store } = temporaryStore();
+  const parsed = connection();
+  store.register(parsed);
+  const active = store.getConnection(parsed.config.id);
+  let announceBuffered: (() => void) | undefined;
+  const buffered = new Promise<void>((resolve) => {
+    announceBuffered = resolve;
+  });
+  let allowCommit: (() => void) | undefined;
+  const commit = new Promise<void>((resolve) => {
+    allowCommit = resolve;
+  });
+  const older = store.collect(active, async (sink) => {
+    sink.recordSourceRecord(() => [
+      fact({ sourceRecordedAt: "2026-08-30T10:00:00.000Z" }),
+    ]);
+    announceBuffered?.();
+    await commit;
+  });
+  await buffered;
+  await store.collect(active, (sink) => {
+    sink.recordSourceRecord(() => [
+      fact({ sourceRecordedAt: "2026-08-30T10:00:00Z" }),
+    ]);
+  });
+  allowCommit?.();
+  await older;
+
+  try {
+    assert.equal(store.queryObservations()[0]?.sourceRecordedAt, "2026-08-30T10:00:00Z");
+    const inspected = new DatabaseSync(store.path, { readOnly: true });
+    try {
+      const provenance = inspected
+        .prepare(
+          `SELECT a.attempt_order
+             FROM facts f
+             JOIN collection_attempts a ON a.attempt_id = f.attempt_id`,
+        )
+        .get() as { attempt_order: number };
+      assert.equal(provenance.attempt_order, 2);
+    } finally {
+      inspected.close();
     }
   } finally {
     store.close();
