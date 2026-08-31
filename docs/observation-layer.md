@@ -208,9 +208,10 @@ Unread sources carry only a reason code such as `source_absent`,
 `source_locked`, or `source_malformed`. They never produce exit code 0.
 An active connection with no facts on either side is `unverified` with
 `no_facts`; a store with no active connections is `unverified` with
-`no_connections`. Aggregate verification over an unverified connection carries
-`connections_unverified`. These outcomes use exit code 4, so nothing checked is
-distinct from both agreement and disagreement.
+`no_connections`. Connections with different outcomes aggregate as `mixed`.
+An aggregate containing an unverified connection carries
+`connections_unverified`. An entirely unverified result uses exit code 4, so
+nothing checked is distinct from both agreement and disagreement.
 
 ## Adding a source
 

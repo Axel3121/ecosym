@@ -107,6 +107,48 @@ test("an empty connection is unverified rather than agreement", async () => {
   }
 });
 
+test("mixed connection outcomes remain mixed when one connection is unverified", async (t) => {
+  for (const scenario of [
+    { expected: "agreement", name: "agreement" },
+    { expected: "unread", name: "unread" },
+    { expected: "disagreement", name: "disagreement" },
+  ] as const) {
+    await t.test(scenario.name, async () => {
+      const { directory, parsed, sourcePath, store } = setup();
+      try {
+        await collectConnection(store, parsed.config.id);
+        const emptyPath = join(directory, "empty.jsonl");
+        writeFileSync(emptyPath, "");
+        const emptyInput = JSON.parse(parsed.canonical) as {
+          id: string;
+          reader: { path: string };
+        };
+        emptyInput.id = "empty-source";
+        emptyInput.reader.path = emptyPath;
+        store.register(parseConnectionConfig(emptyInput));
+
+        if (scenario.expected === "unread") {
+          rmSync(sourcePath);
+        } else if (scenario.expected === "disagreement") {
+          copyFileSync(join(fixtures, "corrupted.jsonl"), sourcePath);
+        }
+
+        const report = await verifyAll(store);
+        const outcomes = new Map(
+          report.connections.map((connection) => [connection.connectionId, connection.outcome]),
+        );
+        assert.equal(outcomes.get("empty-source"), "unverified");
+        assert.equal(outcomes.get(parsed.config.id), scenario.expected);
+        assert.equal(report.outcome, "mixed");
+        assert.equal(report.unverifiedReason, "connections_unverified");
+        assert.equal(exitCodeForVerification(report), 3);
+      } finally {
+        store.close();
+      }
+    });
+  }
+});
+
 test("an empty store is unverified rather than agreement", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-empty-verify-"));
   const store = new ObservationStore(directory);
@@ -165,32 +207,26 @@ test("detects a store payload altered after collection", async () => {
   }
 });
 
-test("verification compares the source with one stable store snapshot", async () => {
+test("verification refuses a stable snapshot whose connection becomes inactive", async () => {
   const { parsed, store } = setup();
   try {
     await collectConnection(store, parsed.config.id);
     const connection = store.getConnection(parsed.config.id);
-    const initial = store.factsForVerification(connection);
-    const existing = initial.facts[0];
-    assert.ok(existing);
-    const moved = {
-      ...initial,
-      facts: [
-        ...initial.facts,
-        {
-          ...existing,
-          sourceRecordId: "collected-while-source-was-read",
-        },
-      ],
-    };
+    const snapshot = store.factsForVerification(connection);
     let snapshotReads = 0;
-    store.factsForVerification = () => (snapshotReads++ === 0 ? initial : moved);
+    store.factsForVerification = () => {
+      snapshotReads += 1;
+      queueMicrotask(() => store.disconnect(parsed.config.id));
+      return snapshot;
+    };
 
     const report = await verifyConnection(store, connection);
 
-    assert.equal(report.outcome, "agreement");
-    assert.equal(report.counts.missingAtSource, 0);
+    assert.equal(report.outcome, "unread");
+    assert.equal(report.unreadReason, "connection_inactive");
+    assert.equal(report.counts.storedFacts, 1);
     assert.equal(snapshotReads, 1);
+    assert.equal(store.listConnections().length, 0);
   } finally {
     store.close();
   }

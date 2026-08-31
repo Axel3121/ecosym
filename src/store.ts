@@ -583,6 +583,10 @@ export class ObservationStore {
     return row.count;
   }
 
+  assertConnectionActive(connection: ActiveConnection): void {
+    this.#assertActive(connection);
+  }
+
   factsForVerification(connection: ActiveConnection): VerificationSnapshot {
     this.#assertActive(connection);
     const snapshot = this.#readTransaction(() => this.#verificationSnapshot(connection));

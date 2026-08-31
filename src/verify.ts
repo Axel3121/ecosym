@@ -129,6 +129,11 @@ export async function verifyConnection(
   } catch (error) {
     return unreadReport(connection.config.id, stored.length, safeFailureCode(error));
   }
+  try {
+    store.assertConnectionActive(connection);
+  } catch (error) {
+    return unreadReport(connection.config.id, stored.length, safeFailureCode(error));
+  }
 
   const counts = compareFacts(connection.config, stored, source);
   if (counts.storedFacts === 0 && counts.sourceFacts === 0) {
@@ -328,24 +333,13 @@ function emptyCounts(storedFacts: number, sourceFacts = 0): VerificationCounts {
 function aggregateOutcome(
   connections: VerificationConnectionReport[],
 ): VerificationReport["outcome"] {
-  const hasDisagreement = connections.some((connection) => connection.outcome === "disagreement");
-  const hasUnread = connections.some((connection) => connection.outcome === "unread");
-  const hasUnverified = connections.some((connection) => connection.outcome === "unverified");
-  if (
-    Number(hasDisagreement) + Number(hasUnread) + Number(hasUnverified) > 1
-  ) {
-    return "mixed";
-  }
-  if (hasDisagreement) {
-    return "disagreement";
-  }
-  if (hasUnread) {
-    return "unread";
-  }
-  if (hasUnverified || connections.length === 0) {
+  const first = connections[0];
+  if (first === undefined) {
     return "unverified";
   }
-  return "agreement";
+  return connections.some((connection) => connection.outcome !== first.outcome)
+    ? "mixed"
+    : first.outcome;
 }
 
 function safeFailureCode(error: unknown): string {
