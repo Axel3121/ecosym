@@ -1348,12 +1348,16 @@ function numberOfChanges(result: StatementResultingChanges): number {
 }
 
 function isSqliteBusy(error: unknown): boolean {
-  return (
-    error !== null &&
-    typeof error === "object" &&
-    "errcode" in error &&
-    (error.errcode === 5 || error.errcode === 6)
-  );
+  if (
+    error === null ||
+    typeof error !== "object" ||
+    !("errcode" in error) ||
+    typeof error.errcode !== "number"
+  ) {
+    return false;
+  }
+  const primaryResultCode = error.errcode & 0xff;
+  return primaryResultCode === 5 || primaryResultCode === 6;
 }
 
 function addFilter(

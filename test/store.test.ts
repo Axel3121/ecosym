@@ -1240,6 +1240,33 @@ test("store contention returns a bounded machine-readable failure", async () => 
   }
 });
 
+test("extended SQLite busy snapshots retain the contention failure code", async () => {
+  const { store } = temporaryStore();
+  const parsed = connection();
+  store.register(parsed);
+  const active = store.getConnection(parsed.config.id);
+  const exec = DatabaseSync.prototype.exec;
+  DatabaseSync.prototype.exec = function (sql: string): void {
+    if (sql === "BEGIN IMMEDIATE") {
+      throw Object.assign(new Error("database is locked"), {
+        code: "ERR_SQLITE_ERROR",
+        errcode: 517,
+        errstr: "database is locked",
+      });
+    }
+    exec.call(this, sql);
+  };
+
+  try {
+    await assert.rejects(store.collect(active, () => undefined), {
+      code: "store_contention",
+    });
+  } finally {
+    DatabaseSync.prototype.exec = exec;
+    store.close();
+  }
+});
+
 test("historical ordering uses an index for identity and source time", (t) => {
   const { store } = temporaryStore();
   const database = new DatabaseSync(store.path, { readOnly: true });
