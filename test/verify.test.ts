@@ -257,6 +257,11 @@ test("a collected source-version conflict is unknown in queries", async () => {
     const report = await verifyConnection(store, store.getConnection(parsed.config.id));
     assert.equal(report.outcome, "disagreement");
     assert.equal(report.counts.sourceVersionConflict, 1);
+
+    const repeat = await collectConnection(store, parsed.config.id);
+    assert.equal(repeat.result.factsAdded, 0);
+    assert.equal(repeat.result.factsChanged, 0);
+    assert.equal(store.statuses()[0]?.status, "quiet");
   } finally {
     store.close();
   }

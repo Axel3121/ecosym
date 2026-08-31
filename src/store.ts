@@ -12,7 +12,7 @@ import {
 import { canonicalJson, type JsonScalar, type JsonValue, sha256 } from "./json.ts";
 import { defaultStateDirectory } from "./paths.ts";
 
-const STORE_SCHEMA_VERSION = 4;
+const STORE_SCHEMA_VERSION = 5;
 const STORE_FILENAME = "observations.sqlite";
 
 export interface ActiveConnection {
@@ -294,6 +294,16 @@ export class ObservationStore {
       const completedAt = now().toISOString();
       this.#transaction(() => {
         this.#assertActive(connection);
+        const correctionSlots = new Map<string, PreparedFact>();
+        for (const fact of preparedFacts) {
+          correctionSlots.set(correctionSlotKey(connection.config.id, fact), fact);
+        }
+        const correctionStateBefore = new Map(
+          [...correctionSlots].map(([key, fact]) => [
+            key,
+            this.#correctionSignature(connection.config.id, fact),
+          ]),
+        );
         const insert = this.#database.prepare(
           `INSERT OR IGNORE INTO facts
              (connection_id, config_hash, attempt_id, fact_owner, kind, subject,
@@ -307,21 +317,6 @@ export class ObservationStore {
             WHERE connection_id = ? AND config_hash = ? AND fact_owner = ?
               AND kind = ? AND subject = ? AND epistemic_status = ?
               AND source_record_id = ? AND source_time_key = ? AND payload_hash = ?`,
-        );
-        const correctionState = this.#database.prepare(
-          `SELECT
-             (SELECT matching.last_seen_attempt_order
-                FROM facts matching
-               WHERE matching.connection_id = ? AND matching.config_hash = ?
-                 AND matching.fact_owner = ? AND matching.kind = ?
-                 AND matching.subject = ? AND matching.epistemic_status = ?
-                 AND matching.source_record_id = ? AND matching.source_time_key = ?
-                 AND matching.payload_hash = ?) AS matching_order,
-             COALESCE(MAX(other.last_seen_attempt_order), 0) AS other_order
-             FROM facts other
-            WHERE other.fact_owner = ? AND other.kind = ? AND other.subject = ?
-              AND other.epistemic_status = ? AND other.source_record_id = ?
-              AND other.source_time_key = ? AND other.payload_hash <> ?`,
         );
         for (const fact of preparedFacts) {
           const result = insert.run(
@@ -342,29 +337,7 @@ export class ObservationStore {
           );
           if (numberOfChanges(result) === 1) {
             factsAdded += 1;
-            factsChanged += 1;
           } else {
-            const state = correctionState.get(
-              connection.config.id,
-              connection.configHash,
-              fact.factOwner,
-              fact.kind,
-              fact.subject,
-              fact.epistemicStatus,
-              fact.sourceRecordId,
-              fact.sourceRecordedAt ?? "",
-              fact.payloadHash,
-              fact.factOwner,
-              fact.kind,
-              fact.subject,
-              fact.epistemicStatus,
-              fact.sourceRecordId,
-              fact.sourceRecordedAt ?? "",
-              fact.payloadHash,
-            ) as { matching_order: number; other_order: number };
-            if (state.other_order >= state.matching_order) {
-              factsChanged += 1;
-            }
             markSeen.run(
               attemptOrder,
               connection.config.id,
@@ -377,6 +350,14 @@ export class ObservationStore {
               fact.sourceRecordedAt ?? "",
               fact.payloadHash,
             );
+          }
+        }
+        for (const [key, fact] of correctionSlots) {
+          if (
+            correctionStateBefore.get(key) !==
+            this.#correctionSignature(connection.config.id, fact)
+          ) {
+            factsChanged += 1;
           }
         }
         const completed = this.#database
@@ -469,7 +450,7 @@ export class ObservationStore {
     const rows = this.#database
       .prepare(
         `SELECT c.connection_id, COALESCE(a.completed_at, a.started_at) AS last_attempt_at,
-                a.outcome, a.facts_changed
+                a.outcome, a.facts_added, a.facts_changed
            FROM active_connections c
            LEFT JOIN collection_attempts a ON a.attempt_id = (
              SELECT latest.attempt_id
@@ -484,6 +465,7 @@ export class ObservationStore {
       )
       .all() as {
       connection_id: string;
+      facts_added: null | number;
       facts_changed: null | number;
       last_attempt_at: null | string;
       outcome: null | "failed" | "running" | "skipped" | "success";
@@ -514,7 +496,7 @@ export class ObservationStore {
           status: "unread",
         };
       }
-      if (row.facts_changed === 0) {
+      if (row.facts_added === 0 && row.facts_changed === 0) {
         return {
           connectionId: row.connection_id,
           lastAttemptAt: row.last_attempt_at,
@@ -562,7 +544,8 @@ export class ObservationStore {
               AND (
                 SELECT MAX(known.last_seen_attempt_order)
                   FROM facts known
-                 WHERE known.fact_owner = f.fact_owner
+                 WHERE known.connection_id = f.connection_id
+                   AND known.fact_owner = f.fact_owner
                    AND known.kind = f.kind
                    AND known.subject = f.subject
                    AND known.epistemic_status = f.epistemic_status
@@ -582,6 +565,7 @@ export class ObservationStore {
               SELECT MAX(current.last_seen_attempt_order)
                 FROM facts current
                WHERE current.fact_owner = f.fact_owner
+                 AND current.connection_id = f.connection_id
                  AND current.kind = f.kind
                  AND current.subject = f.subject
                  AND current.epistemic_status = f.epistemic_status
@@ -641,7 +625,8 @@ export class ObservationStore {
                   WHEN (
                     SELECT MAX(known.last_seen_attempt_order)
                      FROM facts known
-                     WHERE known.fact_owner = f.fact_owner
+                     WHERE known.connection_id = f.connection_id
+                       AND known.fact_owner = f.fact_owner
                        AND known.kind = f.kind
                        AND known.subject = f.subject
                        AND known.epistemic_status = f.epistemic_status
@@ -651,7 +636,8 @@ export class ObservationStore {
                   WHEN (
                     SELECT COUNT(*)
                       FROM facts tied
-                     WHERE tied.fact_owner = f.fact_owner
+                     WHERE tied.connection_id = f.connection_id
+                       AND tied.fact_owner = f.fact_owner
                        AND tied.kind = f.kind
                        AND tied.subject = f.subject
                        AND tied.epistemic_status = f.epistemic_status
@@ -660,7 +646,8 @@ export class ObservationStore {
                        AND tied.last_seen_attempt_order = (
                          SELECT MAX(latest.last_seen_attempt_order)
                            FROM facts latest
-                          WHERE latest.fact_owner = f.fact_owner
+                          WHERE latest.connection_id = f.connection_id
+                            AND latest.fact_owner = f.fact_owner
                             AND latest.kind = f.kind
                             AND latest.subject = f.subject
                             AND latest.epistemic_status = f.epistemic_status
@@ -670,7 +657,8 @@ export class ObservationStore {
                   ) > 1 THEN 'unknown'
                   WHEN EXISTS (
                     SELECT 1 FROM facts corrected
-                     WHERE corrected.fact_owner = f.fact_owner
+                     WHERE corrected.connection_id = f.connection_id
+                       AND corrected.fact_owner = f.fact_owner
                        AND corrected.kind = f.kind
                        AND corrected.subject = f.subject
                        AND corrected.epistemic_status = f.epistemic_status
@@ -702,7 +690,8 @@ export class ObservationStore {
         row.user_version !== 0 &&
         row.user_version !== 1 &&
         row.user_version !== 2 &&
-        row.user_version !== 3
+        row.user_version !== 3 &&
+        row.user_version !== 4
       ) {
         throw new Error(`Unsupported observation store schema ${row.user_version}`);
       }
@@ -787,6 +776,11 @@ export class ObservationStore {
           ON facts(fact_owner, kind, subject, epistemic_status, source_recorded_at);
         CREATE INDEX facts_source_version
           ON facts(connection_id, config_hash, source_record_id, source_time_key);
+        CREATE INDEX facts_correction_slot
+          ON facts(
+            connection_id, fact_owner, kind, subject, epistemic_status,
+            source_record_id, source_time_key, last_seen_attempt_order
+          );
 
         PRAGMA user_version = ${STORE_SCHEMA_VERSION};
       `);
@@ -834,15 +828,6 @@ export class ObservationStore {
             pair.config_hash,
           );
         }
-      } else {
-        this.#database.exec(`
-          UPDATE active_connections
-             SET activation_id = 'legacy-current:' || substr(activation_id, 8)
-           WHERE activation_id LIKE 'legacy:%';
-          UPDATE collection_attempts
-             SET activation_id = 'legacy-history:' || substr(activation_id, 8)
-           WHERE activation_id LIKE 'legacy:%';
-        `);
       }
 
       if (row.user_version === 1) {
@@ -858,9 +843,10 @@ export class ObservationStore {
              )
            WHERE NOT EXISTS (
               SELECT 1
-                FROM facts other
-               WHERE other.fact_id <> target.fact_id
-                 AND other.fact_owner = target.fact_owner
+               FROM facts other
+              WHERE other.fact_id <> target.fact_id
+                AND other.connection_id = target.connection_id
+                AND other.fact_owner = target.fact_owner
                  AND other.kind = target.kind
                 AND other.subject = target.subject
                 AND other.epistemic_status = target.epistemic_status
@@ -874,9 +860,10 @@ export class ObservationStore {
              SET last_seen_attempt_order = 0
            WHERE EXISTS (
               SELECT 1
-                FROM facts other
-               WHERE other.fact_id <> target.fact_id
-                 AND other.fact_owner = target.fact_owner
+               FROM facts other
+              WHERE other.fact_id <> target.fact_id
+                AND other.connection_id = target.connection_id
+                AND other.fact_owner = target.fact_owner
                  AND other.kind = target.kind
                 AND other.subject = target.subject
                 AND other.epistemic_status = target.epistemic_status
@@ -886,11 +873,36 @@ export class ObservationStore {
         `);
       }
 
-      this.#database.exec(`
-        ALTER TABLE collection_attempts
-          ADD COLUMN facts_changed INTEGER NOT NULL DEFAULT 0;
-        UPDATE collection_attempts SET facts_changed = facts_added;
-      `);
+      if (row.user_version <= 3) {
+        this.#database.exec(`
+          ALTER TABLE collection_attempts
+            ADD COLUMN facts_changed INTEGER NOT NULL DEFAULT 0;
+          UPDATE collection_attempts AS attempt
+             SET facts_changed = CASE
+               WHEN attempt.facts_added > 0 THEN attempt.facts_added
+               WHEN attempt.outcome = 'success' AND EXISTS (
+                 SELECT 1
+                   FROM facts current
+                  WHERE current.last_seen_attempt_order = attempt.attempt_order
+                    AND current.connection_id = attempt.connection_id
+                    AND EXISTS (
+                      SELECT 1
+                        FROM facts other
+                       WHERE other.connection_id = current.connection_id
+                         AND other.fact_owner = current.fact_owner
+                         AND other.kind = current.kind
+                         AND other.subject = current.subject
+                         AND other.epistemic_status = current.epistemic_status
+                         AND other.source_record_id = current.source_record_id
+                         AND other.source_time_key = current.source_time_key
+                         AND other.payload_hash <> current.payload_hash
+                         AND other.last_seen_attempt_order < current.last_seen_attempt_order
+                    )
+               ) THEN 1
+               ELSE 0
+             END;
+        `);
+      }
       if (row.user_version === 1 || row.user_version === 2) {
         this.#database.exec(`
           CREATE INDEX collection_attempts_latest
@@ -898,6 +910,35 @@ export class ObservationStore {
               connection_id, config_hash, activation_id, attempt_order DESC
             );
         `);
+      }
+      this.#database.exec(`
+        CREATE INDEX facts_correction_slot
+          ON facts(
+            connection_id, fact_owner, kind, subject, epistemic_status,
+            source_record_id, source_time_key, last_seen_attempt_order
+          );
+      `);
+      const activeRows = this.#database
+        .prepare(
+          "SELECT connection_id, config_hash, activation_id FROM active_connections",
+        )
+        .all() as {
+        activation_id: string;
+        config_hash: string;
+        connection_id: string;
+      }[];
+      const resetActivation = this.#database.prepare(
+        "UPDATE active_connections SET activation_id = ? WHERE connection_id = ?",
+      );
+      for (const active of activeRows) {
+        const activationId = `migration-v5:${sha256(
+          canonicalJson([
+            active.connection_id,
+            active.config_hash,
+            active.activation_id,
+          ]),
+        )}`;
+        resetActivation.run(activationId, active.connection_id);
       }
       this.#database.exec(`
         PRAGMA user_version = ${STORE_SCHEMA_VERSION};
@@ -959,6 +1000,32 @@ export class ObservationStore {
     }
   }
 
+  #correctionSignature(connectionId: string, fact: FactInput): string {
+    const rows = this.#database
+      .prepare(
+        `SELECT payload_hash, last_seen_attempt_order
+           FROM facts
+          WHERE connection_id = ? AND fact_owner = ? AND kind = ? AND subject = ?
+            AND epistemic_status = ? AND source_record_id = ? AND source_time_key = ?`,
+      )
+      .all(
+        connectionId,
+        fact.factOwner,
+        fact.kind,
+        fact.subject,
+        fact.epistemicStatus,
+        fact.sourceRecordId,
+        fact.sourceRecordedAt ?? "",
+      ) as { last_seen_attempt_order: number; payload_hash: string }[];
+    const latest = Math.max(0, ...rows.map((row) => row.last_seen_attempt_order));
+    return canonicalJson(
+      rows
+        .filter((row) => row.last_seen_attempt_order === latest)
+        .map((row) => row.payload_hash)
+        .sort(),
+    );
+  }
+
   #nextAttemptOrder(): number {
     const row = this.#database
       .prepare("SELECT COALESCE(MAX(attempt_order), 0) + 1 AS next FROM collection_attempts")
@@ -999,6 +1066,18 @@ interface StoredFactRow {
 interface PreparedFact extends FactInput {
   payloadHash: string;
   payloadJson: string;
+}
+
+function correctionSlotKey(connectionId: string, fact: FactInput): string {
+  return canonicalJson([
+    connectionId,
+    fact.factOwner,
+    fact.kind,
+    fact.subject,
+    fact.epistemicStatus,
+    fact.sourceRecordId,
+    fact.sourceRecordedAt,
+  ]);
 }
 
 function storedFactFromRow(row: StoredFactRow): StoredFact {

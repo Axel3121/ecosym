@@ -107,10 +107,11 @@ Two payloads under the same source identity and source time are corrections,
 not later time-series points. The payload seen by the highest admitted
 collection attempt is current; older payloads remain queryable as historical.
 Concurrent attempts cannot move that order backward, and a configuration
-revision does not split a fact's correction history. If payloads tie at the
-latest attempt, or if a migrated store lacks enough evidence to know which
-correction was last, they remain `unknown` until the source version is observed
-again.
+revision does not split a fact's correction history. Correction slots remain
+scoped to one connection, so source-local record IDs in two connections cannot
+contaminate each other. If payloads tie at the latest attempt, or if a migrated
+store lacks enough evidence to know which correction was last, they remain
+`unknown` until the source version is observed again.
 
 `retention: "history"` means previously collected source versions must remain
 verifiable at the source. `retention: "latest"` allows a strictly newer source
@@ -147,7 +148,8 @@ stops between those points, the marker remains `incomplete` rather than
 revealing the previous success as current. `Incomplete` is deliberately neutral:
 the collector may still be alive, or it may have stopped. Two connection
 lifetimes have separate attempts and status even when they use the same revision
-and reader.
+and reader. A store migration that cannot prove continuity starts the active
+lifetime at `never-run`; the next collection establishes its status.
 
 ## Verification result
 

@@ -597,3 +597,67 @@ test("corrections remain ordered across configuration revisions", async () => {
     store.close();
   }
 });
+
+test("correction state stays isolated between connection ids", async () => {
+  const { store } = temporaryStore();
+  const first = connection("source-a", "shared-owner");
+  const second = connection("source-b", "shared-owner");
+  store.register(first);
+  store.register(second);
+  const sharedFact = (value: number): FactInput =>
+    fact({ factOwner: "shared-owner", payload: { value } });
+  await store.collect(store.getConnection(first.config.id), (sink) => {
+    sink.writeFact(sharedFact(7));
+  });
+  await store.collect(store.getConnection(second.config.id), (sink) => {
+    sink.writeFact(sharedFact(12));
+  });
+
+  try {
+    assert.deepEqual(
+      store.queryObservations().map((record) => [record.payload.value, record.temporalStatus]),
+      [
+        [7, "current"],
+        [12, "current"],
+      ],
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("version-three reversions migrate without claiming a current attempt status", async () => {
+  const { directory, store } = temporaryStore();
+  const parsed = connection();
+  store.register(parsed);
+  const active = store.getConnection(parsed.config.id);
+  await store.collect(active, (sink) => sink.writeFact(fact({ payload: { value: 7 } })));
+  await store.collect(active, (sink) => sink.writeFact(fact({ payload: { value: 12 } })));
+  await store.collect(active, (sink) => sink.writeFact(fact({ payload: { value: 7 } })));
+  const path = store.path;
+  store.close();
+
+  const oldStore = new DatabaseSync(path);
+  oldStore.exec(`
+    DROP INDEX facts_correction_slot;
+    ALTER TABLE collection_attempts DROP COLUMN facts_changed;
+    PRAGMA user_version = 3;
+  `);
+  oldStore.close();
+
+  const migrated = new ObservationStore(directory);
+  assert.equal(migrated.statuses()[0]?.reason, "never-run");
+  migrated.close();
+  const inspected = new DatabaseSync(path, { readOnly: true });
+  try {
+    const latest = inspected
+      .prepare(
+        "SELECT facts_added, facts_changed FROM collection_attempts ORDER BY attempt_order DESC LIMIT 1",
+      )
+      .get() as { facts_added: number; facts_changed: number };
+    assert.equal(latest.facts_added, 0);
+    assert.equal(latest.facts_changed, 1);
+  } finally {
+    inspected.close();
+  }
+});
