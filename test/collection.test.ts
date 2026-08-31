@@ -116,6 +116,18 @@ function indexedJsonlConnection(sourcePath: string) {
   });
 }
 
+function markStoreAsSchemaSix(stateDirectory: string): void {
+  const database = new DatabaseSync(join(stateDirectory, "observations.sqlite"));
+  const columns = database.prepare("PRAGMA table_info(connection_versions)").all() as {
+    name: string;
+  }[];
+  if (columns.some((column) => column.name === "jsonl_record_index_mode")) {
+    database.exec("ALTER TABLE connection_versions DROP COLUMN jsonl_record_index_mode");
+  }
+  database.exec("PRAGMA user_version = 6");
+  database.close();
+}
+
 function numericTimeFixture(
   token: string,
   format: "unix-milliseconds" | "unix-seconds",
@@ -356,7 +368,7 @@ test("JSONL blank lines do not change record-index identity", async () => {
   }
 });
 
-test("an existing physical-line JSONL store keeps its stored record identity", async () => {
+test("an ambiguous physical-line JSONL store is refused without rewriting identity", async () => {
   const directory = workspace();
   const stateDirectory = join(directory, "state");
   const sourcePath = join(directory, "records.jsonl");
@@ -386,40 +398,101 @@ test("an existing physical-line JSONL store keeps its stored record identity", a
   const identities = oldStore.queryObservations().map((fact) => fact.sourceRecordId);
   oldStore.close();
 
-  // Model the exact pre-migration schema after writing with its physical-line rule.
-  const oldDatabase = new DatabaseSync(join(stateDirectory, "observations.sqlite"));
-  const columns = oldDatabase.prepare("PRAGMA table_info(connection_versions)").all() as {
-    name: string;
-  }[];
-  if (columns.some((column) => column.name === "jsonl_record_index_mode")) {
-    oldDatabase.exec("ALTER TABLE connection_versions DROP COLUMN jsonl_record_index_mode");
-  }
-  oldDatabase.exec("PRAGMA user_version = 6");
-  oldDatabase.close();
+  markStoreAsSchemaSix(stateDirectory);
 
   const migrated = new ObservationStore(stateDirectory);
   try {
     assert.equal(
       migrated.getConnection(parsed.config.id).jsonlRecordIndexMode,
-      "physical-line",
+      "unknown",
+    );
+    const verification = await verifyConnection(
+      migrated,
+      migrated.getConnection(parsed.config.id),
+    );
+    assert.equal(verification.outcome, "unread");
+    assert.equal(verification.unreadReason, "store_record_index_mode_unknown");
+    assert.equal(verification.counts.storedFacts, 2);
+    await assert.rejects(collectConnection(migrated, parsed.config.id), {
+      code: "store_record_index_mode_unknown",
+    });
+    assert.equal(migrated.statuses()[0]?.status, "unread");
+    assert.equal(migrated.statuses()[0]?.reason, "record-index-unknown");
+    assert.equal(migrated.countFacts(), 2);
+    assert.deepEqual(
+      migrated.queryObservations().map((fact) => fact.sourceRecordId),
+      identities,
+    );
+  } finally {
+    migrated.close();
+  }
+});
+
+test("an ambiguous ordinal JSONL store is refused without rewriting identity", async () => {
+  const directory = workspace();
+  const stateDirectory = join(directory, "state");
+  const sourcePath = join(directory, "records.jsonl");
+  writeFileSync(
+    sourcePath,
+    '{"subject":"alpha","value":1}\n\n{"subject":"beta","value":2}\n',
+  );
+  const parsed = indexedJsonlConnection(sourcePath);
+  const oldStore = new ObservationStore(stateDirectory);
+  oldStore.register(parsed);
+  await collectConnection(oldStore, parsed.config.id);
+  const identities = oldStore.queryObservations().map((fact) => fact.sourceRecordId);
+  oldStore.close();
+  markStoreAsSchemaSix(stateDirectory);
+
+  const migrated = new ObservationStore(stateDirectory);
+  try {
+    assert.equal(migrated.getConnection(parsed.config.id).jsonlRecordIndexMode, "unknown");
+    const verification = await verifyConnection(
+      migrated,
+      migrated.getConnection(parsed.config.id),
+    );
+    assert.equal(verification.outcome, "unread");
+    assert.equal(verification.unreadReason, "store_record_index_mode_unknown");
+    await assert.rejects(collectConnection(migrated, parsed.config.id), {
+      code: "store_record_index_mode_unknown",
+    });
+    assert.equal(migrated.statuses()[0]?.reason, "record-index-unknown");
+    assert.equal(migrated.countFacts(), 2);
+    assert.deepEqual(
+      migrated.queryObservations().map((fact) => fact.sourceRecordId),
+      identities,
+    );
+  } finally {
+    migrated.close();
+  }
+});
+
+test("a schema-six JSONL store without record-index remains readable", async () => {
+  const directory = workspace();
+  const stateDirectory = join(directory, "state");
+  const sourcePath = join(directory, "records.jsonl");
+  writeFileSync(sourcePath, '{"id":"one","subject":"alpha","value":1}\n');
+  const parsed = fileConnection("stable-jsonl", { type: "jsonl", path: sourcePath });
+  const oldStore = new ObservationStore(stateDirectory);
+  oldStore.register(parsed);
+  await collectConnection(oldStore, parsed.config.id);
+  oldStore.close();
+  markStoreAsSchemaSix(stateDirectory);
+
+  const migrated = new ObservationStore(stateDirectory);
+  try {
+    assert.equal(
+      migrated.getConnection(parsed.config.id).jsonlRecordIndexMode,
+      "record-ordinal",
     );
     const verification = await verifyConnection(
       migrated,
       migrated.getConnection(parsed.config.id),
     );
     assert.equal(verification.outcome, "agreement");
-    assert.equal(verification.counts.matched, 2);
-    assert.equal(verification.counts.missingAtSource, 0);
-    assert.equal(verification.counts.uncollected, 0);
-
     const repeated = await collectConnection(migrated, parsed.config.id);
     assert.equal(repeated.result.factsAdded, 0);
-    assert.equal(repeated.result.factsChanged, 0);
-    assert.equal(migrated.countFacts(), 2);
-    assert.deepEqual(
-      migrated.queryObservations().map((fact) => fact.sourceRecordId),
-      identities,
-    );
+    assert.equal(migrated.countFacts(), 1);
   } finally {
     migrated.close();
   }

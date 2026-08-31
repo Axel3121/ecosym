@@ -97,6 +97,7 @@ export async function verifyConnection(
   store: ObservationStore,
   connection: ActiveConnection,
 ): Promise<VerificationConnectionReport> {
+  const recordIndexMode = connection.jsonlRecordIndexMode;
   let snapshot: VerificationSnapshot;
   try {
     snapshot = store.factsForVerification(connection);
@@ -108,12 +109,19 @@ export async function verifyConnection(
   if (unreadReason !== null) {
     return unreadReport(connection.config.id, stored.length, unreadReason);
   }
+  if (recordIndexMode === "unknown") {
+    return unreadReport(
+      connection.config.id,
+      stored.length,
+      "store_record_index_mode_unknown",
+    );
+  }
   let source: ComparableFact[];
   try {
     const materialized: ComparableFact[] = [];
     for await (const sourceRecord of readSource(
       connection.config,
-      connection.jsonlRecordIndexMode,
+      recordIndexMode,
     )) {
       for (const fact of materializeFacts(connection.config, sourceRecord)) {
         const payloadJson = canonicalJson(fact.payload);

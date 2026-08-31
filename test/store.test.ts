@@ -1269,6 +1269,44 @@ test("post-admission contention has one bounded machine-readable failure", async
   }
 });
 
+test("admission and completion consume one contention budget", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-shared-contention-budget-"));
+  const store = new ObservationStore(directory, 20);
+  const parsed = connection();
+  store.register(parsed);
+  const active = store.getConnection(parsed.config.id);
+  const blocker = new DatabaseSync(store.path);
+  blocker.exec("BEGIN IMMEDIATE");
+  const startedAt = Date.now();
+  const collection = store.collect(active, () => {
+    blocker.exec("BEGIN IMMEDIATE");
+  });
+  const outcome = collection.then(
+    () => "success",
+    (error: unknown) =>
+      error !== null && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : "unclassified_failure",
+  );
+  await delay(75);
+  blocker.exec("ROLLBACK");
+  const result = await Promise.race([outcome, delay(750).then(() => "deadline")]);
+  const elapsedMilliseconds = Date.now() - startedAt;
+  if (blocker.isTransaction) {
+    blocker.exec("ROLLBACK");
+  }
+  blocker.close();
+  await collection.catch(() => undefined);
+
+  try {
+    assert.equal(result, "store_contention");
+    assert.ok(elapsedMilliseconds < 300);
+    assert.equal(store.statuses()[0]?.reason, "incomplete");
+  } finally {
+    store.close();
+  }
+});
+
 test("store contention returns a bounded machine-readable failure", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-store-contention-bound-"));
   const store = new ObservationStore(directory);
@@ -1435,7 +1473,7 @@ test("the ordering-index migration does not rewrite version-five facts", async (
     const version = inspected.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(version.user_version, 7);
+    assert.equal(version.user_version, 8);
     const columns = (
       inspected.prepare("PRAGMA index_info(facts_identity_source_time)").all() as {
         name: string;
@@ -1452,6 +1490,19 @@ test("the ordering-index migration does not rewrite version-five facts", async (
   } finally {
     inspected.close();
   }
+});
+
+test("the unpublished schema-seven migration is refused rather than trusted", () => {
+  const { directory, store } = temporaryStore();
+  store.close();
+  const downgraded = new DatabaseSync(join(directory, "observations.sqlite"));
+  downgraded.exec("PRAGMA user_version = 7");
+  downgraded.close();
+
+  assert.throws(
+    () => new ObservationStore(directory),
+    /schema 7 does not record a trustworthy JSONL record-index mode/,
+  );
 });
 
 test("collection time starts after store-contention admission", async () => {

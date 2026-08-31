@@ -75,6 +75,12 @@ Reader objects have these exact forms:
 | `json` | `pathPattern`, `recordsPath` | The pattern must match at least one JSON file. `recordsPath` is a dot-separated path to an array; `root` is the document and `record` is an array member. |
 | `csv` | `path`, one-character `delimiter` | The first row supplies unique headers. Every selected field is a string. |
 
+For new JSONL connection versions, `record-index` is the ordinal among nonblank
+records. Schema-six stores did not record whether they used that rule or a
+physical line number; an affected version with stored facts remains unread
+rather than having its identity guessed. The unpublished schema-seven
+migration guessed that mode, so stores carrying that version are refused.
+
 A direct selector is `{ "scope": "record", "path": "field.name" }`, a
 root selector changes the scope to `root`, and source metadata is selected with
 `{ "scope": "meta", "value": "source-path" }` or `record-index`.

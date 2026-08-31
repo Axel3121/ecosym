@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import {
   parseConnectionConfig,
+  selectorsIn,
   type ConnectionConfig,
   type ParsedConnectionConfig,
 } from "./config.ts";
@@ -16,7 +17,7 @@ import { defaultStateDirectory } from "./paths.ts";
 import type { JsonlRecordIndexMode } from "./readers.ts";
 import { utcInstantOrderingKey } from "./time.ts";
 
-const STORE_SCHEMA_VERSION = 7;
+const STORE_SCHEMA_VERSION = 8;
 const STORE_FILENAME = "observations.sqlite";
 const BUSY_RETRY_WINDOW_MILLISECONDS = 250;
 
@@ -25,7 +26,7 @@ export interface ActiveConnection {
   config: ConnectionConfig;
   configHash: string;
   connectedAt: string;
-  jsonlRecordIndexMode: JsonlRecordIndexMode;
+  jsonlRecordIndexMode: JsonlRecordIndexMode | "unknown";
 }
 
 export interface FactInput {
@@ -72,10 +73,11 @@ export interface ConnectionStatus {
   reason:
     | "collected"
     | "failed"
-    | "incomplete"
-    | "never-run"
-    | "nothing-new"
-    | "skipped";
+     | "incomplete"
+     | "never-run"
+     | "nothing-new"
+     | "record-index-unknown"
+     | "skipped";
   status: "changed" | "quiet" | "unread";
 }
 
@@ -124,6 +126,15 @@ export class ConnectionInactiveError extends Error {
   constructor(_connectionId: string) {
     super("The connection revision is no longer active");
     this.name = "ConnectionInactiveError";
+  }
+}
+
+export class StoredRecordIndexModeUnknownError extends Error {
+  readonly code = "store_record_index_mode_unknown";
+
+  constructor(_connectionId: string) {
+    super("The stored JSONL record-index mode cannot be determined");
+    this.name = "StoredRecordIndexModeUnknownError";
   }
 }
 
@@ -535,8 +546,11 @@ export class ObservationStore {
     const rows = this.#database
       .prepare(
         `SELECT c.connection_id, COALESCE(a.completed_at, a.started_at) AS last_attempt_at,
-                a.outcome, a.facts_added, a.facts_changed
+                a.outcome, a.facts_added, a.facts_changed, v.jsonl_record_index_mode
            FROM active_connections c
+           JOIN connection_versions v
+             ON v.connection_id = c.connection_id
+            AND v.config_hash = c.config_hash
            LEFT JOIN collection_attempts a ON a.attempt_id = (
              SELECT latest.attempt_id
                FROM collection_attempts latest
@@ -552,11 +566,20 @@ export class ObservationStore {
       connection_id: string;
       facts_added: null | number;
       facts_changed: null | number;
+      jsonl_record_index_mode: string;
       last_attempt_at: null | string;
       outcome: null | "failed" | "running" | "skipped" | "success";
     }[];
 
     return rows.map((row) => {
+      if (row.jsonl_record_index_mode === "unknown") {
+        return {
+          connectionId: row.connection_id,
+          lastAttemptAt: row.last_attempt_at,
+          reason: "record-index-unknown",
+          status: "unread",
+        };
+      }
       if (row.outcome === null) {
         return {
           connectionId: row.connection_id,
@@ -815,6 +838,12 @@ export class ObservationStore {
       if (row.user_version === STORE_SCHEMA_VERSION) {
         return;
       }
+      // Schema 7 was the rejected candidate that guessed a mode for schema-six rows.
+      if (row.user_version === 7) {
+        throw new Error(
+          "Observation store schema 7 does not record a trustworthy JSONL record-index mode",
+        );
+      }
       if (
         row.user_version !== 0 &&
         row.user_version !== 1 &&
@@ -834,7 +863,7 @@ export class ObservationStore {
           config_json TEXT NOT NULL,
           registered_at TEXT NOT NULL,
           jsonl_record_index_mode TEXT NOT NULL DEFAULT 'record-ordinal'
-            CHECK (jsonl_record_index_mode IN ('physical-line', 'record-ordinal')),
+            CHECK (jsonl_record_index_mode IN ('physical-line', 'record-ordinal', 'unknown')),
           PRIMARY KEY (connection_id, config_hash)
         ) STRICT;
 
@@ -925,20 +954,55 @@ export class ObservationStore {
         return;
       }
 
-      if (row.user_version === 5 || row.user_version === 6) {
-        if (row.user_version === 5) {
-          this.#database.exec(`
-            CREATE INDEX facts_identity_source_time
-              ON facts(
-                connection_id, fact_owner, kind, subject, epistemic_status,
-                source_time_key
-              );
-          `);
-        }
+      if (row.user_version === 6) {
         this.#database.exec(`
           ALTER TABLE connection_versions ADD COLUMN jsonl_record_index_mode TEXT
+            NOT NULL DEFAULT 'unknown'
+            CHECK (jsonl_record_index_mode IN ('physical-line', 'record-ordinal', 'unknown'));
+        `);
+        const versions = this.#database
+          .prepare("SELECT connection_id, config_hash, config_json FROM connection_versions")
+          .all() as {
+          config_hash: string;
+          config_json: string;
+          connection_id: string;
+        }[];
+        const hasFacts = this.#database.prepare(
+          `SELECT EXISTS (
+             SELECT 1 FROM facts WHERE connection_id = ? AND config_hash = ?
+           ) AS stored`,
+        );
+        const updateMode = this.#database.prepare(
+          `UPDATE connection_versions SET jsonl_record_index_mode = ?
+            WHERE connection_id = ? AND config_hash = ?`,
+        );
+        for (const version of versions) {
+          const config = parseStoredConfig(version.config_json, version.config_hash);
+          const stored = hasFacts.get(version.connection_id, version.config_hash) as {
+            stored: number;
+          };
+          const mode =
+            stored.stored === 1 && usesJsonlRecordIndex(config)
+              ? "unknown"
+              : "record-ordinal";
+          updateMode.run(mode, version.connection_id, version.config_hash);
+        }
+        this.#database.exec(`
+          PRAGMA user_version = ${STORE_SCHEMA_VERSION};
+        `);
+        return;
+      }
+
+      if (row.user_version === 5) {
+        this.#database.exec(`
+          CREATE INDEX facts_identity_source_time
+            ON facts(
+              connection_id, fact_owner, kind, subject, epistemic_status,
+              source_time_key
+            );
+          ALTER TABLE connection_versions ADD COLUMN jsonl_record_index_mode TEXT
             NOT NULL DEFAULT 'physical-line'
-            CHECK (jsonl_record_index_mode IN ('physical-line', 'record-ordinal'));
+            CHECK (jsonl_record_index_mode IN ('physical-line', 'record-ordinal', 'unknown'));
           PRAGMA user_version = ${STORE_SCHEMA_VERSION};
         `);
         return;
@@ -1100,7 +1164,7 @@ export class ObservationStore {
       this.#database.exec(`
         ALTER TABLE connection_versions ADD COLUMN jsonl_record_index_mode TEXT
           NOT NULL DEFAULT 'physical-line'
-          CHECK (jsonl_record_index_mode IN ('physical-line', 'record-ordinal'));
+          CHECK (jsonl_record_index_mode IN ('physical-line', 'record-ordinal', 'unknown'));
         CREATE INDEX facts_identity_source_time
           ON facts(
             connection_id, fact_owner, kind, subject, epistemic_status,
@@ -1352,11 +1416,29 @@ function parseStoredConfig(configJson: string, expectedHash: string): Connection
   return parsed.config;
 }
 
-function parseJsonlRecordIndexMode(value: string): JsonlRecordIndexMode {
-  if (value !== "physical-line" && value !== "record-ordinal") {
+function parseJsonlRecordIndexMode(
+  value: string,
+): JsonlRecordIndexMode | "unknown" {
+  if (
+    value !== "physical-line" &&
+    value !== "record-ordinal" &&
+    value !== "unknown"
+  ) {
     throw new Error("Stored JSONL record-index mode is invalid");
   }
   return value;
+}
+
+function usesJsonlRecordIndex(config: ConnectionConfig): boolean {
+  return (
+    config.reader.type === "jsonl" &&
+    selectorsIn(config).some(
+      (selector) =>
+        "scope" in selector &&
+        selector.scope === "meta" &&
+        selector.value === "record-index",
+    )
+  );
 }
 
 function snapshotFact(fact: FactInput): FactInput {
