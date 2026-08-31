@@ -312,8 +312,17 @@ function parseCsv(text: string, delimiter: string): string[][] {
     } else if (character === delimiter) {
       row.push(field);
       field = "";
+    } else if (character === "\r") {
+      if (text[index + 1] !== "\n") {
+        throw new SourceReadError("source_malformed");
+      }
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+      index += 1;
     } else if (character === "\n") {
-      row.push(field.endsWith("\r") ? field.slice(0, -1) : field);
+      row.push(field);
       rows.push(row);
       row = [];
       field = "";
@@ -326,7 +335,7 @@ function parseCsv(text: string, delimiter: string): string[][] {
     throw new SourceReadError("source_malformed");
   }
   if (field !== "" || row.length > 0 || quoteClosed) {
-    row.push(field.endsWith("\r") ? field.slice(0, -1) : field);
+    row.push(field);
     rows.push(row);
   }
   return rows;

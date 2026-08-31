@@ -325,7 +325,7 @@ test("reads quoted CSV records through the same declarative contract", async () 
   const sourcePath = join(directory, "readings.csv");
   writeFileSync(
     sourcePath,
-    'reading_id,subject,recorded_at,value,note\n1,sensor-a,2026-08-30T00:00:00Z,green,"comma, kept out"\n',
+    'reading_id,subject,recorded_at,value,note\r\n1,sensor-a,2026-08-30T00:00:00Z,green,"comma, kept out"\r\n',
   );
   const parsed = parseConnectionConfig({
     schemaVersion: 1,
@@ -364,6 +364,27 @@ test("rejects characters after a closing CSV quote", async () => {
   const sourcePath = join(directory, "malformed.csv");
   writeFileSync(sourcePath, 'id,subject,value\n1,item,"abc"x\n');
   const parsed = fileConnection("malformed-csv", {
+    type: "csv",
+    path: sourcePath,
+    delimiter: ",",
+  });
+  const store = new ObservationStore(join(directory, "state"));
+  try {
+    store.register(parsed);
+    await assert.rejects(collectConnection(store, parsed.config.id), {
+      code: "source_malformed",
+    });
+    assert.equal(store.countFacts(), 0);
+  } finally {
+    store.close();
+  }
+});
+
+test("rejects a terminal bare carriage return instead of trimming it", async () => {
+  const directory = workspace();
+  const sourcePath = join(directory, "bare-carriage-return.csv");
+  writeFileSync(sourcePath, "id,subject,value\n1,item,abc\r");
+  const parsed = fileConnection("bare-carriage-return", {
     type: "csv",
     path: sourcePath,
     delimiter: ",",
