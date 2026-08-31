@@ -455,9 +455,14 @@ for (const scenario of [
     value: "2026-08-30T12:00:00+02:00",
   },
   {
-    name: "a shortened UTC ISO representation",
+    name: "sub-millisecond ISO precision",
     format: "iso8601",
-    value: "2026-08-30T10:00:00Z",
+    value: "2026-08-30T10:00:00.1234Z",
+  },
+  {
+    name: "a leap second JavaScript cannot represent",
+    format: "iso8601",
+    value: "2016-12-31T23:59:60Z",
   },
   {
     name: "an extended ISO year the store cannot order",
@@ -498,6 +503,44 @@ for (const scenario of [
     }
   });
 }
+
+test("collects representable UTC spellings without rewriting them", async () => {
+  const directory = workspace();
+  const sourcePath = join(directory, "utc-spellings.jsonl");
+  const spellings = [
+    "2026-08-30T10:00:00Z",
+    "2026-08-30T10:00:00.5Z",
+    "2026-08-30T10:00:00.25Z",
+    "2026-08-30T10:00:00.000Z",
+    "2026-08-30T10:00:00+00:00",
+  ];
+  writeFileSync(
+    sourcePath,
+    spellings
+      .map((at, index) => JSON.stringify({ id: index, subject: `item-${index}`, at, value: 7 }))
+      .join("\n") + "\n",
+  );
+  const parsed = fileConnection(
+    "utc-spellings",
+    { type: "jsonl", path: sourcePath },
+    "value",
+    {
+      selector: { scope: "record", path: "at" },
+      format: "iso8601",
+    },
+  );
+  const store = new ObservationStore(join(directory, "state"));
+  try {
+    store.register(parsed);
+    await collectConnection(store, parsed.config.id);
+    assert.deepEqual(
+      store.queryObservations().map((record) => record.sourceRecordedAt),
+      spellings,
+    );
+  } finally {
+    store.close();
+  }
+});
 
 test("accepts a valid leap-day source time", async () => {
   const directory = workspace();

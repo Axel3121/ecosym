@@ -24,10 +24,33 @@ export function parseCalendarInstant(value: string): null | number {
   return Number.isFinite(milliseconds) ? milliseconds : null;
 }
 
+export function isRepresentableUtcInstant(value: unknown): value is string {
+  return utcInstantOrderingKey(value) !== null;
+}
+
 export function isCanonicalUtcInstant(value: unknown): value is string {
-  if (typeof value !== "string" || !/^\d{4}-/.test(value)) {
-    return false;
+  return isRepresentableUtcInstant(value);
+}
+
+export function utcInstantOrderingKey(value: unknown): null | string {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const match =
+    /^\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(?:Z|\+00:00)$/.exec(
+      value,
+    );
+  if (match === null || Number(match[1]) > 23 || Number(match[2]) > 59) {
+    return null;
+  }
+  // Leap seconds are deliberately refused: Date cannot represent, order, or compare them.
+  if (Number(match[3]) > 59) {
+    return null;
   }
   const milliseconds = parseCalendarInstant(value);
-  return milliseconds !== null && new Date(milliseconds).toISOString() === value;
+  if (milliseconds === null) {
+    return null;
+  }
+  const orderingKey = new Date(milliseconds).toISOString();
+  return /^\d{4}-/.test(orderingKey) ? orderingKey : null;
 }

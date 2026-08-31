@@ -7,6 +7,7 @@ import {
   ObservationStore,
   type VerificationFact,
 } from "./store.ts";
+import { utcInstantOrderingKey } from "./time.ts";
 
 export interface VerificationCounts {
   advanced: number;
@@ -215,7 +216,7 @@ function sourceVersionKey(fact: ComparableFact): string {
     fact.kind,
     fact.subject,
     fact.sourceRecordId,
-    fact.sourceRecordedAt,
+    sourceTimeKey(fact),
   ]);
 }
 
@@ -224,11 +225,15 @@ function isStrictlyNewerThanHistory(candidate: ComparableFact, history: Comparab
 }
 
 function isStrictlyNewer(candidate: ComparableFact, prior: ComparableFact): boolean {
-  return (
-    candidate.sourceRecordedAt !== null &&
-    prior.sourceRecordedAt !== null &&
-    candidate.sourceRecordedAt > prior.sourceRecordedAt
-  );
+  const candidateTime = sourceTimeKey(candidate);
+  const priorTime = sourceTimeKey(prior);
+  return candidateTime !== null && priorTime !== null && candidateTime > priorTime;
+}
+
+function sourceTimeKey(fact: ComparableFact): null | string {
+  return fact.sourceRecordedAt === null
+    ? null
+    : utcInstantOrderingKey(fact.sourceRecordedAt);
 }
 
 function emptyCounts(storedFacts: number, sourceFacts = 0): VerificationCounts {

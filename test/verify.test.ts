@@ -187,6 +187,47 @@ test("a newer source value is advancement rather than payload disagreement", asy
   }
 });
 
+test("a fractional instant after a whole second is advancement", async () => {
+  const { parsed, sourcePath, store } = setup("latest");
+  try {
+    writeFileSync(
+      sourcePath,
+      '{"record_id":"record-1","subject":"subject-1","recorded_at":"2026-08-30T00:00:00Z","value":7}\n',
+    );
+    await collectConnection(store, parsed.config.id);
+    writeFileSync(
+      sourcePath,
+      '{"record_id":"record-1","subject":"subject-1","recorded_at":"2026-08-30T00:00:00.5Z","value":12}\n',
+    );
+
+    const report = await verifyConnection(store, store.getConnection(parsed.config.id));
+    assert.equal(report.outcome, "agreement");
+    assert.equal(report.counts.advanced, 1);
+    assert.equal(report.counts.superseded, 1);
+  } finally {
+    store.close();
+  }
+});
+
+test("equivalent UTC spellings identify the same source version", async () => {
+  const { parsed, sourcePath, store } = setup();
+  try {
+    await collectConnection(store, parsed.config.id);
+    writeFileSync(
+      sourcePath,
+      '{"record_id":"record-1","subject":"subject-1","recorded_at":"2026-08-30T00:00:00+00:00","value":7}\n',
+    );
+
+    const report = await verifyConnection(store, store.getConnection(parsed.config.id));
+    assert.equal(report.outcome, "agreement");
+    assert.equal(report.counts.matched, 1);
+    assert.equal(report.counts.missingAtSource, 0);
+    assert.equal(report.counts.uncollected, 0);
+  } finally {
+    store.close();
+  }
+});
+
 test("a late intermediate source point is uncollected rather than advancement", async () => {
   const { parsed, sourcePath, store } = setup("history");
   try {

@@ -12,7 +12,7 @@ import {
 } from "./config.ts";
 import { canonicalJson, type JsonScalar, type JsonValue, sha256 } from "./json.ts";
 import { defaultStateDirectory } from "./paths.ts";
-import { isCanonicalUtcInstant } from "./time.ts";
+import { utcInstantOrderingKey } from "./time.ts";
 
 const STORE_SCHEMA_VERSION = 5;
 const STORE_FILENAME = "observations.sqlite";
@@ -282,12 +282,16 @@ export class ObservationStore {
           for (const fact of recordFacts()) {
             factsSeen += 1;
             const snapshot = snapshotFact(fact);
-            validateFact(snapshot, declaredConfig);
+            const sourceTimeKey = validateFactAndDeriveSourceTimeKey(
+              snapshot,
+              declaredConfig,
+            );
             const payloadJson = canonicalJson(snapshot.payload);
             preparedFacts.push({
               ...snapshot,
               payloadJson,
               payloadHash: sha256(payloadJson),
+              sourceTimeKey,
             });
           }
         },
@@ -336,7 +340,7 @@ export class ObservationStore {
             fact.epistemicStatus,
             fact.sourceRecordId,
             fact.sourceRecordedAt,
-            fact.sourceRecordedAt ?? "",
+            fact.sourceTimeKey,
             fact.payloadJson,
             fact.payloadHash,
             startedAt,
@@ -354,7 +358,7 @@ export class ObservationStore {
               fact.subject,
               fact.epistemicStatus,
               fact.sourceRecordId,
-              fact.sourceRecordedAt ?? "",
+              fact.sourceTimeKey,
               fact.payloadHash,
             );
           }
@@ -627,8 +631,8 @@ export class ObservationStore {
                        AND newer.fact_owner = f.fact_owner
                        AND newer.kind = f.kind
                        AND newer.subject = f.subject
-                       AND newer.epistemic_status = f.epistemic_status
-                       AND newer.source_recorded_at > f.source_recorded_at
+                        AND newer.epistemic_status = f.epistemic_status
+                        AND newer.source_time_key > f.source_time_key
                   ) THEN 'historical'
                   WHEN (
                     SELECT MAX(known.last_seen_attempt_order)
@@ -1022,7 +1026,7 @@ export class ObservationStore {
     }
   }
 
-  #correctionSignature(connectionId: string, fact: FactInput): string {
+  #correctionSignature(connectionId: string, fact: PreparedFact): string {
     const rows = this.#database
       .prepare(
         `SELECT payload_hash, last_seen_attempt_order
@@ -1037,7 +1041,7 @@ export class ObservationStore {
         fact.subject,
         fact.epistemicStatus,
         fact.sourceRecordId,
-        fact.sourceRecordedAt ?? "",
+        fact.sourceTimeKey,
       ) as { last_seen_attempt_order: number; payload_hash: string }[];
     const latest = Math.max(0, ...rows.map((row) => row.last_seen_attempt_order));
     return canonicalJson(
@@ -1088,9 +1092,10 @@ interface StoredFactRow {
 interface PreparedFact extends FactInput {
   payloadHash: string;
   payloadJson: string;
+  sourceTimeKey: string;
 }
 
-function correctionSlotKey(connectionId: string, fact: FactInput): string {
+function correctionSlotKey(connectionId: string, fact: PreparedFact): string {
   return canonicalJson([
     connectionId,
     fact.factOwner,
@@ -1098,7 +1103,7 @@ function correctionSlotKey(connectionId: string, fact: FactInput): string {
     fact.subject,
     fact.epistemicStatus,
     fact.sourceRecordId,
-    fact.sourceRecordedAt,
+    fact.sourceTimeKey,
   ]);
 }
 
@@ -1161,12 +1166,13 @@ function snapshotFact(fact: FactInput): FactInput {
   };
 }
 
-function validateFact(fact: FactInput, config: ConnectionConfig): void {
+function validateFactAndDeriveSourceTimeKey(
+  fact: FactInput,
+  config: ConnectionConfig,
+): string {
   for (const [field, value] of [
     ["subject", fact.subject],
     ["sourceRecordId", fact.sourceRecordId],
-    ["factOwner", fact.factOwner],
-    ["kind", fact.kind],
   ] as const) {
     if (
       typeof value !== "string" ||
@@ -1198,9 +1204,14 @@ function validateFact(fact: FactInput, config: ConnectionConfig): void {
       throw new TypeError(`Fact payload ${key} cannot be persisted exactly`);
     }
   }
-  if (fact.sourceRecordedAt !== null && !isCanonicalUtcInstant(fact.sourceRecordedAt)) {
-    throw new TypeError("Fact sourceRecordedAt is not a canonical UTC instant");
+  if (fact.sourceRecordedAt === null) {
+    return "";
   }
+  const sourceTimeKey = utcInstantOrderingKey(fact.sourceRecordedAt);
+  if (sourceTimeKey === null) {
+    throw new TypeError("Fact sourceRecordedAt is not a representable UTC instant");
+  }
+  return sourceTimeKey;
 }
 
 function safeFailureCode(error: unknown): string {

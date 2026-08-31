@@ -3,7 +3,7 @@ import { canonicalJson, isJsonScalar, type JsonScalar } from "./json.ts";
 import type { SourceRecord } from "./readers.ts";
 import type { FactInput } from "./store.ts";
 import { sha256 } from "./json.ts";
-import { isCanonicalUtcInstant, parseCalendarInstant } from "./time.ts";
+import { isRepresentableUtcInstant, parseCalendarInstant } from "./time.ts";
 
 const MISSING = Symbol("missing source field");
 
@@ -76,11 +76,10 @@ function materializeTime(sourceTime: SourceTime, source: SourceRecord): null | s
   let milliseconds: number;
   switch (sourceTime.format) {
     case "iso8601":
-      if (!isCanonicalUtcInstant(value)) {
+      if (!isRepresentableUtcInstant(value)) {
         throw new SourceMappingError();
       }
-      milliseconds = Date.parse(value);
-      break;
+      return value;
     case "date":
       if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
         throw new SourceMappingError();
@@ -107,7 +106,7 @@ function materializeTime(sourceTime: SourceTime, source: SourceRecord): null | s
     throw new SourceMappingError();
   }
   const timestamp = date.toISOString();
-  if (!isCanonicalUtcInstant(timestamp)) {
+  if (!isRepresentableUtcInstant(timestamp)) {
     throw new SourceMappingError();
   }
   return timestamp;

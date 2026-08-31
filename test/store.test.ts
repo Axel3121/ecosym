@@ -306,8 +306,8 @@ test("a null source record id fails collection instead of being ignored", async 
   }
 });
 
-test("non-string fact identities fail collection without persistence", async (t) => {
-  for (const field of ["subject", "sourceRecordId", "factOwner", "kind"] as const) {
+test("non-string source identities fail collection without persistence", async (t) => {
+  for (const field of ["subject", "sourceRecordId"] as const) {
     await t.test(field, async () => {
       const { store } = temporaryStore();
       try {
@@ -316,6 +316,38 @@ test("non-string fact identities fail collection without persistence", async (t)
         const active = store.getConnection(parsed.config.id);
         const malformed = fact();
         (malformed as unknown as Record<string, unknown>)[field] = 42;
+
+        await assert.rejects(
+          store.collect(active, (sink) => {
+            sink.recordSourceRecord(() => [malformed]);
+          }),
+          CollectionFailedError,
+        );
+        assert.equal(store.countFacts(), 0);
+      } finally {
+        store.close();
+      }
+    });
+  }
+});
+
+test("the persisted declaration enforces fact owner and kind strings", async (t) => {
+  for (const field of ["factOwner", "kind"] as const) {
+    await t.test(field, async () => {
+      const { store } = temporaryStore();
+      try {
+        const parsed = connection();
+        store.register(parsed);
+        const active = store.getConnection(parsed.config.id);
+        const malformed = fact();
+        (malformed as unknown as Record<string, unknown>)[field] = 42;
+        if (field === "factOwner") {
+          (active.config as unknown as Record<string, unknown>).factOwner = 42;
+        } else {
+          const callerFact = active.config.facts[0];
+          assert.ok(callerFact);
+          (callerFact as unknown as Record<string, unknown>).kind = 42;
+        }
 
         await assert.rejects(
           store.collect(active, (sink) => {
@@ -359,10 +391,12 @@ test("identity strings that SQLite cannot preserve fail collection", async (t) =
   }
 });
 
-test("source times must be canonical real UTC instants or null", async (t) => {
+test("source times must be representable real UTC instants or null", async (t) => {
   for (const sourceRecordedAt of [
     "2026-02-30",
     "2026-08-30T12:00:00+02:00",
+    "2026-08-30T10:00:00.1234Z",
+    "2016-12-31T23:59:60Z",
     "+010000-01-01T00:00:00.000Z",
     42,
   ] as const) {
@@ -402,6 +436,116 @@ test("source times must be canonical real UTC instants or null", async (t) => {
       store.close();
     }
   });
+});
+
+test("representable UTC spellings persist without being rewritten", async () => {
+  const { store } = temporaryStore();
+  const spellings = [
+    "2026-08-30T10:00:00Z",
+    "2026-08-30T10:00:00.5Z",
+    "2026-08-30T10:00:00.25Z",
+    "2026-08-30T10:00:00.000Z",
+    "2026-08-30T10:00:00+00:00",
+    "2026-08-30T10:00:00.5+00:00",
+  ];
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+    await store.collect(active, (sink) => {
+      for (const [index, sourceRecordedAt] of spellings.entries()) {
+        sink.recordSourceRecord(() => [
+          fact({
+            sourceRecordedAt,
+            sourceRecordId: `record-${index}`,
+            subject: `subject-${index}`,
+          }),
+        ]);
+      }
+    });
+
+    const stored = store.queryObservations().map((record) => record.sourceRecordedAt);
+    assert.deepEqual(stored, spellings);
+    for (const [index, sourceRecordedAt] of spellings.entries()) {
+      assert.equal(Date.parse(stored[index] ?? ""), Date.parse(sourceRecordedAt));
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test("mixed UTC spellings use chronological ordering keys", async (t) => {
+  const { store } = temporaryStore();
+  const spellings = [
+    "2026-08-30T10:00:01Z",
+    "2026-08-30T10:00:00.5Z",
+    "2026-08-30T09:59:59.999Z",
+    "2026-08-30T10:00:00.25+00:00",
+    "2026-08-30T10:00:00Z",
+  ];
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+    await store.collect(active, (sink) => {
+      for (const [index, sourceRecordedAt] of spellings.entries()) {
+        sink.recordSourceRecord(() => [
+          fact({ sourceRecordedAt, sourceRecordId: `record-${index}` }),
+        ]);
+      }
+    });
+
+    const inspected = new DatabaseSync(store.path, { readOnly: true });
+    try {
+      const ordered = inspected
+        .prepare(
+          `SELECT source_recorded_at AS supplied, source_time_key AS ordering_key
+             FROM facts
+            ORDER BY source_time_key, fact_id`,
+        )
+        .all()
+        .map((row) => ({ ...(row as Record<string, unknown>) }));
+      t.diagnostic(`stored UTC order: ${JSON.stringify(ordered)}`);
+      assert.deepEqual(ordered, [
+        {
+          supplied: "2026-08-30T09:59:59.999Z",
+          ordering_key: "2026-08-30T09:59:59.999Z",
+        },
+        {
+          supplied: "2026-08-30T10:00:00Z",
+          ordering_key: "2026-08-30T10:00:00.000Z",
+        },
+        {
+          supplied: "2026-08-30T10:00:00.25+00:00",
+          ordering_key: "2026-08-30T10:00:00.250Z",
+        },
+        {
+          supplied: "2026-08-30T10:00:00.5Z",
+          ordering_key: "2026-08-30T10:00:00.500Z",
+        },
+        {
+          supplied: "2026-08-30T10:00:01Z",
+          ordering_key: "2026-08-30T10:00:01.000Z",
+        },
+      ]);
+    } finally {
+      inspected.close();
+    }
+    assert.deepEqual(
+      store
+        .queryObservations()
+        .map((record) => [record.sourceRecordedAt, record.temporalStatus]),
+      [
+        ["2026-08-30T10:00:01Z", "current"],
+        ["2026-08-30T10:00:00.5Z", "historical"],
+        ["2026-08-30T09:59:59.999Z", "historical"],
+        ["2026-08-30T10:00:00.25+00:00", "historical"],
+        ["2026-08-30T10:00:00Z", "historical"],
+      ],
+    );
+  } finally {
+    store.close();
+  }
 });
 
 test("payload scalars are persisted exactly or rejected", async () => {
@@ -532,8 +676,15 @@ test("facts can only be written through a counted source record", async () => {
     store.register(parsed);
     const active = store.getConnection(parsed.config.id);
 
-    const result = await store.collect(active, (sink) => {
+    const orphaned = await store.collect(active, (sink) => {
       assert.equal("writeFact" in sink, false);
+    });
+    assert.equal(orphaned.sourceRecordsSeen, 0);
+    assert.equal(orphaned.factsSeen, 0);
+    assert.equal(orphaned.factsAdded, 0);
+    assert.equal(store.countFacts(), 0);
+
+    const result = await store.collect(active, (sink) => {
       sink.recordSourceRecord(() => [fact()]);
       sink.recordSourceRecord(() => []);
     });
