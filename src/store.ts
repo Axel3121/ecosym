@@ -148,6 +148,7 @@ class StoreContentionError extends Error {
 
 export class ObservationStore {
   readonly path: string;
+  readonly #busyTimeoutMilliseconds: number;
   readonly #database: DatabaseSync;
   #closed = false;
 
@@ -167,6 +168,7 @@ export class ObservationStore {
     mkdirSync(stateDirectory, { recursive: true, mode: 0o700 });
     chmodSync(stateDirectory, 0o700);
     this.path = join(stateDirectory, STORE_FILENAME);
+    this.#busyTimeoutMilliseconds = busyTimeoutMilliseconds;
     this.#database = new DatabaseSync(this.path, { timeout: busyTimeoutMilliseconds });
     chmodSync(this.path, 0o600);
     this.#database.exec("PRAGMA foreign_keys = ON");
@@ -1105,29 +1107,39 @@ export class ObservationStore {
   ): Promise<{ attemptOrder: number; startedAt: string }> {
     const retryDeadline = performance.now() + BUSY_RETRY_WINDOW_MILLISECONDS;
     while (true) {
+      const remainingMilliseconds = retryDeadline - performance.now();
+      if (remainingMilliseconds <= 0) {
+        throw new StoreContentionError(new Error("Store contention deadline elapsed"));
+      }
+      const attemptTimeoutMilliseconds = Math.min(
+        this.#busyTimeoutMilliseconds,
+        Math.max(0, Math.floor(remainingMilliseconds)),
+      );
       try {
-        return this.#transaction(() => {
-          this.#assertActive(connection);
-          const attemptOrder = this.#nextAttemptOrder();
-          const startedAt = now().toISOString();
-          this.#database
-            .prepare(
-              `INSERT INTO collection_attempts
-                  (attempt_order, attempt_id, connection_id, config_hash, activation_id,
-                   started_at, outcome, source_records_seen, facts_seen, facts_added,
-                   facts_changed)
-               VALUES (?, ?, ?, ?, ?, ?, 'running', 0, 0, 0, 0)`,
-            )
-            .run(
-              attemptOrder,
-              attemptId,
-              connection.config.id,
-              connection.configHash,
-              connection.activationId,
-              startedAt,
-            );
-          return { attemptOrder, startedAt };
-        });
+        return this.#withBusyTimeout(attemptTimeoutMilliseconds, () =>
+          this.#transaction(() => {
+            this.#assertActive(connection);
+            const attemptOrder = this.#nextAttemptOrder();
+            const startedAt = now().toISOString();
+            this.#database
+              .prepare(
+                `INSERT INTO collection_attempts
+                    (attempt_order, attempt_id, connection_id, config_hash, activation_id,
+                     started_at, outcome, source_records_seen, facts_seen, facts_added,
+                     facts_changed)
+                 VALUES (?, ?, ?, ?, ?, ?, 'running', 0, 0, 0, 0)`,
+              )
+              .run(
+                attemptOrder,
+                attemptId,
+                connection.config.id,
+                connection.configHash,
+                connection.activationId,
+                startedAt,
+              );
+            return { attemptOrder, startedAt };
+          }),
+        );
       } catch (error) {
         if (!isSqliteBusy(error)) {
           throw error;
@@ -1185,6 +1197,18 @@ export class ObservationStore {
         this.#database.exec("ROLLBACK");
       }
       throw error;
+    }
+  }
+
+  #withBusyTimeout<T>(timeoutMilliseconds: number, operation: () => T): T {
+    if (timeoutMilliseconds === this.#busyTimeoutMilliseconds) {
+      return operation();
+    }
+    this.#database.exec(`PRAGMA busy_timeout = ${timeoutMilliseconds}`);
+    try {
+      return operation();
+    } finally {
+      this.#database.exec(`PRAGMA busy_timeout = ${this.#busyTimeoutMilliseconds}`);
     }
   }
 
