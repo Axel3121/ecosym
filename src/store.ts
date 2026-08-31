@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -1132,8 +1133,11 @@ function validateFact(fact: FactInput, config: ConnectionConfig): void {
     ["factOwner", fact.factOwner],
     ["kind", fact.kind],
   ] as const) {
-    if (typeof value !== "string") {
-      throw new TypeError(`Fact ${field} is not a string`);
+    if (
+      typeof value !== "string" ||
+      Buffer.from(value, "utf8").toString("utf8") !== value
+    ) {
+      throw new TypeError(`Fact ${field} is not a lossless SQLite string`);
     }
   }
   const payloadKeys = new Set(Object.keys(fact.payload));

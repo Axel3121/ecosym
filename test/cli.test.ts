@@ -21,7 +21,7 @@ test("the command surface connects, collects, queries, and verifies", async () =
   const xdgDataHome = join(directory, "data");
   writeFileSync(
     sourcePath,
-    '{"id":"record-1","subject":"subject-1","at":"2026-08-30T00:00:00Z","value":7,"secret":"not selected"}\n',
+    '{"id":"record-1","subject":"subject-1","at":"2026-08-30T00:00:00.000Z","value":7,"secret":"not selected"}\n',
   );
   writeFileSync(
     configPath,
@@ -75,7 +75,7 @@ test("the command surface connects, collects, queries, and verifies", async () =
 
   writeFileSync(
     sourcePath,
-    '{"id":"record-1","subject":"subject-1","at":"2026-08-30T00:00:00Z","value":8}\n',
+    '{"id":"record-1","subject":"subject-1","at":"2026-08-30T00:00:00.000Z","value":8}\n',
   );
   const disagreement = await runCli(["verify"], xdgDataHome);
   assert.equal(disagreement.code, 1);

@@ -105,7 +105,7 @@ test("SQLite collection stores configured facts and excludes sampled unselected 
          secret_token, private_history)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run("record-1", "video-1", "2026-08-30T10:00:00Z", 7, "completed", secret, privateHistory);
+    .run("record-1", "video-1", "2026-08-30T10:00:00.000Z", 7, "completed", secret, privateHistory);
   source.close();
 
   const store = new ObservationStore(join(directory, "state"));
@@ -133,7 +133,7 @@ test("keeps changing values as a source-time series and does not promote a late 
     .prepare(
       `INSERT INTO measurements VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run("record-1", "video-1", "2026-08-30T10:00:00Z", 7, "running", "unused", "unused");
+    .run("record-1", "video-1", "2026-08-30T10:00:00.000Z", 7, "running", "unused", "unused");
   source.close();
   const store = new ObservationStore(join(directory, "state"));
   const parsed = sqliteConnection(sourcePath);
@@ -144,14 +144,14 @@ test("keeps changing values as a source-time series and does not promote a late 
     const update = new DatabaseSync(sourcePath);
     update
       .prepare("UPDATE measurements SET measured_at = ?, public_value = ? WHERE record_id = ?")
-      .run("2026-08-31T10:00:00Z", 12, "record-1");
+      .run("2026-08-31T10:00:00.000Z", 12, "record-1");
     update.close();
     await collectConnection(store, parsed.config.id);
 
     const late = new DatabaseSync(sourcePath);
     late
       .prepare("UPDATE measurements SET measured_at = ?, public_value = ? WHERE record_id = ?")
-      .run("2026-08-29T10:00:00Z", 5, "record-1");
+      .run("2026-08-29T10:00:00.000Z", 5, "record-1");
     late.close();
     await collectConnection(store, parsed.config.id);
 
@@ -175,7 +175,7 @@ test("a corrected source version has one current payload, including after revers
   const source = createSqliteSource(sourcePath);
   source
     .prepare("INSERT INTO measurements VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .run("record-1", "video-1", "2026-08-30T10:00:00Z", 7, "running", "unused", "unused");
+    .run("record-1", "video-1", "2026-08-30T10:00:00.000Z", 7, "running", "unused", "unused");
   source.close();
   const store = new ObservationStore(join(directory, "state"));
   const parsed = sqliteConnection(sourcePath);
@@ -223,7 +223,7 @@ test("JSONL history preserves deletion markers and treats required null metrics 
   const sourcePath = join(directory, "history.jsonl");
   writeFileSync(
     sourcePath,
-    `${JSON.stringify({ id: "one", video_id: "video-1", at: "2026-08-30T00:00:00Z", deleted: true, day7_stats: null })}\n`,
+    `${JSON.stringify({ id: "one", video_id: "video-1", at: "2026-08-30T00:00:00.000Z", deleted: true, day7_stats: null })}\n`,
   );
   const parsed = parseConnectionConfig({
     schemaVersion: 1,
@@ -277,7 +277,7 @@ test("reads nested JSON snapshots with source-root metadata", async () => {
   writeFileSync(
     sourcePath,
     JSON.stringify({
-      generated_at: "2026-08-30T06:00:00Z",
+      generated_at: "2026-08-30T06:00:00.000Z",
       unselected_channel_secret: "must stay outside the store",
       videos: [{ video_id: "video-1", views: 12, unselected_title: "private title" }],
     }),
@@ -325,7 +325,7 @@ test("reads quoted CSV records through the same declarative contract", async () 
   const sourcePath = join(directory, "readings.csv");
   writeFileSync(
     sourcePath,
-    'reading_id,subject,recorded_at,value,note\r\n1,sensor-a,2026-08-30T00:00:00Z,green,"comma, kept out"\r\n',
+    'reading_id,subject,recorded_at,value,note\r\n1,sensor-a,2026-08-30T00:00:00.000Z,green,"comma, kept out"\r\n',
   );
   const parsed = parseConnectionConfig({
     schemaVersion: 1,
@@ -447,7 +447,17 @@ for (const scenario of [
   {
     name: "an impossible ISO calendar date",
     format: "iso8601",
-    value: "2026-02-30T00:00:00Z",
+    value: "2026-02-30T00:00:00.000Z",
+  },
+  {
+    name: "a non-UTC ISO representation",
+    format: "iso8601",
+    value: "2026-08-30T12:00:00+02:00",
+  },
+  {
+    name: "a shortened UTC ISO representation",
+    format: "iso8601",
+    value: "2026-08-30T10:00:00Z",
   },
   {
     name: "an extended ISO year the store cannot order",
@@ -538,7 +548,7 @@ test("a malformed later JSONL row rolls back facts from earlier rows", async () 
   const sourcePath = join(directory, "broken.jsonl");
   writeFileSync(
     sourcePath,
-    `${JSON.stringify({ id: "one", subject: "a", at: "2026-08-30T00:00:00Z", value: 1 })}\n{"broken":\n`,
+    `${JSON.stringify({ id: "one", subject: "a", at: "2026-08-30T00:00:00.000Z", value: 1 })}\n{"broken":\n`,
   );
   const parsed = parseConnectionConfig({
     schemaVersion: 1,
@@ -633,7 +643,7 @@ test("a locked SQLite source records an unread attempt", async () => {
   const source = createSqliteSource(sourcePath);
   source
     .prepare("INSERT INTO measurements VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .run("record-1", "video-1", "2026-08-30T10:00:00Z", 7, "running", "unused", "unused");
+    .run("record-1", "video-1", "2026-08-30T10:00:00.000Z", 7, "running", "unused", "unused");
   source.close();
   const parsed = sqliteConnection(sourcePath, "locked-source");
   const store = new ObservationStore(join(directory, "state"));

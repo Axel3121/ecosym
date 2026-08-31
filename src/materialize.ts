@@ -76,10 +76,10 @@ function materializeTime(sourceTime: SourceTime, source: SourceRecord): null | s
   let milliseconds: number;
   switch (sourceTime.format) {
     case "iso8601":
-      if (typeof value !== "string") {
+      if (!isCanonicalUtcInstant(value)) {
         throw new SourceMappingError();
       }
-      milliseconds = parseCalendarInstant(value) ?? Number.NaN;
+      milliseconds = Date.parse(value);
       break;
     case "date":
       if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {

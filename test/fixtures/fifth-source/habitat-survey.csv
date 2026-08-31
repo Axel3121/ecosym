@@ -1,2 +1,2 @@
 survey_id,plot_id,observed_at,condition,private_notes
-survey-001,plot-7,2026-08-30T09:30:00Z,flowering,"synthetic note that was not selected"
+survey-001,plot-7,2026-08-30T09:30:00.000Z,flowering,"synthetic note that was not selected"

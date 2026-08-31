@@ -129,7 +129,7 @@ test("a collected correction and reversion verify against only their current pay
     await collectConnection(store, parsed.config.id);
     writeFileSync(
       sourcePath,
-      '{"record_id":"record-1","subject":"subject-1","recorded_at":"2026-08-30T00:00:00Z","value":12}\n',
+      '{"record_id":"record-1","subject":"subject-1","recorded_at":"2026-08-30T00:00:00.000Z","value":12}\n',
     );
     await collectConnection(store, parsed.config.id);
     let report = await verifyConnection(store, store.getConnection(parsed.config.id));
@@ -156,7 +156,7 @@ test("distinguishes missing and never-collected records", async () => {
     await collectConnection(store, parsed.config.id);
     writeFileSync(
       sourcePath,
-      '{"record_id":"record-2","subject":"new-subject","recorded_at":"2026-08-30T00:00:00Z","value":4}\n',
+      '{"record_id":"record-2","subject":"new-subject","recorded_at":"2026-08-30T00:00:00.000Z","value":4}\n',
     );
     const report = await verifyConnection(store, store.getConnection(parsed.config.id));
 
@@ -174,7 +174,7 @@ test("a newer source value is advancement rather than payload disagreement", asy
     await collectConnection(store, parsed.config.id);
     writeFileSync(
       sourcePath,
-      '{"record_id":"record-1","subject":"subject-1","recorded_at":"2026-08-31T00:00:00Z","value":12}\n',
+      '{"record_id":"record-1","subject":"subject-1","recorded_at":"2026-08-31T00:00:00.000Z","value":12}\n',
     );
     const report = await verifyConnection(store, store.getConnection(parsed.config.id));
 
@@ -193,8 +193,8 @@ test("a late intermediate source point is uncollected rather than advancement", 
     writeFileSync(
       sourcePath,
       [
-        '{"record_id":"record-1","subject":"subject-1","recorded_at":"2026-08-30T00:00:00Z","value":7}',
-        '{"record_id":"record-3","subject":"subject-1","recorded_at":"2026-09-01T00:00:00Z","value":14}',
+        '{"record_id":"record-1","subject":"subject-1","recorded_at":"2026-08-30T00:00:00.000Z","value":7}',
+        '{"record_id":"record-3","subject":"subject-1","recorded_at":"2026-09-01T00:00:00.000Z","value":14}',
         "",
       ].join("\n"),
     );
@@ -202,9 +202,9 @@ test("a late intermediate source point is uncollected rather than advancement", 
     writeFileSync(
       sourcePath,
       [
-        '{"record_id":"record-1","subject":"subject-1","recorded_at":"2026-08-30T00:00:00Z","value":7}',
-        '{"record_id":"record-2","subject":"subject-1","recorded_at":"2026-08-31T00:00:00Z","value":12}',
-        '{"record_id":"record-3","subject":"subject-1","recorded_at":"2026-09-01T00:00:00Z","value":14}',
+        '{"record_id":"record-1","subject":"subject-1","recorded_at":"2026-08-30T00:00:00.000Z","value":7}',
+        '{"record_id":"record-2","subject":"subject-1","recorded_at":"2026-08-31T00:00:00.000Z","value":12}',
+        '{"record_id":"record-3","subject":"subject-1","recorded_at":"2026-09-01T00:00:00.000Z","value":14}',
         "",
       ].join("\n"),
     );
@@ -224,7 +224,7 @@ test("history retention still reports an older source version that disappeared",
     await collectConnection(store, parsed.config.id);
     writeFileSync(
       sourcePath,
-      '{"record_id":"record-1","subject":"subject-1","recorded_at":"2026-08-31T00:00:00Z","value":12}\n',
+      '{"record_id":"record-1","subject":"subject-1","recorded_at":"2026-08-31T00:00:00.000Z","value":12}\n',
     );
     const report = await verifyConnection(store, store.getConnection(parsed.config.id));
 

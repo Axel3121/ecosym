@@ -331,6 +331,34 @@ test("non-string fact identities fail collection without persistence", async (t)
   }
 });
 
+test("identity strings that SQLite cannot preserve fail collection", async (t) => {
+  for (const [field, value] of [
+    ["subject", "\ud800"],
+    ["sourceRecordId", "\udfff"],
+  ] as const) {
+    await t.test(field, async () => {
+      const { store } = temporaryStore();
+      try {
+        const parsed = connection();
+        store.register(parsed);
+        const active = store.getConnection(parsed.config.id);
+        const malformed = fact();
+        malformed[field] = value;
+
+        await assert.rejects(
+          store.collect(active, (sink) => {
+            sink.recordSourceRecord(() => [malformed]);
+          }),
+          CollectionFailedError,
+        );
+        assert.equal(store.countFacts(), 0);
+      } finally {
+        store.close();
+      }
+    });
+  }
+});
+
 test("source times must be canonical real UTC instants or null", async (t) => {
   for (const sourceRecordedAt of [
     "2026-02-30",
@@ -391,7 +419,7 @@ test("payload scalars are persisted exactly or rejected", async () => {
     );
     assert.equal(store.countFacts(), 0);
 
-    const values = [null, true, 7, "7"] as const;
+    const values = [null, true, 7, "7", "\ud800"] as const;
     await store.collect(active, (sink) => {
       for (const [index, value] of values.entries()) {
         sink.recordSourceRecord(() => [
