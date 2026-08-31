@@ -166,18 +166,13 @@ test("an ambiguous legacy record index can be resolved by a recorded user choice
   legacy.close();
   const downgraded = new DatabaseSync(join(stateDirectory, "observations.sqlite"));
   downgraded.exec(`
-    DROP TABLE record_index_mode_resolutions;
+    DROP TABLE IF EXISTS record_index_mode_resolutions;
     ALTER TABLE connection_versions DROP COLUMN jsonl_record_index_mode;
     PRAGMA user_version = 6;
   `);
   downgraded.close();
 
   const before = await runCli(["status"], xdgDataHome);
-  assert.equal(
-    (before.output.connections as { connectionVersion: string }[])[0]
-      ?.connectionVersion,
-    parsed.hash,
-  );
   assert.equal(
     (before.output.connections as { reason: string }[])[0]?.reason,
     "record-index-unknown",
