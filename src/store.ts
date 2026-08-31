@@ -13,9 +13,10 @@ import {
 } from "./config.ts";
 import { canonicalJson, type JsonScalar, type JsonValue, sha256 } from "./json.ts";
 import { defaultStateDirectory } from "./paths.ts";
+import type { JsonlRecordIndexMode } from "./readers.ts";
 import { utcInstantOrderingKey } from "./time.ts";
 
-const STORE_SCHEMA_VERSION = 6;
+const STORE_SCHEMA_VERSION = 7;
 const STORE_FILENAME = "observations.sqlite";
 const BUSY_RETRY_WINDOW_MILLISECONDS = 250;
 
@@ -24,6 +25,7 @@ export interface ActiveConnection {
   config: ConnectionConfig;
   configHash: string;
   connectedAt: string;
+  jsonlRecordIndexMode: JsonlRecordIndexMode;
 }
 
 export interface FactInput {
@@ -191,8 +193,9 @@ export class ObservationStore {
       this.#database
         .prepare(
           `INSERT OR IGNORE INTO connection_versions
-             (connection_id, config_hash, config_json, registered_at)
-           VALUES (?, ?, ?, ?)`,
+             (connection_id, config_hash, config_json, registered_at,
+              jsonl_record_index_mode)
+           VALUES (?, ?, ?, ?, 'record-ordinal')`,
         )
         .run(parsed.config.id, parsed.hash, parsed.canonical, timestamp);
 
@@ -228,7 +231,8 @@ export class ObservationStore {
   getConnection(connectionId: string): ActiveConnection {
     const row = this.#database
       .prepare(
-        `SELECT c.config_hash, c.activation_id, c.connected_at, v.config_json
+        `SELECT c.config_hash, c.activation_id, c.connected_at, v.config_json,
+                v.jsonl_record_index_mode
            FROM active_connections c
            JOIN connection_versions v
              ON v.connection_id = c.connection_id
@@ -242,6 +246,7 @@ export class ObservationStore {
           config_hash: string;
           config_json: string;
           connected_at: string;
+          jsonl_record_index_mode: string;
         };
     if (row === undefined) {
       throw new ConnectionNotFoundError(connectionId);
@@ -251,13 +256,15 @@ export class ObservationStore {
       config: parseStoredConfig(row.config_json, row.config_hash),
       configHash: row.config_hash,
       connectedAt: row.connected_at,
+      jsonlRecordIndexMode: parseJsonlRecordIndexMode(row.jsonl_record_index_mode),
     };
   }
 
   listConnections(): ActiveConnection[] {
     const rows = this.#database
       .prepare(
-        `SELECT c.config_hash, c.activation_id, c.connected_at, v.config_json
+        `SELECT c.config_hash, c.activation_id, c.connected_at, v.config_json,
+                v.jsonl_record_index_mode
            FROM active_connections c
            JOIN connection_versions v
              ON v.connection_id = c.connection_id
@@ -269,12 +276,14 @@ export class ObservationStore {
       config_hash: string;
       config_json: string;
       connected_at: string;
+      jsonl_record_index_mode: string;
     }[];
     return rows.map((row) => ({
       activationId: row.activation_id,
       config: parseStoredConfig(row.config_json, row.config_hash),
       configHash: row.config_hash,
       connectedAt: row.connected_at,
+      jsonlRecordIndexMode: parseJsonlRecordIndexMode(row.jsonl_record_index_mode),
     }));
   }
 
@@ -793,7 +802,8 @@ export class ObservationStore {
         row.user_version !== 2 &&
         row.user_version !== 3 &&
         row.user_version !== 4 &&
-        row.user_version !== 5
+        row.user_version !== 5 &&
+        row.user_version !== 6
       ) {
         throw new Error(`Unsupported observation store schema ${row.user_version}`);
       }
@@ -804,6 +814,8 @@ export class ObservationStore {
           config_hash TEXT NOT NULL,
           config_json TEXT NOT NULL,
           registered_at TEXT NOT NULL,
+          jsonl_record_index_mode TEXT NOT NULL DEFAULT 'record-ordinal'
+            CHECK (jsonl_record_index_mode IN ('physical-line', 'record-ordinal')),
           PRIMARY KEY (connection_id, config_hash)
         ) STRICT;
 
@@ -894,13 +906,20 @@ export class ObservationStore {
         return;
       }
 
-      if (row.user_version === 5) {
+      if (row.user_version === 5 || row.user_version === 6) {
+        if (row.user_version === 5) {
+          this.#database.exec(`
+            CREATE INDEX facts_identity_source_time
+              ON facts(
+                connection_id, fact_owner, kind, subject, epistemic_status,
+                source_time_key
+              );
+          `);
+        }
         this.#database.exec(`
-          CREATE INDEX facts_identity_source_time
-            ON facts(
-              connection_id, fact_owner, kind, subject, epistemic_status,
-              source_time_key
-            );
+          ALTER TABLE connection_versions ADD COLUMN jsonl_record_index_mode TEXT
+            NOT NULL DEFAULT 'physical-line'
+            CHECK (jsonl_record_index_mode IN ('physical-line', 'record-ordinal'));
           PRAGMA user_version = ${STORE_SCHEMA_VERSION};
         `);
         return;
@@ -1060,6 +1079,9 @@ export class ObservationStore {
         resetActivation.run(activationId, active.connection_id);
       }
       this.#database.exec(`
+        ALTER TABLE connection_versions ADD COLUMN jsonl_record_index_mode TEXT
+          NOT NULL DEFAULT 'physical-line'
+          CHECK (jsonl_record_index_mode IN ('physical-line', 'record-ordinal'));
         CREATE INDEX facts_identity_source_time
           ON facts(
             connection_id, fact_owner, kind, subject, epistemic_status,
@@ -1283,6 +1305,13 @@ function parseStoredConfig(configJson: string, expectedHash: string): Connection
     throw new Error("Stored connection configuration does not match its identity");
   }
   return parsed.config;
+}
+
+function parseJsonlRecordIndexMode(value: string): JsonlRecordIndexMode {
+  if (value !== "physical-line" && value !== "record-ordinal") {
+    throw new Error("Stored JSONL record-index mode is invalid");
+  }
+  return value;
 }
 
 function snapshotFact(fact: FactInput): FactInput {

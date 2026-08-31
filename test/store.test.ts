@@ -1352,7 +1352,11 @@ test("the ordering-index migration does not rewrite version-five facts", async (
     .prepare("SELECT * FROM facts ORDER BY fact_id")
     .all()
     .map((row) => ({ ...(row as Record<string, unknown>) }));
-  downgraded.exec("DROP INDEX facts_identity_source_time; PRAGMA user_version = 5");
+  downgraded.exec(`
+    DROP INDEX facts_identity_source_time;
+    ALTER TABLE connection_versions DROP COLUMN jsonl_record_index_mode;
+    PRAGMA user_version = 5;
+  `);
   downgraded.close();
 
   const migrated = new ObservationStore(directory);
@@ -1369,7 +1373,7 @@ test("the ordering-index migration does not rewrite version-five facts", async (
     const version = inspected.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(version.user_version, 6);
+    assert.equal(version.user_version, 7);
     const columns = (
       inspected.prepare("PRAGMA index_info(facts_identity_source_time)").all() as {
         name: string;
@@ -1531,6 +1535,7 @@ test("version-three reversions migrate without claiming a current attempt status
   oldStore.exec(`
     DROP INDEX facts_correction_slot;
     DROP INDEX facts_identity_source_time;
+    ALTER TABLE connection_versions DROP COLUMN jsonl_record_index_mode;
     ALTER TABLE collection_attempts DROP COLUMN facts_changed;
     PRAGMA user_version = 3;
   `);

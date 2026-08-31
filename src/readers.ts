@@ -16,6 +16,8 @@ export interface SourceRecord {
   root: unknown;
 }
 
+export type JsonlRecordIndexMode = "physical-line" | "record-ordinal";
+
 export class SourceReadError extends Error {
   readonly code:
     | "source_absent"
@@ -31,13 +33,16 @@ export class SourceReadError extends Error {
   }
 }
 
-export async function* readSource(config: ConnectionConfig): AsyncGenerator<SourceRecord> {
+export async function* readSource(
+  config: ConnectionConfig,
+  jsonlRecordIndexMode: JsonlRecordIndexMode = "record-ordinal",
+): AsyncGenerator<SourceRecord> {
   switch (config.reader.type) {
     case "sqlite":
       yield* readSqlite(config);
       return;
     case "jsonl":
-      yield* readJsonLines(config);
+      yield* readJsonLines(config, jsonlRecordIndexMode);
       return;
     case "json":
       yield* readJsonFiles(config);
@@ -101,7 +106,10 @@ async function* readSqlite(config: ConnectionConfig): AsyncGenerator<SourceRecor
   }
 }
 
-async function* readJsonLines(config: ConnectionConfig): AsyncGenerator<SourceRecord> {
+async function* readJsonLines(
+  config: ConnectionConfig,
+  recordIndexMode: JsonlRecordIndexMode,
+): AsyncGenerator<SourceRecord> {
   if (config.reader.type !== "jsonl") {
     return;
   }
@@ -114,6 +122,9 @@ async function* readJsonLines(config: ConnectionConfig): AsyncGenerator<SourceRe
     let recordIndex = 0;
     for await (const line of lines) {
       if (line.trim() === "") {
+        if (recordIndexMode === "physical-line") {
+          recordIndex += 1;
+        }
         continue;
       }
       const parsed = parseRecord(line);

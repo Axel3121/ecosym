@@ -7,6 +7,7 @@ import { test } from "node:test";
 
 import { collectConnection } from "../src/collect.ts";
 import { parseConnectionConfig, type ConnectionConfig } from "../src/config.ts";
+import { materializeFacts } from "../src/materialize.ts";
 import {
   openFileReadOnly,
   openSqliteReadOnly,
@@ -88,6 +89,28 @@ function fileConnection(
         kind: "example.value",
         subject: { scope: "record", path: "subject" },
         payload: { value: { scope: "record", path: payloadPath } },
+      },
+    ],
+  });
+}
+
+function indexedJsonlConnection(sourcePath: string) {
+  return parseConnectionConfig({
+    schemaVersion: 1,
+    id: "indexed-jsonl",
+    factOwner: "source-owner",
+    reader: { type: "jsonl", path: sourcePath },
+    sourceRecord: {
+      identity: [{ scope: "meta", value: "record-index" }],
+      retention: "history",
+      recordedAt: { unavailable: true },
+    },
+    facts: [
+      {
+        epistemicStatus: "observation",
+        kind: "example.value",
+        subject: { scope: "record", path: "subject" },
+        payload: { value: { scope: "record", path: "value" } },
       },
     ],
   });
@@ -304,25 +327,7 @@ test("JSONL blank lines do not change record-index identity", async () => {
     '{"subject":"beta","value":2}',
   ];
   writeFileSync(sourcePath, `${records.join("\n")}\n`);
-  const parsed = parseConnectionConfig({
-    schemaVersion: 1,
-    id: "indexed-jsonl",
-    factOwner: "source-owner",
-    reader: { type: "jsonl", path: sourcePath },
-    sourceRecord: {
-      identity: [{ scope: "meta", value: "record-index" }],
-      retention: "history",
-      recordedAt: { unavailable: true },
-    },
-    facts: [
-      {
-        epistemicStatus: "observation",
-        kind: "example.value",
-        subject: { scope: "record", path: "subject" },
-        payload: { value: { scope: "record", path: "value" } },
-      },
-    ],
-  });
+  const parsed = indexedJsonlConnection(sourcePath);
   const store = new ObservationStore(join(directory, "state"));
   try {
     store.register(parsed);
@@ -348,6 +353,75 @@ test("JSONL blank lines do not change record-index identity", async () => {
     );
   } finally {
     store.close();
+  }
+});
+
+test("an existing physical-line JSONL store keeps its stored record identity", async () => {
+  const directory = workspace();
+  const stateDirectory = join(directory, "state");
+  const sourcePath = join(directory, "records.jsonl");
+  writeFileSync(
+    sourcePath,
+    '{"subject":"alpha","value":1}\n\n{"subject":"beta","value":2}\n',
+  );
+  const parsed = indexedJsonlConnection(sourcePath);
+  const oldStore = new ObservationStore(stateDirectory);
+  oldStore.register(parsed);
+  await oldStore.collect(oldStore.getConnection(parsed.config.id), (sink) => {
+    for (const [recordIndex, line] of readFileSync(sourcePath, "utf8").split("\n").entries()) {
+      if (line.trim() === "") {
+        continue;
+      }
+      const record = JSON.parse(line) as Record<string, unknown>;
+      sink.recordSourceRecord(() =>
+        materializeFacts(parsed.config, {
+          meta: { recordIndex, sourcePath },
+          numericLexemes: null,
+          record,
+          root: record,
+        }),
+      );
+    }
+  });
+  const identities = oldStore.queryObservations().map((fact) => fact.sourceRecordId);
+  oldStore.close();
+
+  // Model the exact pre-migration schema after writing with its physical-line rule.
+  const oldDatabase = new DatabaseSync(join(stateDirectory, "observations.sqlite"));
+  const columns = oldDatabase.prepare("PRAGMA table_info(connection_versions)").all() as {
+    name: string;
+  }[];
+  if (columns.some((column) => column.name === "jsonl_record_index_mode")) {
+    oldDatabase.exec("ALTER TABLE connection_versions DROP COLUMN jsonl_record_index_mode");
+  }
+  oldDatabase.exec("PRAGMA user_version = 6");
+  oldDatabase.close();
+
+  const migrated = new ObservationStore(stateDirectory);
+  try {
+    assert.equal(
+      migrated.getConnection(parsed.config.id).jsonlRecordIndexMode,
+      "physical-line",
+    );
+    const verification = await verifyConnection(
+      migrated,
+      migrated.getConnection(parsed.config.id),
+    );
+    assert.equal(verification.outcome, "agreement");
+    assert.equal(verification.counts.matched, 2);
+    assert.equal(verification.counts.missingAtSource, 0);
+    assert.equal(verification.counts.uncollected, 0);
+
+    const repeated = await collectConnection(migrated, parsed.config.id);
+    assert.equal(repeated.result.factsAdded, 0);
+    assert.equal(repeated.result.factsChanged, 0);
+    assert.equal(migrated.countFacts(), 2);
+    assert.deepEqual(
+      migrated.queryObservations().map((fact) => fact.sourceRecordId),
+      identities,
+    );
+  } finally {
+    migrated.close();
   }
 });
 

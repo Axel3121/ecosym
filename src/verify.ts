@@ -111,7 +111,10 @@ export async function verifyConnection(
   let source: ComparableFact[];
   try {
     const materialized: ComparableFact[] = [];
-    for await (const sourceRecord of readSource(connection.config)) {
+    for await (const sourceRecord of readSource(
+      connection.config,
+      connection.jsonlRecordIndexMode,
+    )) {
       for (const fact of materializeFacts(connection.config, sourceRecord)) {
         const payloadJson = canonicalJson(fact.payload);
         materialized.push({
