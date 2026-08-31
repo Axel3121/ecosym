@@ -228,14 +228,20 @@ test("a failed collection rolls back all facts before recording unread status", 
     );
 
     assert.equal(store.countFacts(), 0);
-    assert.deepEqual(store.statuses(), [
+    const [status] = store.statuses();
+    assert.deepEqual(
+      { ...status, lastAttemptAt: undefined },
       {
         connectionId: "source-a",
-        lastAttemptAt: store.statuses()[0]?.lastAttemptAt ?? null,
+        lastAttemptAt: undefined,
         reason: "failed",
         status: "unread",
       },
-    ]);
+    );
+    // Reading the expectation from the method under test would compare the
+    // field to itself and pass for any value, including null. A failed attempt
+    // is still an attempt, so it must carry a time.
+    assert.notEqual(status?.lastAttemptAt, null);
   } finally {
     store.close();
   }

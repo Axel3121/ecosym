@@ -52,7 +52,9 @@ jobs:
       # silent failure. Node reports a count; require it to be non-zero.
       - name: tests actually ran
         run: |
-          count=$(node --test --test-reporter=tap test/*.test.ts 2>/dev/null | grep -c '^ok ' || true)
+          set -o pipefail
+          node --test --test-reporter=tap test/*.test.ts > tap.txt
+          count=$(grep -c '^ok ' tap.txt || true)
           echo "passing assertions: $count"
           if [ "$count" -eq 0 ]; then
             echo "no tests ran — the check suite proves nothing" >&2
