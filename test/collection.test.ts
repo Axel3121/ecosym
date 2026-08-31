@@ -7,6 +7,7 @@ import { test } from "node:test";
 
 import { collectConnection } from "../src/collect.ts";
 import { parseConnectionConfig, type ConnectionConfig } from "../src/config.ts";
+import { materializeFacts, SourceMappingError } from "../src/materialize.ts";
 import {
   openFileReadOnly,
   openSqliteReadOnly,
@@ -90,6 +91,30 @@ function fileConnection(
       },
     ],
   });
+}
+
+function numericTimeFixture(
+  token: string,
+  format: "unix-milliseconds" | "unix-seconds",
+) {
+  const directory = workspace();
+  const sourcePath = join(directory, "time.jsonl");
+  writeFileSync(
+    sourcePath,
+    `{"id":"one","subject":"item","at":${token},"value":7}\n`,
+  );
+  const parsed = fileConnection(
+    "numeric-time",
+    { type: "jsonl", path: sourcePath },
+    "value",
+    {
+      selector: { scope: "record", path: "at" },
+      format,
+    },
+  );
+  const store = new ObservationStore(join(directory, "state"));
+  store.register(parsed);
+  return { parsed, store };
 }
 
 test("SQLite collection stores configured facts and excludes sampled unselected fields", async () => {
@@ -536,6 +561,83 @@ test("rejects numeric source times with sub-millisecond precision", async (t) =>
         store.close();
       }
     });
+  }
+});
+
+test("converts exact decimal Unix seconds without floating-point classification", async (t) => {
+  for (const scenario of [
+    { expected: "1970-01-01T00:00:00.001Z", token: "0.001" },
+    { expected: "1969-12-31T23:59:59.999Z", token: "-0.001" },
+    { expected: "1970-01-01T00:00:01.001Z", token: "1.001" },
+    { expected: "1969-12-31T23:59:58.999Z", token: "-1.001" },
+    { expected: "1970-01-01T00:00:01.000Z", token: "1" },
+    { expected: "9999-12-31T23:59:59.999Z", token: "253402300799.999" },
+    { expected: "0000-01-01T00:00:00.000Z", token: "-62167219200" },
+  ] as const) {
+    await t.test(scenario.token, async () => {
+      const { parsed, store } = numericTimeFixture(scenario.token, "unix-seconds");
+      try {
+        await collectConnection(store, parsed.config.id);
+        assert.equal(store.queryObservations()[0]?.sourceRecordedAt, scenario.expected);
+      } finally {
+        store.close();
+      }
+    });
+  }
+});
+
+test("rejects JSON numeric source times whose lexical precision would be lost", async (t) => {
+  for (const scenario of [
+    { format: "unix-milliseconds", token: "1756550400000.0001" },
+    { format: "unix-seconds", token: "1073741824.0030001" },
+    { format: "unix-seconds", token: "-34359738368.0010001" },
+    { format: "unix-seconds", token: "253402300799.999001" },
+    { format: "unix-seconds", token: "1e-324" },
+    { format: "unix-seconds", token: "1.0001" },
+  ] as const) {
+    await t.test(`${scenario.format} ${scenario.token}`, async () => {
+      const { parsed, store } = numericTimeFixture(scenario.token, scenario.format);
+      try {
+        await assert.rejects(collectConnection(store, parsed.config.id), {
+          code: "source_malformed",
+        });
+        assert.equal(store.countFacts(), 0);
+      } finally {
+        store.close();
+      }
+    });
+  }
+});
+
+test("checks non-lexical Unix seconds as exact binary values", () => {
+  const parsed = fileConnection(
+    "binary-time",
+    { type: "jsonl", path: "/unused.jsonl" },
+    "value",
+    {
+      selector: { scope: "record", path: "at" },
+      format: "unix-seconds",
+    },
+  );
+  const source = (at: number) => {
+    const record = { at, id: "one", subject: "item", value: 7 };
+    return {
+      meta: { recordIndex: 0, sourcePath: "/unused.jsonl" },
+      record,
+      root: record,
+    };
+  };
+
+  assert.equal(
+    materializeFacts(parsed.config, source(0.125))[0]?.sourceRecordedAt,
+    "1970-01-01T00:00:00.125Z",
+  );
+  for (const value of [
+    1.001,
+    2 ** 30 + 12_583 * 2 ** -22,
+    -34_359_738_368.001,
+  ]) {
+    assert.throws(() => materializeFacts(parsed.config, source(value)), SourceMappingError);
   }
 });
 

@@ -11,6 +11,7 @@ export interface SourceRecord {
     recordIndex: number;
     sourcePath: string;
   };
+  numericLexemes?: WeakMap<object, Map<string, string>>;
   record: Record<string, unknown>;
   root: unknown;
 }
@@ -116,11 +117,12 @@ async function* readJsonLines(config: ConnectionConfig): AsyncGenerator<SourceRe
       if (line.trim() === "") {
         continue;
       }
-      const record = parseRecord(line);
+      const parsed = parseRecord(line);
       yield {
         meta: { recordIndex, sourcePath: config.reader.path },
-        record,
-        root: record,
+        numericLexemes: parsed.numericLexemes,
+        record: parsed.record,
+        root: parsed.record,
       };
     }
   } finally {
@@ -149,13 +151,13 @@ async function* readJsonFiles(config: ConnectionConfig): AsyncGenerator<SourceRe
   for (const path of paths) {
     const handle = await openFileReadOnly(path);
     try {
-      let parsed: unknown;
+      let parsed: ParsedJson;
       try {
-        parsed = JSON.parse(await handle.readFile({ encoding: "utf8" })) as unknown;
+        parsed = parseJson(await handle.readFile({ encoding: "utf8" }));
       } catch (error) {
         throw new SourceReadError("source_malformed", error);
       }
-      const root = parsed;
+      const root = parsed.value;
       const records =
         config.reader.recordsPath === ""
           ? root
@@ -166,6 +168,7 @@ async function* readJsonFiles(config: ConnectionConfig): AsyncGenerator<SourceRe
       for (const [recordIndex, value] of records.entries()) {
         yield {
           meta: { recordIndex, sourcePath: path },
+          numericLexemes: parsed.numericLexemes,
           record: requireRecord(value),
           root,
         };
@@ -234,15 +237,52 @@ function quoteIdentifier(identifier: string): string {
   return `"${identifier.replaceAll('"', '""')}"`;
 }
 
-function parseRecord(text: string): Record<string, unknown> {
+function parseRecord(text: string): ParsedJson & { record: Record<string, unknown> } {
   try {
-    return requireRecord(JSON.parse(text) as unknown);
+    const parsed = parseJson(text);
+    return { ...parsed, record: requireRecord(parsed.value) };
   } catch (error) {
     if (error instanceof SourceReadError) {
       throw error;
     }
     throw new SourceReadError("source_malformed", error);
   }
+}
+
+interface ParsedJson {
+  numericLexemes: WeakMap<object, Map<string, string>>;
+  value: unknown;
+}
+
+interface JsonReviverContext {
+  source?: string;
+}
+
+type JsonParseWithSource = (
+  text: string,
+  reviver: (
+    this: object,
+    key: string,
+    value: unknown,
+    context: JsonReviverContext,
+  ) => unknown,
+) => unknown;
+
+function parseJson(text: string): ParsedJson {
+  const numericLexemes = new WeakMap<object, Map<string, string>>();
+  const parseWithSource = JSON.parse as JsonParseWithSource;
+  const value = parseWithSource(text, function (key, parsed, context) {
+    if (typeof parsed === "number" && typeof context.source === "string") {
+      let lexemes = numericLexemes.get(this);
+      if (lexemes === undefined) {
+        lexemes = new Map();
+        numericLexemes.set(this, lexemes);
+      }
+      lexemes.set(key, context.source);
+    }
+    return parsed;
+  });
+  return { numericLexemes, value };
 }
 
 function requireRecord(value: unknown): Record<string, unknown> {

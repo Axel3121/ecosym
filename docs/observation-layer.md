@@ -82,7 +82,12 @@ root selector changes the scope to `root`, and source metadata is selected with
 `{ "default": SCALAR, "selector": SELECTOR }` replaces missing or null.
 Source time formats are `iso8601`, `date`, `unix-seconds`, and
 `unix-milliseconds`. Numeric source times must convert exactly to a whole
-millisecond; values requiring sub-millisecond truncation are malformed.
+millisecond; values requiring sub-millisecond truncation are malformed. JSON
+and JSONL readers retain the selected number's source token for this check, so
+parsing cannot hide precision the token carried. SQLite numbers have no source
+token after the driver returns them and are checked as their exact binary
+values; precision already discarded by SQLite or its driver cannot be
+recovered.
 
 ### Identity and time without native fields
 
