@@ -1205,6 +1205,24 @@ export class ObservationStore {
     return parseStoredConfig(row.config_json, connection.configHash);
   }
 
+  #assertStoredRecordIndexModeKnown(connection: ActiveConnection): void {
+    const row = this.#database
+      .prepare(
+        `SELECT jsonl_record_index_mode
+           FROM connection_versions
+          WHERE connection_id = ? AND config_hash = ?`,
+      )
+      .get(connection.config.id, connection.configHash) as
+      | undefined
+      | { jsonl_record_index_mode: string };
+    if (row === undefined) {
+      throw new Error("Registered connection configuration is missing");
+    }
+    if (parseJsonlRecordIndexMode(row.jsonl_record_index_mode) === "unknown") {
+      throw new StoredRecordIndexModeUnknownError(connection.config.id);
+    }
+  }
+
   async #recordRunningAttempt(
     connection: ActiveConnection,
     attemptId: string,
@@ -1213,6 +1231,7 @@ export class ObservationStore {
   ): Promise<{ attemptOrder: number; startedAt: string }> {
     return this.#retryTransactionWithinContentionBudget(contentionBudget, () => {
       this.#assertActive(connection);
+      this.#assertStoredRecordIndexModeKnown(connection);
       const attemptOrder = this.#nextAttemptOrder();
       const startedAt = now().toISOString();
       this.#database

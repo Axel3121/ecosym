@@ -416,6 +416,19 @@ test("an ambiguous physical-line JSONL store is refused without rewriting identi
     await assert.rejects(collectConnection(migrated, parsed.config.id), {
       code: "store_record_index_mode_unknown",
     });
+    let producerCalled = false;
+    await assert.rejects(
+      migrated.collect(migrated.getConnection(parsed.config.id), () => {
+        producerCalled = true;
+      }),
+      { code: "store_record_index_mode_unknown" },
+    );
+    assert.equal(producerCalled, false);
+    const forged = migrated.getConnection(parsed.config.id);
+    forged.jsonlRecordIndexMode = "record-ordinal";
+    await assert.rejects(migrated.collect(forged, () => undefined), {
+      code: "store_record_index_mode_unknown",
+    });
     assert.equal(migrated.statuses()[0]?.status, "unread");
     assert.equal(migrated.statuses()[0]?.reason, "record-index-unknown");
     assert.equal(migrated.countFacts(), 2);
