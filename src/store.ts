@@ -281,10 +281,11 @@ export class ObservationStore {
           sourceRecordsSeen += 1;
           for (const fact of recordFacts()) {
             factsSeen += 1;
-            validateFact(fact, declaredConfig);
-            const payloadJson = canonicalJson(fact.payload);
+            const snapshot = snapshotFact(fact);
+            validateFact(snapshot, declaredConfig);
+            const payloadJson = canonicalJson(snapshot.payload);
             preparedFacts.push({
-              ...fact,
+              ...snapshot,
               payloadJson,
               payloadHash: sha256(payloadJson),
             });
@@ -1124,6 +1125,40 @@ function parseStoredConfig(configJson: string, expectedHash: string): Connection
     throw new Error("Stored connection configuration does not match its identity");
   }
   return parsed.config;
+}
+
+function snapshotFact(fact: FactInput): FactInput {
+  if (fact === null || typeof fact !== "object" || Array.isArray(fact)) {
+    throw new TypeError("Fact is not an object");
+  }
+  const inputPayload: unknown = fact.payload;
+  if (
+    inputPayload === null ||
+    typeof inputPayload !== "object" ||
+    Array.isArray(inputPayload)
+  ) {
+    throw new TypeError("Fact payload is not a JSON object");
+  }
+  const payloadPrototype = Object.getPrototypeOf(inputPayload);
+  if (payloadPrototype !== Object.prototype && payloadPrototype !== null) {
+    throw new TypeError("Fact payload is not a JSON object");
+  }
+  const payload = Object.create(null) as Record<string, JsonScalar>;
+  for (const key of Reflect.ownKeys(inputPayload)) {
+    if (typeof key !== "string") {
+      throw new TypeError("Fact payload keys must be strings");
+    }
+    payload[key] = (inputPayload as Record<string, unknown>)[key] as JsonScalar;
+  }
+  return {
+    epistemicStatus: fact.epistemicStatus,
+    factOwner: fact.factOwner,
+    kind: fact.kind,
+    payload,
+    sourceRecordedAt: fact.sourceRecordedAt,
+    sourceRecordId: fact.sourceRecordId,
+    subject: fact.subject,
+  };
 }
 
 function validateFact(fact: FactInput, config: ConnectionConfig): void {

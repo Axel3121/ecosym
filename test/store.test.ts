@@ -9,7 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 import { parseConnectionConfig } from "../src/config.ts";
-import { canonicalJson, sha256 } from "../src/json.ts";
+import { canonicalJson, type JsonScalar, sha256 } from "../src/json.ts";
 import { defaultStateDirectory } from "../src/paths.ts";
 import {
   CollectionFailedError,
@@ -439,6 +439,90 @@ test("payload scalars are persisted exactly or rejected", async () => {
   } finally {
     store.close();
   }
+});
+
+test("array payloads cannot discard declared named values", async () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+    const payload: unknown[] = [];
+    (payload as unknown as Record<string, unknown>).value = 7;
+
+    await assert.rejects(
+      store.collect(active, (sink) => {
+        sink.recordSourceRecord(() => [
+          fact({ payload: payload as unknown as Record<string, JsonScalar> }),
+        ]);
+      }),
+      CollectionFailedError,
+    );
+    assert.equal(store.countFacts(), 0);
+  } finally {
+    store.close();
+  }
+});
+
+test("fact and payload accessors are read once before persistence", async (t) => {
+  for (const scenario of [
+    { field: "subject", first: "subject-a", second: "\ud800" },
+    {
+      field: "sourceRecordedAt",
+      first: "2026-08-30T00:00:00.000Z",
+      second: "2026-08-31T00:00:00.000Z",
+    },
+  ] as const) {
+    await t.test(scenario.field, async () => {
+      const { store } = temporaryStore();
+      try {
+        const parsed = connection();
+        store.register(parsed);
+        const active = store.getConnection(parsed.config.id);
+        const input = fact();
+        let reads = 0;
+        Object.defineProperty(input, scenario.field, {
+          enumerable: true,
+          get: () => (reads++ === 0 ? scenario.first : scenario.second),
+        });
+
+        await store.collect(active, (sink) => {
+          sink.recordSourceRecord(() => [input]);
+        });
+        const stored = store.queryObservations()[0];
+        assert.ok(stored);
+        assert.equal(reads, 1);
+        assert.equal(stored[scenario.field], scenario.first);
+      } finally {
+        store.close();
+      }
+    });
+  }
+
+  await t.test("payload value", async () => {
+    const { store } = temporaryStore();
+    try {
+      const parsed = connection();
+      store.register(parsed);
+      const active = store.getConnection(parsed.config.id);
+      const input = fact();
+      let reads = 0;
+      Object.defineProperty(input.payload, "value", {
+        enumerable: true,
+        get: () => (reads++ === 0 ? 7 : -0),
+      });
+
+      await store.collect(active, (sink) => {
+        sink.recordSourceRecord(() => [input]);
+      });
+      const stored = store.queryObservations()[0];
+      assert.ok(stored);
+      assert.equal(reads, 1);
+      assert.ok(Object.is(stored.payload.value, 7));
+    } finally {
+      store.close();
+    }
+  });
 });
 
 test("facts can only be written through a counted source record", async () => {
