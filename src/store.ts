@@ -151,7 +151,10 @@ export class ObservationStore {
   readonly #database: DatabaseSync;
   #closed = false;
 
-  constructor(stateDirectory = defaultStateDirectory(), busyTimeoutMilliseconds = 5_000) {
+  constructor(
+    stateDirectory = defaultStateDirectory(),
+    busyTimeoutMilliseconds = BUSY_RETRY_WINDOW_MILLISECONDS,
+  ) {
     if (!Number.isInteger(busyTimeoutMilliseconds) || busyTimeoutMilliseconds < 0) {
       throw new RangeError("SQLite busy timeout must be a nonnegative integer");
     }

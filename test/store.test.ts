@@ -1209,7 +1209,7 @@ test("store contention waits until a failed attempt can be recorded", async () =
 
 test("store contention returns a bounded machine-readable failure", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-store-contention-bound-"));
-  const store = new ObservationStore(directory, 20);
+  const store = new ObservationStore(directory);
   const parsed = connection();
   store.register(parsed);
   const active = store.getConnection(parsed.config.id);
