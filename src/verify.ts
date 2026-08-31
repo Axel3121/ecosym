@@ -25,13 +25,15 @@ export interface VerificationCounts {
 export interface VerificationConnectionReport {
   connectionId: string;
   counts: VerificationCounts;
-  outcome: "agreement" | "disagreement" | "unread";
+  outcome: "agreement" | "disagreement" | "unread" | "unverified";
   unreadReason: null | string;
+  unverifiedReason: null | "no_facts";
 }
 
 export interface VerificationReport {
   schemaVersion: 1;
-  outcome: "agreement" | "disagreement" | "mixed" | "unread";
+  outcome: "agreement" | "disagreement" | "mixed" | "unread" | "unverified";
+  unverifiedReason: null | "connections_unverified" | "no_connections";
   connections: VerificationConnectionReport[];
 }
 
@@ -45,6 +47,12 @@ export async function verifyAll(store: ObservationStore): Promise<VerificationRe
   return {
     schemaVersion: 1,
     outcome: aggregateOutcome(connections),
+    unverifiedReason:
+      connections.length === 0
+        ? "no_connections"
+        : connections.some((connection) => connection.outcome === "unverified")
+          ? "connections_unverified"
+          : null,
     connections,
   };
 }
@@ -59,8 +67,8 @@ export async function verifyConnection(
   } catch (error) {
     return unreadReport(connection.config.id, 0, safeFailureCode(error));
   }
-  let stored = deduplicate(snapshot.facts);
-  let unreadReason = snapshotUnreadReason(snapshot);
+  const stored = deduplicate(snapshot.facts);
+  const unreadReason = snapshotUnreadReason(snapshot);
   if (unreadReason !== null) {
     return unreadReport(connection.config.id, stored.length, unreadReason);
   }
@@ -86,18 +94,16 @@ export async function verifyConnection(
     return unreadReport(connection.config.id, stored.length, safeFailureCode(error));
   }
 
-  try {
-    snapshot = store.factsForVerification(connection);
-  } catch (error) {
-    return unreadReport(connection.config.id, stored.length, safeFailureCode(error));
-  }
-  stored = deduplicate(snapshot.facts);
-  unreadReason = snapshotUnreadReason(snapshot);
-  if (unreadReason !== null) {
-    return unreadReport(connection.config.id, stored.length, unreadReason);
-  }
-
   const counts = compareFacts(connection.config, stored, source);
+  if (counts.storedFacts === 0 && counts.sourceFacts === 0) {
+    return {
+      connectionId: connection.config.id,
+      counts,
+      outcome: "unverified",
+      unreadReason: null,
+      unverifiedReason: "no_facts",
+    };
+  }
   return {
     connectionId: connection.config.id,
     counts,
@@ -109,6 +115,7 @@ export async function verifyConnection(
         ? "disagreement"
         : "agreement",
     unreadReason: null,
+    unverifiedReason: null,
   };
 }
 
@@ -132,6 +139,7 @@ function unreadReport(
     counts: emptyCounts(storedFacts),
     outcome: "unread",
     unreadReason,
+    unverifiedReason: null,
   };
 }
 
@@ -145,6 +153,8 @@ export function exitCodeForVerification(report: VerificationReport): number {
       return 2;
     case "mixed":
       return 3;
+    case "unverified":
+      return 4;
   }
 }
 
@@ -169,15 +179,9 @@ function compareFacts(
     const sameVersion = storedByVersion.get(sourceVersionKey(sourceFact)) ?? [];
     if (sameVersion.some((storedFact) => storedFact.payloadHash === sourceFact.payloadHash)) {
       counts.matched += 1;
-      counts.payloadMismatch += new Set(
-        sameVersion
-          .filter((storedFact) => storedFact.payloadHash !== sourceFact.payloadHash)
-          .map((storedFact) => storedFact.payloadHash),
-      ).size;
       continue;
     }
     if (sameVersion.length > 0) {
-      counts.payloadMismatch += 1;
       continue;
     }
     const history = storedByIdentity.get(factIdentityKey(sourceFact)) ?? [];
@@ -189,7 +193,11 @@ function compareFacts(
   }
 
   for (const storedFact of stored) {
-    if (sourceByVersion.has(sourceVersionKey(storedFact))) {
+    const sameVersion = sourceByVersion.get(sourceVersionKey(storedFact));
+    if (sameVersion !== undefined) {
+      if (!sameVersion.some((sourceFact) => sourceFact.payloadHash === storedFact.payloadHash)) {
+        counts.payloadMismatch += 1;
+      }
       continue;
     }
     const currentSource = sourceByIdentity.get(factIdentityKey(storedFact)) ?? [];
@@ -286,7 +294,10 @@ function aggregateOutcome(
 ): VerificationReport["outcome"] {
   const hasDisagreement = connections.some((connection) => connection.outcome === "disagreement");
   const hasUnread = connections.some((connection) => connection.outcome === "unread");
-  if (hasDisagreement && hasUnread) {
+  const hasUnverified = connections.some((connection) => connection.outcome === "unverified");
+  if (
+    Number(hasDisagreement) + Number(hasUnread) + Number(hasUnverified) > 1
+  ) {
     return "mixed";
   }
   if (hasDisagreement) {
@@ -294,6 +305,9 @@ function aggregateOutcome(
   }
   if (hasUnread) {
     return "unread";
+  }
+  if (hasUnverified || connections.length === 0) {
+    return "unverified";
   }
   return "agreement";
 }

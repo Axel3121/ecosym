@@ -160,11 +160,13 @@ Verification rereads every active source and emits schema version 1:
   "command": "verify",
   "schemaVersion": 1,
   "outcome": "disagreement",
+  "unverifiedReason": null,
   "connections": [
     {
       "connectionId": "example-readings",
       "outcome": "disagreement",
       "unreadReason": null,
+      "unverifiedReason": null,
       "counts": {
         "advanced": 0,
         "matched": 3,
@@ -181,14 +183,15 @@ Verification rereads every active source and emits schema version 1:
 }
 ```
 
-`payloadMismatch` means the same source identity and source time now has a
-different selected payload. `missingAtSource` and `uncollected` compare the two
-sides. `advanced` is a strictly newer point in an existing fact's time series,
-not disagreement. `sourceVersionConflict` means the source itself supplied two
-payloads under one identity and time. Superseded correction payloads remain in
-history but are not compared as current expectations. If correction currentness
-is unknown, verification returns unread with `store_currentness_unknown` rather
-than inventing agreement or disagreement.
+`payloadMismatch` counts stored facts whose selected payload matches no payload
+the source expressed for that source identity and source time.
+`missingAtSource` and `uncollected` compare the two sides. `advanced` is a
+strictly newer point in an existing fact's time series, not disagreement.
+`sourceVersionConflict` means the source itself supplied two payloads under one
+identity and time. Superseded correction payloads remain in history but are not
+compared as current expectations. If correction currentness is unknown,
+verification returns unread with `store_currentness_unknown` rather than
+inventing agreement or disagreement.
 
 Aggregate outcomes and exit codes are stable:
 
@@ -198,9 +201,15 @@ Aggregate outcomes and exit codes are stable:
 | `disagreement` | 1 |
 | `unread` | 2 |
 | `mixed` | 3 |
+| `unverified` | 4 |
 
 Unread sources carry only a reason code such as `source_absent`,
 `source_locked`, or `source_malformed`. They never produce exit code 0.
+An active connection with no facts on either side is `unverified` with
+`no_facts`; a store with no active connections is `unverified` with
+`no_connections`. Aggregate verification over an unverified connection carries
+`connections_unverified`. These outcomes use exit code 4, so nothing checked is
+distinct from both agreement and disagreement.
 
 ## Adding a source
 

@@ -64,6 +64,7 @@ test("reports exact agreement in a stable machine-readable shape", async () => {
     assert.deepEqual(report, {
       schemaVersion: 1,
       outcome: "agreement",
+      unverifiedReason: null,
       connections: [
         {
           connectionId: "verification-source",
@@ -80,10 +81,45 @@ test("reports exact agreement in a stable machine-readable shape", async () => {
           },
           outcome: "agreement",
           unreadReason: null,
+          unverifiedReason: null,
         },
       ],
     });
     assert.equal(exitCodeForVerification(report), 0);
+  } finally {
+    store.close();
+  }
+});
+
+test("an empty connection is unverified rather than agreement", async () => {
+  const { parsed, sourcePath, store } = setup();
+  try {
+    writeFileSync(sourcePath, "");
+    const report = await verifyAll(store);
+
+    assert.equal(report.outcome, "unverified");
+    assert.equal(report.unverifiedReason, "connections_unverified");
+    assert.equal(report.connections[0]?.outcome, "unverified");
+    assert.equal(report.connections[0]?.unverifiedReason, "no_facts");
+    assert.equal(exitCodeForVerification(report), 4);
+  } finally {
+    store.close();
+  }
+});
+
+test("an empty store is unverified rather than agreement", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-empty-verify-"));
+  const store = new ObservationStore(directory);
+  try {
+    const report = await verifyAll(store);
+
+    assert.deepEqual(report, {
+      schemaVersion: 1,
+      outcome: "unverified",
+      unverifiedReason: "no_connections",
+      connections: [],
+    });
+    assert.equal(exitCodeForVerification(report), 4);
   } finally {
     store.close();
   }
@@ -124,6 +160,37 @@ test("detects a store payload altered after collection", async () => {
     assert.equal(report.outcome, "disagreement");
     assert.equal(report.counts.payloadMismatch, 1);
     assert.equal(report.counts.matched, 0);
+  } finally {
+    store.close();
+  }
+});
+
+test("verification compares the source with one stable store snapshot", async () => {
+  const { parsed, store } = setup();
+  try {
+    await collectConnection(store, parsed.config.id);
+    const connection = store.getConnection(parsed.config.id);
+    const initial = store.factsForVerification(connection);
+    const existing = initial.facts[0];
+    assert.ok(existing);
+    const moved = {
+      ...initial,
+      facts: [
+        ...initial.facts,
+        {
+          ...existing,
+          sourceRecordId: "collected-while-source-was-read",
+        },
+      ],
+    };
+    let snapshotReads = 0;
+    store.factsForVerification = () => (snapshotReads++ === 0 ? initial : moved);
+
+    const report = await verifyConnection(store, connection);
+
+    assert.equal(report.outcome, "agreement");
+    assert.equal(report.counts.missingAtSource, 0);
+    assert.equal(snapshotReads, 1);
   } finally {
     store.close();
   }
@@ -444,6 +511,29 @@ test("a source version that asserts two payloads is disagreement", async () => {
 
     assert.equal(report.counts.sourceVersionConflict, 1);
     assert.equal(report.outcome, "disagreement");
+  } finally {
+    store.close();
+  }
+});
+
+test("payload mismatch counts stored facts rather than source alternatives", async () => {
+  const { parsed, sourcePath, store } = setup();
+  try {
+    await collectConnection(store, parsed.config.id);
+    writeFileSync(
+      sourcePath,
+      [
+        '{"record_id":"record-1","subject":"subject-1","recorded_at":"2026-08-30T00:00:00.000Z","value":12}',
+        '{"record_id":"record-1","subject":"subject-1","recorded_at":"2026-08-30T00:00:00.000Z","value":14}',
+        "",
+      ].join("\n"),
+    );
+
+    const report = await verifyConnection(store, store.getConnection(parsed.config.id));
+
+    assert.equal(report.counts.storedFacts, 1);
+    assert.equal(report.counts.payloadMismatch, 1);
+    assert.ok(report.counts.payloadMismatch <= report.counts.storedFacts);
   } finally {
     store.close();
   }
