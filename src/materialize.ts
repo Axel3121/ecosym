@@ -3,6 +3,7 @@ import { canonicalJson, isJsonScalar, type JsonScalar } from "./json.ts";
 import type { SourceRecord } from "./readers.ts";
 import type { FactInput } from "./store.ts";
 import { sha256 } from "./json.ts";
+import { parseCalendarInstant } from "./time.ts";
 
 const MISSING = Symbol("missing source field");
 
@@ -75,20 +76,16 @@ function materializeTime(sourceTime: SourceTime, source: SourceRecord): null | s
   let milliseconds: number;
   switch (sourceTime.format) {
     case "iso8601":
-      if (typeof value !== "string" || !hasValidCalendarDate(value)) {
+      if (typeof value !== "string") {
         throw new SourceMappingError();
       }
-      milliseconds = Date.parse(value);
+      milliseconds = parseCalendarInstant(value) ?? Number.NaN;
       break;
     case "date":
-      if (
-        typeof value !== "string" ||
-        !/^\d{4}-\d{2}-\d{2}$/.test(value) ||
-        !hasValidCalendarDate(value)
-      ) {
+      if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
         throw new SourceMappingError();
       }
-      milliseconds = Date.parse(`${value}T00:00:00.000Z`);
+      milliseconds = parseCalendarInstant(`${value}T00:00:00.000Z`) ?? Number.NaN;
       break;
     case "unix-seconds":
       if (typeof value !== "number") {
@@ -110,28 +107,6 @@ function materializeTime(sourceTime: SourceTime, source: SourceRecord): null | s
     throw new SourceMappingError();
   }
   return date.toISOString();
-}
-
-function hasValidCalendarDate(value: string): boolean {
-  const match = /^([+-]\d{6}|\d{4})-(\d{2})-(\d{2})(?:T|$)/.exec(value);
-  if (match === null) {
-    return false;
-  }
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  if (month < 1 || month > 12 || day < 1) {
-    return false;
-  }
-  const daysInMonth =
-    month === 2
-      ? year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
-        ? 29
-        : 28
-      : month === 4 || month === 6 || month === 9 || month === 11
-        ? 30
-        : 31;
-  return day <= daysInMonth;
 }
 
 function requiredScalar(selector: Selector, source: SourceRecord): JsonScalar {

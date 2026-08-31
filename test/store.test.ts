@@ -12,6 +12,7 @@ import { parseConnectionConfig } from "../src/config.ts";
 import { canonicalJson, sha256 } from "../src/json.ts";
 import { defaultStateDirectory } from "../src/paths.ts";
 import {
+  CollectionFailedError,
   ConnectionConflictError,
   ObservationStore,
   type FactInput,
@@ -168,8 +169,7 @@ test("disconnecting removes configuration but preserves collected history", asyn
     store.register(parsed);
     const active = store.getConnection(parsed.config.id);
     await store.collect(active, (sink) => {
-      sink.recordSourceRecord();
-      sink.writeFact(fact());
+      sink.recordSourceRecord(() => [fact()]);
     });
 
     assert.equal(store.disconnect(parsed.config.id), true);
@@ -187,16 +187,15 @@ test("observation queries exclude claims and preserve late historical points", a
     store.register(parsed);
     const active = store.getConnection(parsed.config.id);
     await store.collect(active, (sink) => {
-      sink.recordSourceRecord();
-      sink.writeFact(fact({ sourceRecordedAt: "2026-08-31T00:00:00.000Z", payload: { value: 12 } }));
-      sink.writeFact(fact({ sourceRecordedAt: "2026-08-29T00:00:00.000Z", payload: { value: 7 } }));
-      sink.writeFact(
+      sink.recordSourceRecord(() => [
+        fact({ sourceRecordedAt: "2026-08-31T00:00:00.000Z", payload: { value: 12 } }),
+        fact({ sourceRecordedAt: "2026-08-29T00:00:00.000Z", payload: { value: 7 } }),
         fact({
           epistemicStatus: "claim",
           kind: "example.completion-report",
           payload: { state: "completed" },
         }),
-      );
+      ]);
     });
 
     const observations = store.queryObservations();
@@ -222,8 +221,7 @@ test("a failed collection rolls back all facts before recording unread status", 
 
     await assert.rejects(
       store.collect(active, (sink) => {
-        sink.recordSourceRecord();
-        sink.writeFact(fact());
+        sink.recordSourceRecord(() => [fact()]);
         throw Object.assign(new Error("fixture failure"), { code: "source_malformed" });
       }),
       { code: "source_malformed" },
@@ -252,7 +250,9 @@ test("facts carrying undeclared payload fields fail collection", async () => {
 
     await assert.rejects(
       store.collect(active, (sink) => {
-        sink.writeFact(fact({ payload: { value: 7, unselected_secret: "must-not-land" } }));
+        sink.recordSourceRecord(() => [
+          fact({ payload: { value: 7, unselected_secret: "must-not-land" } }),
+        ]);
       }),
     );
     assert.equal(store.countFacts(), 0);
@@ -270,10 +270,139 @@ test("a null source record id fails collection instead of being ignored", async 
 
     await assert.rejects(
       store.collect(active, (sink) => {
-        sink.writeFact(fact({ sourceRecordId: null as unknown as string }));
+        sink.recordSourceRecord(() => [
+          fact({ sourceRecordId: null as unknown as string }),
+        ]);
       }),
     );
     assert.equal(store.countFacts(), 0);
+  } finally {
+    store.close();
+  }
+});
+
+test("non-string fact identities fail collection without persistence", async (t) => {
+  for (const field of ["subject", "sourceRecordId", "factOwner", "kind"] as const) {
+    await t.test(field, async () => {
+      const { store } = temporaryStore();
+      try {
+        const parsed = connection();
+        store.register(parsed);
+        const active = store.getConnection(parsed.config.id);
+        const malformed = fact();
+        (malformed as unknown as Record<string, unknown>)[field] = 42;
+
+        await assert.rejects(
+          store.collect(active, (sink) => {
+            sink.recordSourceRecord(() => [malformed]);
+          }),
+          CollectionFailedError,
+        );
+        assert.equal(store.countFacts(), 0);
+      } finally {
+        store.close();
+      }
+    });
+  }
+});
+
+test("source times must be canonical real UTC instants or null", async (t) => {
+  for (const sourceRecordedAt of [
+    "2026-02-30",
+    "2026-08-30T12:00:00+02:00",
+    42,
+  ] as const) {
+    await t.test(String(sourceRecordedAt), async () => {
+      const { store } = temporaryStore();
+      try {
+        const parsed = connection();
+        store.register(parsed);
+        const active = store.getConnection(parsed.config.id);
+
+        await assert.rejects(
+          store.collect(active, (sink) => {
+            sink.recordSourceRecord(() => [
+              fact({ sourceRecordedAt: sourceRecordedAt as unknown as string }),
+            ]);
+          }),
+          CollectionFailedError,
+        );
+        assert.equal(store.countFacts(), 0);
+      } finally {
+        store.close();
+      }
+    });
+  }
+
+  await t.test("null", async () => {
+    const { store } = temporaryStore();
+    try {
+      const parsed = connection();
+      store.register(parsed);
+      const active = store.getConnection(parsed.config.id);
+      await store.collect(active, (sink) => {
+        sink.recordSourceRecord(() => [fact({ sourceRecordedAt: null })]);
+      });
+      assert.equal(store.queryObservations()[0]?.sourceRecordedAt, null);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+test("payload scalars are persisted exactly or rejected", async () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+
+    await assert.rejects(
+      store.collect(active, (sink) => {
+        sink.recordSourceRecord(() => [fact({ payload: { value: -0 } })]);
+      }),
+      CollectionFailedError,
+    );
+    assert.equal(store.countFacts(), 0);
+
+    const values = [null, true, 7, "7"] as const;
+    await store.collect(active, (sink) => {
+      for (const [index, value] of values.entries()) {
+        sink.recordSourceRecord(() => [
+          fact({
+            payload: { value },
+            sourceRecordId: `record-${index}`,
+            subject: `subject-${index}`,
+          }),
+        ]);
+      }
+    });
+    const stored = store.queryObservations();
+    assert.equal(stored.length, values.length);
+    for (const [index, value] of values.entries()) {
+      assert.ok(Object.is(stored[index]?.payload.value, value));
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test("facts can only be written through a counted source record", async () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+
+    const result = await store.collect(active, (sink) => {
+      assert.equal("writeFact" in sink, false);
+      sink.recordSourceRecord(() => [fact()]);
+      sink.recordSourceRecord(() => []);
+    });
+    assert.equal(result.sourceRecordsSeen, 2);
+    assert.equal(result.factsSeen, 1);
+    assert.equal(result.factsAdded, 1);
+    assert.equal(store.countFacts(), 1);
   } finally {
     store.close();
   }
@@ -286,12 +415,10 @@ test("a successful empty repeat is quiet rather than unread", async () => {
     store.register(parsed);
     const active = store.getConnection(parsed.config.id);
     await store.collect(active, (sink) => {
-      sink.recordSourceRecord();
-      sink.writeFact(fact());
+      sink.recordSourceRecord(() => [fact()]);
     });
     await store.collect(active, (sink) => {
-      sink.recordSourceRecord();
-      sink.writeFact(fact());
+      sink.recordSourceRecord(() => [fact()]);
     });
 
     assert.equal(store.statuses()[0]?.status, "quiet");
@@ -331,8 +458,7 @@ test("disconnect during source reading prevents the stale revision from writing"
   const collection = store.collect(active, async (sink) => {
     announceStarted?.();
     await finish;
-    sink.recordSourceRecord();
-    sink.writeFact(fact());
+    sink.recordSourceRecord(() => [fact()]);
   });
   await started;
 
@@ -500,8 +626,7 @@ test("version-one correction history stays unknown until it is observed again", 
       false,
     );
     await migrated.collect(migrated.getConnection(parsed.config.id), (sink) => {
-      sink.recordSourceRecord();
-      sink.writeFact(fact({ payload: { value: 7 } }));
+      sink.recordSourceRecord(() => [fact({ payload: { value: 7 } })]);
     });
     assert.deepEqual(
       migrated.queryObservations().map((record) => [record.payload.value, record.temporalStatus]),
@@ -520,7 +645,9 @@ test("an older concurrent attempt cannot regress a later reversion", async () =>
   const parsed = connection();
   store.register(parsed);
   const active = store.getConnection(parsed.config.id);
-  await store.collect(active, (sink) => sink.writeFact(fact({ payload: { value: 7 } })));
+  await store.collect(active, (sink) => {
+    sink.recordSourceRecord(() => [fact({ payload: { value: 7 } })]);
+  });
 
   let announceBuffered: (() => void) | undefined;
   const buffered = new Promise<void>((resolve) => {
@@ -531,13 +658,17 @@ test("an older concurrent attempt cannot regress a later reversion", async () =>
     allowCommit = resolve;
   });
   const older = store.collect(active, async (sink) => {
-    sink.writeFact(fact({ payload: { value: 7 } }));
+    sink.recordSourceRecord(() => [fact({ payload: { value: 7 } })]);
     announceBuffered?.();
     await commit;
   });
   await buffered;
-  await store.collect(active, (sink) => sink.writeFact(fact({ payload: { value: 12 } })));
-  await store.collect(active, (sink) => sink.writeFact(fact({ payload: { value: 7 } })));
+  await store.collect(active, (sink) => {
+    sink.recordSourceRecord(() => [fact({ payload: { value: 12 } })]);
+  });
+  await store.collect(active, (sink) => {
+    sink.recordSourceRecord(() => [fact({ payload: { value: 7 } })]);
+  });
   allowCommit?.();
   await older;
 
@@ -593,7 +724,9 @@ test("collection time starts after store-contention admission", async () => {
   const active = store.getConnection(parsed.config.id);
   const blocker = new DatabaseSync(store.path);
   blocker.exec("BEGIN IMMEDIATE");
-  const collected = store.collect(active, (sink) => sink.writeFact(fact()));
+  const collected = store.collect(active, (sink) => {
+    sink.recordSourceRecord(() => [fact()]);
+  });
   await delay(75);
   blocker.exec("ROLLBACK");
   const admittedAfter = Date.now();
@@ -614,7 +747,7 @@ test("corrections remain ordered across configuration revisions", async () => {
   const first = connection();
   store.register(first);
   await store.collect(store.getConnection(first.config.id), (sink) => {
-    sink.writeFact(fact({ payload: { value: 7 } }));
+    sink.recordSourceRecord(() => [fact({ payload: { value: 7 } })]);
   });
   store.disconnect(first.config.id);
   const secondInput = JSON.parse(
@@ -624,7 +757,7 @@ test("corrections remain ordered across configuration revisions", async () => {
   const second = parseConnectionConfig(secondInput);
   store.register(second);
   await store.collect(store.getConnection(second.config.id), (sink) => {
-    sink.writeFact(fact({ payload: { value: 12 } }));
+    sink.recordSourceRecord(() => [fact({ payload: { value: 12 } })]);
   });
 
   try {
@@ -649,10 +782,10 @@ test("correction state stays isolated between connection ids", async () => {
   const sharedFact = (value: number): FactInput =>
     fact({ factOwner: "shared-owner", payload: { value } });
   await store.collect(store.getConnection(first.config.id), (sink) => {
-    sink.writeFact(sharedFact(7));
+    sink.recordSourceRecord(() => [sharedFact(7)]);
   });
   await store.collect(store.getConnection(second.config.id), (sink) => {
-    sink.writeFact(sharedFact(12));
+    sink.recordSourceRecord(() => [sharedFact(12)]);
   });
 
   try {
@@ -675,20 +808,20 @@ test("source-time ordering stays isolated between connection ids", async () => {
   store.register(first);
   store.register(second);
   await store.collect(store.getConnection(first.config.id), (sink) => {
-    sink.writeFact(
+    sink.recordSourceRecord(() => [
       fact({
         factOwner: "shared-owner",
         sourceRecordedAt: "2026-08-30T00:00:00.000Z",
       }),
-    );
+    ]);
   });
   await store.collect(store.getConnection(second.config.id), (sink) => {
-    sink.writeFact(
+    sink.recordSourceRecord(() => [
       fact({
         factOwner: "shared-owner",
         sourceRecordedAt: "2026-08-31T00:00:00.000Z",
       }),
-    );
+    ]);
   });
 
   try {
@@ -710,9 +843,15 @@ test("version-three reversions migrate without claiming a current attempt status
   const parsed = connection();
   store.register(parsed);
   const active = store.getConnection(parsed.config.id);
-  await store.collect(active, (sink) => sink.writeFact(fact({ payload: { value: 7 } })));
-  await store.collect(active, (sink) => sink.writeFact(fact({ payload: { value: 12 } })));
-  await store.collect(active, (sink) => sink.writeFact(fact({ payload: { value: 7 } })));
+  await store.collect(active, (sink) => {
+    sink.recordSourceRecord(() => [fact({ payload: { value: 7 } })]);
+  });
+  await store.collect(active, (sink) => {
+    sink.recordSourceRecord(() => [fact({ payload: { value: 12 } })]);
+  });
+  await store.collect(active, (sink) => {
+    sink.recordSourceRecord(() => [fact({ payload: { value: 7 } })]);
+  });
   const path = store.path;
   store.close();
 

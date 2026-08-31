@@ -11,6 +11,7 @@ import {
 } from "./config.ts";
 import { canonicalJson, type JsonScalar, type JsonValue, sha256 } from "./json.ts";
 import { defaultStateDirectory } from "./paths.ts";
+import { isCanonicalUtcInstant } from "./time.ts";
 
 const STORE_SCHEMA_VERSION = 5;
 const STORE_FILENAME = "observations.sqlite";
@@ -89,8 +90,7 @@ export interface VerificationSnapshot {
 }
 
 export interface CollectionSink {
-  recordSourceRecord(): void;
-  writeFact(fact: FactInput): void;
+  recordSourceRecord(facts: () => readonly FactInput[]): void;
 }
 
 export class ConnectionConflictError extends Error {
@@ -276,18 +276,18 @@ export class ObservationStore {
     try {
       const declaredConfig = this.#registeredConfig(connection);
       const sink: CollectionSink = {
-        recordSourceRecord: () => {
+        recordSourceRecord: (recordFacts) => {
           sourceRecordsSeen += 1;
-        },
-        writeFact: (fact) => {
-          factsSeen += 1;
-          validateFact(fact, declaredConfig);
-          const payloadJson = canonicalJson(fact.payload);
-          preparedFacts.push({
-            ...fact,
-            payloadJson,
-            payloadHash: sha256(payloadJson),
-          });
+          for (const fact of recordFacts()) {
+            factsSeen += 1;
+            validateFact(fact, declaredConfig);
+            const payloadJson = canonicalJson(fact.payload);
+            preparedFacts.push({
+              ...fact,
+              payloadJson,
+              payloadHash: sha256(payloadJson),
+            });
+          }
         },
       };
 
@@ -1126,6 +1126,16 @@ function parseStoredConfig(configJson: string, expectedHash: string): Connection
 }
 
 function validateFact(fact: FactInput, config: ConnectionConfig): void {
+  for (const [field, value] of [
+    ["subject", fact.subject],
+    ["sourceRecordId", fact.sourceRecordId],
+    ["factOwner", fact.factOwner],
+    ["kind", fact.kind],
+  ] as const) {
+    if (typeof value !== "string") {
+      throw new TypeError(`Fact ${field} is not a string`);
+    }
+  }
   const payloadKeys = new Set(Object.keys(fact.payload));
   const isDeclared =
     fact.factOwner === config.factOwner &&
@@ -1144,13 +1154,13 @@ function validateFact(fact: FactInput, config: ConnectionConfig): void {
       value !== null &&
       typeof value !== "string" &&
       typeof value !== "boolean" &&
-      !(typeof value === "number" && Number.isFinite(value))
+      !(typeof value === "number" && Number.isFinite(value) && !Object.is(value, -0))
     ) {
-      throw new TypeError(`Fact payload ${key} is not a finite JSON scalar`);
+      throw new TypeError(`Fact payload ${key} cannot be persisted exactly`);
     }
   }
-  if (fact.sourceRecordedAt !== null && Number.isNaN(Date.parse(fact.sourceRecordedAt))) {
-    throw new TypeError("Fact sourceRecordedAt is not a timestamp");
+  if (fact.sourceRecordedAt !== null && !isCanonicalUtcInstant(fact.sourceRecordedAt)) {
+    throw new TypeError("Fact sourceRecordedAt is not a canonical UTC instant");
   }
 }
 

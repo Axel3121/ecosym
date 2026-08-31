@@ -14,10 +14,7 @@ export async function collectConnection(
   const connection = store.getConnection(connectionId);
   const result = await store.collect(connection, async (sink) => {
     for await (const sourceRecord of readSource(connection.config)) {
-      sink.recordSourceRecord();
-      for (const fact of materializeFacts(connection.config, sourceRecord)) {
-        sink.writeFact(fact);
-      }
+      sink.recordSourceRecord(() => materializeFacts(connection.config, sourceRecord));
     }
   });
   return { connectionId, result };
