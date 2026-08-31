@@ -25,7 +25,7 @@ export function parseCalendarInstant(value: string): null | number {
 }
 
 export function isCanonicalUtcInstant(value: unknown): value is string {
-  if (typeof value !== "string") {
+  if (typeof value !== "string" || !/^\d{4}-/.test(value)) {
     return false;
   }
   const milliseconds = parseCalendarInstant(value);

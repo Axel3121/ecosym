@@ -261,6 +261,31 @@ test("facts carrying undeclared payload fields fail collection", async () => {
   }
 });
 
+test("fact admission uses the persisted declaration rather than the caller copy", async () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+    const callerFact = active.config.facts[0];
+    assert.ok(callerFact);
+    active.config.factOwner = "caller-owner";
+    callerFact.kind = "caller.kind";
+
+    await assert.rejects(
+      store.collect(active, (sink) => {
+        sink.recordSourceRecord(() => [
+          fact({ factOwner: "caller-owner", kind: "caller.kind" }),
+        ]);
+      }),
+      CollectionFailedError,
+    );
+    assert.equal(store.countFacts(), 0);
+  } finally {
+    store.close();
+  }
+});
+
 test("a null source record id fails collection instead of being ignored", async () => {
   const { store } = temporaryStore();
   try {
@@ -310,6 +335,7 @@ test("source times must be canonical real UTC instants or null", async (t) => {
   for (const sourceRecordedAt of [
     "2026-02-30",
     "2026-08-30T12:00:00+02:00",
+    "+010000-01-01T00:00:00.000Z",
     42,
   ] as const) {
     await t.test(String(sourceRecordedAt), async () => {
@@ -403,6 +429,53 @@ test("facts can only be written through a counted source record", async () => {
     assert.equal(result.factsSeen, 1);
     assert.equal(result.factsAdded, 1);
     assert.equal(store.countFacts(), 1);
+  } finally {
+    store.close();
+  }
+});
+
+test("a source record stays counted when producing its facts fails", async () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+
+    await assert.rejects(
+      store.collect(active, (sink) => {
+        sink.recordSourceRecord(() => {
+          throw Object.assign(new Error("fixture mapping failure"), {
+            code: "source_malformed",
+          });
+        });
+      }),
+      { code: "source_malformed" },
+    );
+
+    const inspected = new DatabaseSync(store.path, { readOnly: true });
+    try {
+      const attempt = inspected
+        .prepare(
+          `SELECT outcome, source_records_seen, facts_seen, facts_added
+             FROM collection_attempts
+            ORDER BY attempt_order DESC
+            LIMIT 1`,
+        )
+        .get() as {
+        facts_added: number;
+        facts_seen: number;
+        outcome: string;
+        source_records_seen: number;
+      };
+      assert.deepEqual({ ...attempt }, {
+        facts_added: 0,
+        facts_seen: 0,
+        outcome: "failed",
+        source_records_seen: 1,
+      });
+    } finally {
+      inspected.close();
+    }
   } finally {
     store.close();
   }

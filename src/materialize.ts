@@ -3,7 +3,7 @@ import { canonicalJson, isJsonScalar, type JsonScalar } from "./json.ts";
 import type { SourceRecord } from "./readers.ts";
 import type { FactInput } from "./store.ts";
 import { sha256 } from "./json.ts";
-import { parseCalendarInstant } from "./time.ts";
+import { isCanonicalUtcInstant, parseCalendarInstant } from "./time.ts";
 
 const MISSING = Symbol("missing source field");
 
@@ -106,7 +106,11 @@ function materializeTime(sourceTime: SourceTime, source: SourceRecord): null | s
   if (Number.isNaN(date.getTime())) {
     throw new SourceMappingError();
   }
-  return date.toISOString();
+  const timestamp = date.toISOString();
+  if (!isCanonicalUtcInstant(timestamp)) {
+    throw new SourceMappingError();
+  }
+  return timestamp;
 }
 
 function requiredScalar(selector: Selector, source: SourceRecord): JsonScalar {

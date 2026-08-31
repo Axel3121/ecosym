@@ -450,6 +450,11 @@ for (const scenario of [
     value: "2026-02-30T00:00:00Z",
   },
   {
+    name: "an extended ISO year the store cannot order",
+    format: "iso8601",
+    value: "+010000-01-01T00:00:00.000Z",
+  },
+  {
     name: "a finite out-of-range Unix timestamp",
     format: "unix-milliseconds",
     value: 8_640_000_000_000_001,
