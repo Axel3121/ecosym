@@ -261,7 +261,7 @@ test("facts carrying undeclared payload fields fail collection", async () => {
   }
 });
 
-test("unexpected fact integrity violations fail collection", async () => {
+test("a null source record id fails collection instead of being ignored", async () => {
   const { store } = temporaryStore();
   try {
     const parsed = connection();
