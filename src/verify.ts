@@ -22,20 +22,42 @@ export interface VerificationCounts {
   uncollected: number;
 }
 
-export interface VerificationConnectionReport {
+interface VerificationConnectionReportBase {
   connectionId: string;
   counts: VerificationCounts;
-  outcome: "agreement" | "disagreement" | "unread" | "unverified";
-  unreadReason: null | string;
-  unverifiedReason: null | "no_facts";
 }
 
-export interface VerificationReport {
+export type VerificationConnectionReport = VerificationConnectionReportBase &
+  (
+    | {
+        outcome: "agreement" | "disagreement";
+        unreadReason: null;
+        unverifiedReason: null;
+      }
+    | { outcome: "unread"; unreadReason: string; unverifiedReason: null }
+    | { outcome: "unverified"; unreadReason: null; unverifiedReason: "no_facts" }
+  );
+
+interface VerificationReportBase {
   schemaVersion: 1;
-  outcome: "agreement" | "disagreement" | "mixed" | "unread" | "unverified";
-  unverifiedReason: null | "connections_unverified" | "no_connections";
   connections: VerificationConnectionReport[];
 }
+
+export type VerificationReport = VerificationReportBase &
+  (
+    | {
+        outcome: "agreement" | "disagreement" | "unread";
+        unverifiedReason: null;
+      }
+    | {
+        outcome: "mixed";
+        unverifiedReason: null | "connections_unverified";
+      }
+    | {
+        outcome: "unverified";
+        unverifiedReason: "connections_unverified" | "no_connections";
+      }
+  );
 
 interface ComparableFact extends VerificationFact {}
 
@@ -44,15 +66,29 @@ export async function verifyAll(store: ObservationStore): Promise<VerificationRe
   for (const connection of store.listConnections()) {
     connections.push(await verifyConnection(store, connection));
   }
+  const outcome = aggregateOutcome(connections);
+  if (outcome === "unverified") {
+    return {
+      schemaVersion: 1,
+      outcome,
+      unverifiedReason: connections.length === 0 ? "no_connections" : "connections_unverified",
+      connections,
+    };
+  }
+  if (outcome === "mixed") {
+    return {
+      schemaVersion: 1,
+      outcome,
+      unverifiedReason: connections.some((connection) => connection.outcome === "unverified")
+        ? "connections_unverified"
+        : null,
+      connections,
+    };
+  }
   return {
     schemaVersion: 1,
-    outcome: aggregateOutcome(connections),
-    unverifiedReason:
-      connections.length === 0
-        ? "no_connections"
-        : connections.some((connection) => connection.outcome === "unverified")
-          ? "connections_unverified"
-          : null,
+    outcome,
+    unverifiedReason: null,
     connections,
   };
 }
