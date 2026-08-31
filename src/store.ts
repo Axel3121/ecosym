@@ -274,13 +274,14 @@ export class ObservationStore {
     const { attemptOrder, startedAt } = admitted;
 
     try {
+      const declaredConfig = this.#registeredConfig(connection);
       const sink: CollectionSink = {
         recordSourceRecord: () => {
           sourceRecordsSeen += 1;
         },
         writeFact: (fact) => {
           factsSeen += 1;
-          validateFact(fact);
+          validateFact(fact, declaredConfig);
           const payloadJson = canonicalJson(fact.payload);
           preparedFacts.push({
             ...fact,
@@ -305,11 +306,15 @@ export class ObservationStore {
           ]),
         );
         const insert = this.#database.prepare(
-          `INSERT OR IGNORE INTO facts
+          `INSERT INTO facts
              (connection_id, config_hash, attempt_id, fact_owner, kind, subject,
               epistemic_status, source_record_id, source_recorded_at, source_time_key,
               payload_json, payload_hash, collected_at, last_seen_attempt_order)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (
+              connection_id, config_hash, fact_owner, kind, subject,
+              epistemic_status, source_record_id, source_time_key, payload_hash
+            ) DO NOTHING`,
         );
         const markSeen = this.#database.prepare(
           `UPDATE facts
@@ -616,7 +621,8 @@ export class ObservationStore {
                   WHEN f.source_recorded_at IS NULL THEN 'unknown'
                   WHEN EXISTS (
                     SELECT 1 FROM facts newer
-                     WHERE newer.fact_owner = f.fact_owner
+                     WHERE newer.connection_id = f.connection_id
+                       AND newer.fact_owner = f.fact_owner
                        AND newer.kind = f.kind
                        AND newer.subject = f.subject
                        AND newer.epistemic_status = f.epistemic_status
@@ -962,6 +968,20 @@ export class ObservationStore {
     }
   }
 
+  #registeredConfig(connection: ActiveConnection): ConnectionConfig {
+    const row = this.#database
+      .prepare(
+        `SELECT config_json
+           FROM connection_versions
+          WHERE connection_id = ? AND config_hash = ?`,
+      )
+      .get(connection.config.id, connection.configHash) as undefined | { config_json: string };
+    if (row === undefined) {
+      throw new Error("Registered connection configuration is missing");
+    }
+    return parseStoredConfig(row.config_json, connection.configHash);
+  }
+
   async #recordRunningAttempt(
     connection: ActiveConnection,
     attemptId: string,
@@ -1105,7 +1125,20 @@ function parseStoredConfig(configJson: string, expectedHash: string): Connection
   return parsed.config;
 }
 
-function validateFact(fact: FactInput): void {
+function validateFact(fact: FactInput, config: ConnectionConfig): void {
+  const payloadKeys = new Set(Object.keys(fact.payload));
+  const isDeclared =
+    fact.factOwner === config.factOwner &&
+    config.facts.some(
+      (declared) =>
+        declared.epistemicStatus === fact.epistemicStatus &&
+        declared.kind === fact.kind &&
+        Object.keys(declared.payload).length === payloadKeys.size &&
+        Object.keys(declared.payload).every((key) => payloadKeys.has(key)),
+    );
+  if (!isDeclared) {
+    throw new TypeError("Fact is not declared by the registered connection");
+  }
   for (const [key, value] of Object.entries(fact.payload)) {
     if (
       value !== null &&

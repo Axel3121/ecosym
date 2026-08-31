@@ -42,6 +42,12 @@ function parseConnectionConfigInput(id: string, factOwner: string): string {
         subject: { scope: "record", path: "subject" },
         payload: { value: { scope: "record", path: "value" } },
       },
+      {
+        epistemicStatus: "claim",
+        kind: "example.completion-report",
+        subject: { scope: "record", path: "subject" },
+        payload: { state: { scope: "record", path: "state" } },
+      },
     ],
   });
 }
@@ -232,6 +238,42 @@ test("a failed collection rolls back all facts before recording unread status", 
         status: "unread",
       },
     ]);
+  } finally {
+    store.close();
+  }
+});
+
+test("facts carrying undeclared payload fields fail collection", async () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+
+    await assert.rejects(
+      store.collect(active, (sink) => {
+        sink.writeFact(fact({ payload: { value: 7, unselected_secret: "must-not-land" } }));
+      }),
+    );
+    assert.equal(store.countFacts(), 0);
+  } finally {
+    store.close();
+  }
+});
+
+test("unexpected fact integrity violations fail collection", async () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+
+    await assert.rejects(
+      store.collect(active, (sink) => {
+        sink.writeFact(fact({ sourceRecordId: null as unknown as string }));
+      }),
+    );
+    assert.equal(store.countFacts(), 0);
   } finally {
     store.close();
   }
@@ -620,6 +662,43 @@ test("correction state stays isolated between connection ids", async () => {
         [7, "current"],
         [12, "current"],
       ],
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("source-time ordering stays isolated between connection ids", async () => {
+  const { store } = temporaryStore();
+  const first = connection("source-a", "shared-owner");
+  const second = connection("source-b", "shared-owner");
+  store.register(first);
+  store.register(second);
+  await store.collect(store.getConnection(first.config.id), (sink) => {
+    sink.writeFact(
+      fact({
+        factOwner: "shared-owner",
+        sourceRecordedAt: "2026-08-30T00:00:00.000Z",
+      }),
+    );
+  });
+  await store.collect(store.getConnection(second.config.id), (sink) => {
+    sink.writeFact(
+      fact({
+        factOwner: "shared-owner",
+        sourceRecordedAt: "2026-08-31T00:00:00.000Z",
+      }),
+    );
+  });
+
+  try {
+    assert.equal(
+      store.queryObservations({ connectionId: first.config.id })[0]?.temporalStatus,
+      "current",
+    );
+    assert.equal(
+      store.queryObservations({ connectionId: second.config.id })[0]?.temporalStatus,
+      "current",
     );
   } finally {
     store.close();
