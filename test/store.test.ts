@@ -593,6 +593,36 @@ test("an older concurrent repeat cannot restore an earlier spelling", async () =
   }
 });
 
+test("a fractional second is later than the whole second it follows", async () => {
+  // Two rows whose text order and instant order disagree: "10:00:00.5Z" sorts
+  // before "10:00:00Z" as text, and after it in time. The wider ordering test
+  // ends at a later whole second, which masks a regression to text comparison.
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+    await store.collect(active, (sink) => {
+      for (const [index, sourceRecordedAt] of [
+        "2026-08-30T10:00:00Z",
+        "2026-08-30T10:00:00.5Z",
+      ].entries()) {
+        sink.recordSourceRecord(() => [
+          fact({ sourceRecordedAt, sourceRecordId: `record-${index}` }),
+        ]);
+      }
+    });
+
+    const current = store
+      .queryObservations()
+      .filter((record) => record.temporalStatus === "current");
+    assert.equal(current.length, 1);
+    assert.equal(current[0]?.sourceRecordedAt, "2026-08-30T10:00:00.5Z");
+  } finally {
+    store.close();
+  }
+});
+
 test("mixed UTC spellings use chronological ordering keys", async (t) => {
   const { store } = temporaryStore();
   const spellings = [
