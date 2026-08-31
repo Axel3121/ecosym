@@ -94,6 +94,7 @@ export interface VerificationFact {
 export interface VerificationSnapshot {
   currentnessKnown: boolean;
   facts: VerificationFact[];
+  jsonlRecordIndexMode: JsonlRecordIndexMode | "unknown";
   payloadHashesValid: boolean;
   sourceTimeKeysValid: boolean;
 }
@@ -654,6 +655,7 @@ export class ObservationStore {
   }
 
   #verificationSnapshot(connection: ActiveConnection): VerificationSnapshot {
+    const jsonlRecordIndexMode = this.#storedRecordIndexMode(connection);
     const currentness = this.#database
       .prepare(
         `SELECT NOT EXISTS (
@@ -736,6 +738,7 @@ export class ObservationStore {
     return {
       currentnessKnown: currentness.known === 1,
       facts,
+      jsonlRecordIndexMode,
       payloadHashesValid,
       sourceTimeKeysValid,
     };
@@ -1206,6 +1209,14 @@ export class ObservationStore {
   }
 
   #assertStoredRecordIndexModeKnown(connection: ActiveConnection): void {
+    if (this.#storedRecordIndexMode(connection) === "unknown") {
+      throw new StoredRecordIndexModeUnknownError(connection.config.id);
+    }
+  }
+
+  #storedRecordIndexMode(
+    connection: ActiveConnection,
+  ): JsonlRecordIndexMode | "unknown" {
     const row = this.#database
       .prepare(
         `SELECT jsonl_record_index_mode
@@ -1218,9 +1229,7 @@ export class ObservationStore {
     if (row === undefined) {
       throw new Error("Registered connection configuration is missing");
     }
-    if (parseJsonlRecordIndexMode(row.jsonl_record_index_mode) === "unknown") {
-      throw new StoredRecordIndexModeUnknownError(connection.config.id);
-    }
+    return parseJsonlRecordIndexMode(row.jsonl_record_index_mode);
   }
 
   async #recordRunningAttempt(

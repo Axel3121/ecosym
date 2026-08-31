@@ -97,7 +97,6 @@ export async function verifyConnection(
   store: ObservationStore,
   connection: ActiveConnection,
 ): Promise<VerificationConnectionReport> {
-  const recordIndexMode = connection.jsonlRecordIndexMode;
   let snapshot: VerificationSnapshot;
   try {
     snapshot = store.factsForVerification(connection);
@@ -109,6 +108,7 @@ export async function verifyConnection(
   if (unreadReason !== null) {
     return unreadReport(connection.config.id, stored.length, unreadReason);
   }
+  const recordIndexMode = snapshot.jsonlRecordIndexMode;
   if (recordIndexMode === "unknown") {
     return unreadReport(
       connection.config.id,

@@ -406,6 +406,17 @@ test("an ambiguous physical-line JSONL store is refused without rewriting identi
       migrated.getConnection(parsed.config.id).jsonlRecordIndexMode,
       "unknown",
     );
+    const forgedForVerification = migrated.getConnection(parsed.config.id);
+    forgedForVerification.jsonlRecordIndexMode = "physical-line";
+    const forgedVerification = await verifyConnection(
+      migrated,
+      forgedForVerification,
+    );
+    assert.equal(forgedVerification.outcome, "unread");
+    assert.equal(
+      forgedVerification.unreadReason,
+      "store_record_index_mode_unknown",
+    );
     const verification = await verifyConnection(
       migrated,
       migrated.getConnection(parsed.config.id),
