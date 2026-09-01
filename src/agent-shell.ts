@@ -240,21 +240,24 @@ function declaresNoWrites(
 }
 
 function homeAllowances(home: string): string[] {
-  // Everything a shell needs from a home directory in order to run: the
-  // toolchain it executes, the caches those tools read, and the git and
-  // opencode configuration that tells them how this project works. No
-  // credential store belongs on this list. `.local/share/opencode` and
-  // `.local/state/opencode` are deliberately absent — they hold opencode's own
-  // auth tokens, and the tmpfs now keeps them out without a special case.
+  // The toolchain a shell executes, and nothing else. Every entry here is a
+  // program or a content-addressed cache, because this list is the one thing
+  // the tmpfs above does not hide.
+  //
+  // Configuration is deliberately absent, including this project's own. A
+  // config file is where a tool keeps the credential it uses: `.npmrc` holds
+  // `_authToken`, `.gitconfig` carries a token through `url.insteadOf` and
+  // names a credential helper, `.config/git/credentials` is git's own
+  // plaintext store, and `.config/opencode/opencode.json` holds an
+  // `Authorization` header. Allowing a config directory to be read for its
+  // harmless settings admits the secret sitting beside them.
+  //
+  // Nothing needed a config file to work: the repository carries its own git
+  // identity, and agent definitions are read from the worktree.
   return [
     join(home, ".cache", "node"),
-    join(home, ".config", "git"),
-    join(home, ".config", "opencode"),
-    join(home, ".gitconfig"),
     join(home, ".local", "bin"),
-    join(home, ".npmrc"),
     join(home, ".nvm"),
-    join(home, ".opencode"),
   ];
 }
 

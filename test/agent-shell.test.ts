@@ -215,13 +215,28 @@ test(
   () => {
     const home = mkdtempSync(join(tmpdir(), "ecosym-home-"));
     const worktree = mkdtempSync(join(process.cwd(), ".agent-shell-test-"));
-    // Named the way real credential stores on a developer machine are named:
-    // a forge token, another agent's session, a third tool's secret file.
+    // Where real tools on a developer machine keep credentials. The list is
+    // deliberately wider than the paths this sandbox knows about: the point is
+    // to fail when a future allowance re-admits one of them, not to confirm
+    // the ones somebody already thought of. A config file earns a place here
+    // because its tool documents storing a secret in it.
     const secrets = [
       join(home, ".config", "gh", "hosts.yml"),
       join(home, ".claude.json"),
       join(home, ".config", "Hermes", "secure-token-storage.json"),
       join(home, ".local", "share", "opencode", "auth.json"),
+      join(home, ".local", "state", "opencode", "auth.json"),
+      join(home, ".config", "opencode", "opencode.json"),
+      join(home, ".opencode", "opencode.json"),
+      join(home, ".npmrc"),
+      join(home, ".gitconfig"),
+      join(home, ".config", "git", "credentials"),
+      join(home, ".netrc"),
+      join(home, ".ssh", "id_ed25519"),
+      join(home, ".aws", "credentials"),
+      join(home, ".docker", "config.json"),
+      join(home, ".config", "gcloud", "credentials.db"),
+      join(home, ".kube", "config"),
     ];
     for (const path of secrets) {
       mkdirSync(dirname(path), { recursive: true });
