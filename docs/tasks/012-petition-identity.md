@@ -26,9 +26,9 @@ thing:
 
 Everything downstream — mandate, admission, case — either waits on this or is
 built without knowing the shape it must hold. This design defines the identity
-boundary those downstream designs need. Admission stays unavailable, and the
-credential profile, request type, mandate, storage and correlation decisions
-stay open — this settles none of them.
+boundary those downstream designs need. Admission stays unavailable, and every
+decision listed under "Open decisions" in the design stays open — that section
+is authoritative, and nothing here settles any of it.
 
 ## Outcome
 
