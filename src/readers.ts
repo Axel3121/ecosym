@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import { open, glob } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
@@ -18,9 +19,18 @@ export interface SourceRecord {
 
 export type JsonlRecordIndexMode = "physical-line" | "record-ordinal";
 
+export interface JsonlSourceRevision {
+  ctimeNs: bigint;
+  dev: bigint;
+  ino: bigint;
+  mtimeNs: bigint;
+  size: bigint;
+}
+
 export class SourceReadError extends Error {
   readonly code:
     | "source_absent"
+    | "source_changed"
     | "source_locked"
     | "source_malformed"
     | "source_mapping_invalid"
@@ -60,6 +70,106 @@ export function openSqliteReadOnly(path: string): DatabaseSync {
   } catch (error) {
     throw sourceError(error);
   }
+}
+
+export async function readJsonlSourceWithRecordIndexModes(
+  config: ConnectionConfig,
+): Promise<{
+  physicalLine: SourceRecord[];
+  recordOrdinal: SourceRecord[];
+  revision: JsonlSourceRevision;
+}> {
+  if (config.reader.type !== "jsonl") {
+    throw new SourceReadError("source_mapping_invalid");
+  }
+  const handle = await openFileReadOnly(config.reader.path);
+  try {
+    const before = await handle.stat({ bigint: true });
+    const lines = createInterface({
+      crlfDelay: Number.POSITIVE_INFINITY,
+      input: handle.createReadStream({ autoClose: false, encoding: "utf8" }),
+    });
+    const physicalLine: SourceRecord[] = [];
+    const recordOrdinal: SourceRecord[] = [];
+    let physicalLineIndex = 0;
+    let recordOrdinalIndex = 0;
+    for await (const line of lines) {
+      if (line.trim() !== "") {
+        const parsed = parseRecord(line);
+        const source = {
+          numericLexemes: parsed.numericLexemes,
+          record: parsed.record,
+          root: parsed.record,
+        };
+        physicalLine.push({
+          ...source,
+          meta: {
+            recordIndex: physicalLineIndex,
+            sourcePath: config.reader.path,
+          },
+        });
+        recordOrdinal.push({
+          ...source,
+          meta: {
+            recordIndex: recordOrdinalIndex,
+            sourcePath: config.reader.path,
+          },
+        });
+        recordOrdinalIndex += 1;
+      }
+      physicalLineIndex += 1;
+    }
+    const after = await handle.stat({ bigint: true });
+    if (
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeNs !== after.mtimeNs ||
+      before.ctimeNs !== after.ctimeNs
+    ) {
+      throw new SourceReadError("source_changed");
+    }
+    return {
+      physicalLine,
+      recordOrdinal,
+      revision: sourceRevision(after),
+    };
+  } catch (error) {
+    if (error instanceof SourceReadError) {
+      throw error;
+    }
+    throw sourceError(error);
+  } finally {
+    await handle.close();
+  }
+}
+
+export function jsonlSourceMatchesRevision(
+  path: string,
+  revision: JsonlSourceRevision,
+): boolean {
+  try {
+    const current = statSync(path, { bigint: true });
+    return (
+      current.dev === revision.dev &&
+      current.ino === revision.ino &&
+      current.size === revision.size &&
+      current.mtimeNs === revision.mtimeNs &&
+      current.ctimeNs === revision.ctimeNs
+    );
+  } catch {
+    return false;
+  }
+}
+
+function sourceRevision(stats: JsonlSourceRevision): JsonlSourceRevision {
+  return {
+    ctimeNs: stats.ctimeNs,
+    dev: stats.dev,
+    ino: stats.ino,
+    mtimeNs: stats.mtimeNs,
+    size: stats.size,
+  };
 }
 
 export async function openFileReadOnly(path: string): Promise<FileHandle> {

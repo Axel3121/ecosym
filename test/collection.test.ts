@@ -129,6 +129,25 @@ function markStoreAsSchemaSix(stateDirectory: string): void {
   database.close();
 }
 
+function resolveRecordIndexMode(
+  store: ObservationStore,
+  connectionId: string,
+  connectionVersion: string,
+  mode: "physical-line" | "record-ordinal",
+): void {
+  const plan = store.planRecordIndexModeResolution(
+    connectionId,
+    connectionVersion,
+    mode,
+  );
+  store.resolveRecordIndexMode(
+    connectionId,
+    connectionVersion,
+    mode,
+    plan.confirmationToken,
+  );
+}
+
 function numericTimeFixture(
   token: string,
   format: "unix-milliseconds" | "unix-seconds",
@@ -486,6 +505,135 @@ test("an ambiguous ordinal JSONL store is refused without rewriting identity", a
     assert.deepEqual(
       migrated.queryObservations().map((fact) => fact.sourceRecordId),
       identities,
+    );
+  } finally {
+    migrated.close();
+  }
+});
+
+test("verification and collection refuse a replaced record-index mode", async () => {
+  const directory = workspace();
+  const stateDirectory = join(directory, "state");
+  const sourcePath = join(directory, "records.jsonl");
+  writeFileSync(
+    sourcePath,
+    '{"subject":"alpha","value":1}\n\n{"subject":"beta","value":2}\n',
+  );
+  const parsed = indexedJsonlConnection(sourcePath);
+  const oldStore = new ObservationStore(stateDirectory);
+  oldStore.register(parsed);
+  await oldStore.collect(oldStore.getConnection(parsed.config.id), (sink) => {
+    for (const [recordIndex, line] of readFileSync(sourcePath, "utf8").split("\n").entries()) {
+      if (line.trim() === "") {
+        continue;
+      }
+      const record = JSON.parse(line) as Record<string, unknown>;
+      sink.recordSourceRecord(() =>
+        materializeFacts(parsed.config, {
+          meta: { recordIndex, sourcePath },
+          numericLexemes: null,
+          record,
+          root: record,
+        }),
+      );
+    }
+  });
+  oldStore.close();
+  markStoreAsSchemaSix(stateDirectory);
+
+  const migrated = new ObservationStore(stateDirectory);
+  try {
+    resolveRecordIndexMode(
+      migrated,
+      parsed.config.id,
+      parsed.hash,
+      "physical-line",
+    );
+    const physicalConnection = migrated.getConnection(parsed.config.id);
+    const snapshot = migrated.factsForVerification(physicalConnection);
+    migrated.factsForVerification = () => {
+      queueMicrotask(() => {
+        resolveRecordIndexMode(
+          migrated,
+          parsed.config.id,
+          parsed.hash,
+          "record-ordinal",
+        );
+      });
+      return snapshot;
+    };
+
+    const verification = await verifyConnection(migrated, physicalConnection);
+    assert.equal(verification.outcome, "unread");
+    assert.equal(
+      verification.unreadReason,
+      "store_record_index_mode_changed",
+    );
+    assert.equal(
+      migrated.getConnection(parsed.config.id).jsonlRecordIndexMode,
+      "record-ordinal",
+    );
+
+    resolveRecordIndexMode(
+      migrated,
+      parsed.config.id,
+      parsed.hash,
+      "physical-line",
+    );
+    const staleCollection = migrated.getConnection(parsed.config.id);
+    resolveRecordIndexMode(
+      migrated,
+      parsed.config.id,
+      parsed.hash,
+      "record-ordinal",
+    );
+    let producerCalled = false;
+    await assert.rejects(
+      migrated.collect(staleCollection, () => {
+        producerCalled = true;
+      }),
+      { code: "store_record_index_mode_changed" },
+    );
+    assert.equal(producerCalled, false);
+    assert.equal(migrated.countFacts(), 2);
+
+    const currentCollection = migrated.getConnection(parsed.config.id);
+    const correction = migrated.planRecordIndexModeResolution(
+      parsed.config.id,
+      parsed.hash,
+      "physical-line",
+    );
+    let signalStarted: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    let releaseProducer: () => void = () => undefined;
+    const producerReleased = new Promise<void>((resolve) => {
+      releaseProducer = resolve;
+    });
+    const collecting = migrated.collect(currentCollection, async () => {
+      signalStarted();
+      await producerReleased;
+    });
+    await started;
+    try {
+      assert.throws(
+        () =>
+          migrated.resolveRecordIndexMode(
+            parsed.config.id,
+            parsed.hash,
+            "physical-line",
+            correction.confirmationToken,
+          ),
+        { code: "record_index_resolution_collection_running" },
+      );
+    } finally {
+      releaseProducer();
+    }
+    await collecting;
+    assert.equal(
+      migrated.getConnection(parsed.config.id).jsonlRecordIndexMode,
+      "record-ordinal",
     );
   } finally {
     migrated.close();

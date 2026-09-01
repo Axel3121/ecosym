@@ -242,8 +242,8 @@ function resolveRecordIndex(
         outcome: "confirmation-required",
         ...plan,
         consequence:
-          `This changes how ${plan.factsAffected} stored facts in the exact ` +
-          "connection version are interpreted and changes no fact rows. " +
+          `This changes how the ${plan.factsAffected} stored facts listed in ` +
+          "affectedFactIds are interpreted and changes no fact rows. " +
           `Future collection uses ${recordIndexMode}.`,
         recoverability:
           "A later confirmed resolution can change the mode again; facts collected under either choice remain recorded.",

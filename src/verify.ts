@@ -142,7 +142,7 @@ export async function verifyConnection(
     return unreadReport(connection.config.id, stored.length, safeFailureCode(error));
   }
   try {
-    store.assertConnectionActive(connection);
+    store.assertConnectionRecordIndexMode(connection, recordIndexMode);
   } catch (error) {
     return unreadReport(connection.config.id, stored.length, safeFailureCode(error));
   }

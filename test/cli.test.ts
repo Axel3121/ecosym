@@ -194,6 +194,11 @@ test("an ambiguous legacy record index can be resolved by a recorded user choice
   assert.equal(preview.output.currentRecordIndexMode, "unknown");
   assert.equal(preview.output.factsAffected, 2);
   assert.equal(preview.output.collectionAttemptsRecorded, 1);
+  assert.deepEqual(preview.output.affectedFactIds, [1, 2]);
+  assert.equal(
+    (preview.output.collectionAttemptIds as unknown[]).length,
+    1,
+  );
   assert.equal(typeof preview.output.consequence, "string");
   assert.equal(typeof preview.output.recoverability, "string");
   const confirmationToken = preview.output.confirmationToken;
@@ -309,6 +314,8 @@ test("an ambiguous legacy record index can be resolved by a recorded user choice
   const status = await runCli(["status"], xdgDataHome);
   assert.deepEqual(status.output.connections, []);
   const resolutions = status.output.recordIndexModeResolutions as {
+    affectedFactIds: number[];
+    collectionAttemptIds: string[];
     previousRecordIndexMode: string;
     recordIndexMode: string;
   }[];
@@ -322,6 +329,14 @@ test("an ambiguous legacy record index can be resolved by a recorded user choice
       ["physical-line", "record-ordinal"],
       ["record-ordinal", "physical-line"],
     ],
+  );
+  assert.deepEqual(
+    resolutions.map((record) => record.affectedFactIds),
+    [[1, 2], [1, 2], [1, 2]],
+  );
+  assert.deepEqual(
+    resolutions.map((record) => record.collectionAttemptIds.length),
+    [1, 2, 2],
   );
 
   const inspected = new ObservationStore(stateDirectory);

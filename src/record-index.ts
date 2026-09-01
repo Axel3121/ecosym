@@ -1,8 +1,10 @@
 import { materializeFacts } from "./materialize.ts";
-import { readSource, type JsonlRecordIndexMode } from "./readers.ts";
+import {
+  jsonlSourceMatchesRevision,
+  readJsonlSourceWithRecordIndexModes,
+} from "./readers.ts";
 import {
   type ActiveConnection,
-  type FactInput,
   ObservationStore,
 } from "./store.ts";
 
@@ -16,27 +18,27 @@ export async function resolveLegacyRecordIndexMode(
     return persisted;
   }
 
-  const physicalLineFacts = await factsUnderMode(persisted, "physical-line");
-  const recordOrdinalFacts = await factsUnderMode(persisted, "record-ordinal");
+  const source = await readJsonlSourceWithRecordIndexModes(persisted.config);
+  const physicalLineFacts = source.physicalLine.flatMap((record) =>
+    materializeFacts(persisted.config, record),
+  );
+  const recordOrdinalFacts = source.recordOrdinal.flatMap((record) =>
+    materializeFacts(persisted.config, record),
+  );
   if (
     !store.resolveRecordIndexModeFromEquivalentFacts(
       persisted,
       physicalLineFacts,
       recordOrdinalFacts,
+      () =>
+        persisted.config.reader.type === "jsonl" &&
+        jsonlSourceMatchesRevision(
+          persisted.config.reader.path,
+          source.revision,
+        ),
     )
   ) {
     return persisted;
   }
   return store.getConnection(connection.config.id);
-}
-
-async function factsUnderMode(
-  connection: ActiveConnection,
-  mode: JsonlRecordIndexMode,
-): Promise<FactInput[]> {
-  const facts: FactInput[] = [];
-  for await (const sourceRecord of readSource(connection.config, mode)) {
-    facts.push(...materializeFacts(connection.config, sourceRecord));
-  }
-  return facts;
 }

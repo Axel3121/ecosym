@@ -78,23 +78,25 @@ Reader objects have these exact forms:
 For new JSONL connection versions, `record-index` is the ordinal among nonblank
 records. Schema-six stores did not record whether they used that rule or a
 physical line number. On the first collection or verification of an affected
-version, Ecosym reads the source under both rules. It records `record-ordinal`
-and continues only when both rules produce the same selected fact set and that
-set exactly matches the store's integrity-checked current snapshot. Otherwise
-the version remains unread rather than having its identity guessed. The
-unpublished schema-seven migration guessed that mode, so stores carrying that
-version are refused.
+version, Ecosym reads the JSONL file once and derives both index interpretations
+from those same records. It records `record-ordinal` and continues only when the
+file did not change during the read, both rules produce the same selected fact
+set, and that set exactly matches the store's integrity-checked current
+snapshot. Otherwise the version remains unread rather than having its identity
+guessed. The unpublished schema-seven migration guessed that mode, so stores
+carrying that version are refused.
 
 For a version that remains ambiguous, `status` supplies its exact connection
 version. Run `resolve-record-index CONNECTION_ID CONNECTION_VERSION MODE` to
-preview a resolution. The preview changes nothing: it reports the affected fact
-and collection-attempt counts, states the consequence and recoverability, and
-returns a token bound to that inventory. Repeat the command with
+preview a resolution. The preview changes nothing: it enumerates the exact
+affected fact IDs and collection-attempt IDs, states the consequence and
+recoverability, and returns a token bound to that inventory. Repeat the command with
 `--confirm TOKEN` to make the recorded choice. Confirmation fails if the active
-version or inventory changed after the preview.
+version or inventory changed after the preview, and resolution is refused while
+a collection for that version is running.
 
 The resolution changes no fact rows. It records the old and selected modes,
-configuration hash, inventory, and time as a durable user decision. Choosing
+configuration hash, exact inventory, and time as a durable user decision. Choosing
 incorrectly can make later verification disagree or collection create
 identities that were not intended. The same preview and confirmation process
 can correct the mode later; every prior decision and facts collected under it
