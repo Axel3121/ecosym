@@ -5,6 +5,7 @@ import {
   type ChildProcessWithoutNullStreams,
   type SpawnSyncReturns,
 } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdtempSync,
@@ -24,6 +25,56 @@ import { prepareSandboxSources } from "../src/sandbox.ts";
 import { ObservationStore } from "../src/store.ts";
 
 const sandbox = fileURLToPath(new URL("../scripts/ecosym-sandbox", import.meta.url));
+
+test("preparing a sqlite source never writes to the source database", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-source-readonly-"));
+  const databasePath = join(directory, "state.db");
+
+  const source = new DatabaseSync(databasePath);
+  source.exec(`
+    CREATE TABLE async_delegations (id TEXT, status TEXT, private_note TEXT);
+    INSERT INTO async_delegations VALUES ('one', 'done', 'not declared');
+  `);
+  source.close();
+
+  const digest = (path: string): string | undefined =>
+    existsSync(path) ? createHash("sha256").update(readFileSync(path)).digest("hex") : undefined;
+  const sidecars = [databasePath, `${databasePath}-wal`, `${databasePath}-shm`];
+  const before = sidecars.map(digest);
+
+  let prepared: Awaited<ReturnType<typeof prepareSandboxSources>> | undefined;
+  try {
+    // A connected source is evidence: collection reads it and must not be able
+    // to alter what it is reading, or a disagreement between store and source
+    // could be resolved by quietly changing the source. Preparation opens the
+    // database to hold it open for the run, and that open must be a read.
+    prepared = await prepareSandboxSources([sqliteConnection(databasePath)], directory);
+    assert.deepEqual(
+      sidecars.map(digest),
+      before,
+      "preparing the sandbox altered the source database",
+    );
+  } finally {
+    prepared?.close();
+  }
+
+  assert.deepEqual(
+    sidecars.map(digest),
+    before,
+    "closing the sandbox sources altered the source database",
+  );
+
+  const surviving = new DatabaseSync(databasePath);
+  try {
+    assert.equal(
+      surviving.prepare("SELECT count(*) AS rows FROM async_delegations").get()?.rows,
+      1,
+    );
+  } finally {
+    surviving.close();
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
 
 test("sandbox sources mount exact file paths and current source-glob matches", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-sources-"));
