@@ -96,6 +96,15 @@ export function agentShellArguments(input: AgentShellArgumentsInput): string[] {
         arguments_.push("--bind", path, path);
       }
     }
+    // The worktree bind above makes the checkout writable, which would include
+    // the files that define this sandbox. A shell that can rewrite its own
+    // mount plan is not a boundary: the weakened definition loads on the next
+    // run. Re-bind those paths read-only on top of the writable checkout.
+    for (const path of sandboxDefinitionPaths(input.worktree, input.project)) {
+      if (existsSync(path)) {
+        arguments_.push("--ro-bind", path, path);
+      }
+    }
   }
   arguments_.push("--clearenv");
   for (const name of [
@@ -178,6 +187,18 @@ export async function executeAgentShellCommand(
   } finally {
     rmSync(emptyDirectory, { force: true, recursive: true });
   }
+}
+
+function sandboxDefinitionPaths(worktree: string, project: string | undefined): string[] {
+  const paths = new Set<string>();
+  for (const root of [worktree, ...(project === undefined ? [] : [resolve(project)])]) {
+    paths.add(join(root, ".opencode"));
+    paths.add(join(root, "opencode.json"));
+    for (const file of ["agent-shell.ts", "sandbox.ts", "sandbox-cli.ts", "sandbox-runtime.ts"]) {
+      paths.add(join(root, "src", file));
+    }
+  }
+  return [...paths].sort();
 }
 
 async function runAgentShell(

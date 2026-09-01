@@ -33,7 +33,13 @@
       "/home/axellie/.local/share/opencode/**": "deny",
       "/home/axellie/.local/state/opencode/**": "deny",
       "*.env": "deny",
-      "*.env.*": "deny"
+      "*.env.*": "deny",
+      ".opencode/**": "deny",
+      "opencode.json": "deny",
+      "src/agent-shell.ts": "deny",
+      "src/sandbox.ts": "deny",
+      "src/sandbox-cli.ts": "deny",
+      "src/sandbox-runtime.ts": "deny"
     },
 
     "bash": {
