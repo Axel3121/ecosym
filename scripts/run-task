@@ -95,8 +95,12 @@ fi
 # The sandbox keeps --die-with-parent, but its parent is now systemd, not us.
 UNIT="ecosym-task-${TASK}-$(date +%s)"
 # Two launches inside one second would otherwise share a unit name, and the
-# ledger would show one run where two exist.
-while [ -e "$RUNS/${UNIT}.log" ]; do
+# ledger would show one run where two exist. Testing for the log and creating
+# it are two steps, so two launches can both find it missing; `mkdir` is one
+# step that only one of them can win. The directory is never removed: it marks
+# a unit name as spent, which stays true after the run ends, and the name
+# carries the launch second so it is not reused later anyway.
+while ! mkdir "$RUNS/${UNIT}.lock" 2>/dev/null; do
   UNIT="${UNIT}b"
 done
 LOG="$RUNS/${UNIT}.log"
