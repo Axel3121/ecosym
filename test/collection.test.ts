@@ -1384,3 +1384,64 @@ test("two connections sharing a reader keep attempts and status isolated", async
     store.close();
   }
 });
+
+test("one instant spelled two ways is one observation, not two", async () => {
+  // docs/observation-layer.md: two payloads under the same source identity and
+  // source time are corrections, not later time-series points. `Z` and `+00:00`
+  // name the same instant, so a source that respells it has corrected how it
+  // writes the time -- it has not reported a second observation.
+  const directory = workspace();
+  const sourcePath = join(directory, "records.jsonl");
+  writeFileSync(
+    sourcePath,
+    '{"subject":"alpha","value":1,"at":"2026-08-30T10:00:00Z"}\n' +
+      '{"subject":"alpha","value":1,"at":"2026-08-30T10:00:00+00:00"}\n',
+  );
+  const parsed = parseConnectionConfig({
+    schemaVersion: 1,
+    id: "respelled-instant",
+    factOwner: "source-owner",
+    reader: { type: "jsonl", path: sourcePath },
+    sourceRecord: {
+      identity: [{ scope: "record", path: "subject" }],
+      retention: "history",
+      recordedAt: {
+        selector: { scope: "record", path: "at" },
+        format: "iso8601",
+      },
+    },
+    facts: [
+      {
+        epistemicStatus: "observation",
+        kind: "example.value",
+        subject: { scope: "record", path: "subject" },
+        payload: { value: { scope: "record", path: "value" } },
+      },
+    ],
+  });
+  const store = new ObservationStore(join(directory, "state"));
+  try {
+    store.register(parsed);
+    const collected = await collectConnection(store, parsed.config.id);
+    assert.equal(collected.result.factsAdded, 1);
+    assert.equal(store.countFacts(parsed.config.id), 1);
+
+    // The stored spelling is the one the source used most recently.
+    assert.deepEqual(
+      store.queryObservations().map((fact) => fact.sourceRecordedAt),
+      ["2026-08-30T10:00:00+00:00"],
+    );
+
+    // Verification agrees: the source expresses one observation, not two.
+    const verification = await verifyConnection(
+      store,
+      store.getConnection(parsed.config.id),
+    );
+    assert.equal(verification.outcome, "agreement");
+    assert.equal(verification.counts.matched, 1);
+    assert.equal(verification.counts.sourceFacts, 1);
+    assert.equal(verification.counts.storedFacts, 1);
+  } finally {
+    store.close();
+  }
+});
