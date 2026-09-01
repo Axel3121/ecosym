@@ -78,6 +78,14 @@ product policy.
   Every review — automated, independent, and empirical — lands here, so the
   decision to merge is made against all of them at once rather than serially
   after the fact.
+
+  A pull request is opened per subject, not per kind of change. A fix, the test
+  that proves it, and the document rule it establishes are one subject and
+  belong together: splitting them puts the evidence somewhere the reviewer of
+  the change cannot see it. Before opening one, check whether an open pull
+  request already owns that subject or touches the same files, and extend it if
+  so. Metered reviewers are spent per pull request and per push, so an
+  unnecessary split costs review capacity as well as attention.
 - Comments own local clarification and evidence, not hidden reusable policy.
 - ADRs preserve earned historical rationale; they do not replace current
   semantic owners.

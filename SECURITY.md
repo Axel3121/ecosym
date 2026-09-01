@@ -161,12 +161,12 @@ draws it. Until something has tried and been refused, what exists is a boundary
 in the diff and an assumption in the world. The attempt belongs in the suite, so
 the refusal keeps being true.
 
-Four boundaries in this repository were written correctly and did not hold: a
-shell could rewrite the sandbox definition that governed it; an agent declaring
-`write: false` was handed a writable worktree because only one hardcoded name
-was checked; a `HOME` guard compared strings so `/tmp/..` passed it; and a
-`--tmpfs` was re-exposed by a later bind that overlaid it. Each was found by
-running an attack, and none by review of the code alone.
+Two boundaries in this repository were written correctly and did not hold: a
+shell could rewrite the sandbox definition that governed it, and an agent
+declaring `write: false` was handed a writable worktree because only one
+hardcoded name was checked. Both were found by running an attack, and neither
+by review of the code alone. A third, where a `--tmpfs` was re-exposed by a
+later bind that overlaid it, was found the same way and is being fixed.
 
 ## Destructive changes to owned history
 
