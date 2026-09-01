@@ -246,6 +246,98 @@ test("a launch is registered in the ledger, and a failing ledger does not fail t
   }
 });
 
+test("a recorded result outranks the branch it was made on", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-ledger-state-"));
+  const repository = join(directory, "repository");
+  const scripts = join(repository, "scripts");
+  const dataHome = join(directory, "data");
+  mkdirSync(scripts, { recursive: true });
+  copyFileSync(runLedger, join(scripts, "run-ledger"));
+  chmodSync(join(scripts, "run-ledger"), 0o700);
+
+  const ledger = (arguments_: string[]) =>
+    spawnSync(join(scripts, "run-ledger"), arguments_, {
+      cwd: repository,
+      encoding: "utf8",
+      env: { ...process.env, XDG_DATA_HOME: dataHome },
+    });
+
+  try {
+    git(repository, ["init", "-b", "main"]);
+    writeFileSync(join(repository, "file.txt"), "one\n");
+    git(repository, ["add", "."]);
+    commit(repository, "landed work");
+    const landed = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: repository,
+      encoding: "utf8",
+    }).stdout.trim();
+
+    // The branch a run merged from keeps living and takes on later work.
+    // That says nothing about whether this run's own commit reached main.
+    git(repository, ["branch", "task/live", "main"]);
+    git(repository, ["checkout", "task/live"]);
+    writeFileSync(join(repository, "file.txt"), "two\n");
+    git(repository, ["add", "."]);
+    commit(repository, "unrelated later work");
+    const later = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: repository,
+      encoding: "utf8",
+    }).stdout.trim();
+    git(repository, ["checkout", "main"]);
+
+    ledger(["start", "landed-run", "unit-landed", "--branch", "task/live", "--commit", landed]);
+    ledger([
+      "close",
+      "unit-landed",
+      "--outcome",
+      "landed",
+      "--commit",
+      landed,
+      "--evidence",
+      "merged",
+    ]);
+
+    const truthful = ledger(["list"]);
+    assert.match(truthful.stdout, /in-main/);
+    assert.doesNotMatch(truthful.stdout, /!!/);
+    assert.equal(truthful.status, 0, "a run whose commit is in main is not disputed");
+
+    // The inverse: a merged-looking branch must not vouch for a result
+    // commit that never reached main.
+    git(repository, ["branch", "task/merged", "main"]);
+    ledger(["start", "false-run", "unit-false", "--branch", "task/merged", "--commit", landed]);
+    ledger([
+      "close",
+      "unit-false",
+      "--outcome",
+      "landed",
+      "--commit",
+      later,
+      "--evidence",
+      "PR #99",
+    ]);
+
+    const disputed = ledger(["list"]);
+    assert.match(disputed.stdout, /unmerged/);
+    assert.match(disputed.stdout, /!!/);
+    assert.equal(disputed.status, 1, "a landed claim Git denies must fail the command");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function commit(repository: string, message: string): void {
+  git(repository, [
+    "-c",
+    "user.name=Ecosym Test",
+    "-c",
+    "user.email=test@example.invalid",
+    "commit",
+    "-m",
+    message,
+  ]);
+}
+
 test("a task name that escapes the specification directory is refused", () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-run-task-name-"));
   const repository = join(directory, "repository");

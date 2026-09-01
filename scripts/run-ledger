@@ -152,25 +152,26 @@ def git_state(
 ) -> str:
     """What Git can prove about this run, in words that do not overstate it.
 
-    A branch name alone cannot tell landed-and-cleaned-up from abandoned, and
-    `--merged` calls any branch that carries no commits of its own merged. The
-    recorded commit is the more durable fact: reachability from main survives
-    the branch being deleted, renamed, or never created at all.
+    The recorded result commit is the specific claim and is asked first: it
+    survives the branch being deleted, renamed, or carrying later unrelated
+    work, and a branch that moved on after a merge says nothing about whether
+    this run's commit landed. Only when no result was recorded does the branch
+    stand in as the weaker, more general signal.
 
     'unproven' is deliberate. It is the honest answer whenever Git was not
     given enough to decide, and it must not be read as 'nothing happened'.
     """
-    if branch and branch in all_branches:
-        if branch_is_empty(branch):
-            return "empty"
-        return "merged" if branch in merged else "open"
-
-    # No live branch to inspect. The recorded commit is all that is left.
     reachable = in_main(commit)
     if reachable is True:
         return "in-main"
     if reachable is False:
         return "unmerged"
+
+    # No usable result commit. The branch is all that is left.
+    if branch and branch in all_branches:
+        if branch_is_empty(branch):
+            return "empty"
+        return "merged" if branch in merged else "open"
     return "unproven"
 
 
