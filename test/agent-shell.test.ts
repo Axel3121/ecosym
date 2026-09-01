@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -209,10 +209,74 @@ test(
   },
 );
 
+test(
+  "a shell cannot read another tool's credentials from the home directory",
+  { skip: !existsSync("/usr/bin/bwrap") },
+  () => {
+    const home = mkdtempSync(join(tmpdir(), "ecosym-home-"));
+    const worktree = mkdtempSync(join(process.cwd(), ".agent-shell-test-"));
+    // Named the way real credential stores on a developer machine are named:
+    // a forge token, another agent's session, a third tool's secret file.
+    const secrets = [
+      join(home, ".config", "gh", "hosts.yml"),
+      join(home, ".claude.json"),
+      join(home, ".config", "Hermes", "secure-token-storage.json"),
+      join(home, ".local", "share", "opencode", "auth.json"),
+    ];
+    for (const path of secrets) {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, "token: must-not-be-readable\n");
+    }
+    try {
+      for (const mode of ["agent", "prober"] as const) {
+        const result = runAgentShell(
+          mode,
+          worktree,
+          secrets.map((path) => `cat ${shellQuote(path)} 2>/dev/null`).join("; ") + "; true",
+          { HOME: home },
+        );
+        assert.equal(result.status, 0, result.stderr);
+        assert.doesNotMatch(
+          result.stdout,
+          /must-not-be-readable/u,
+          `${mode} mode read a credential file out of the home directory`,
+        );
+      }
+    } finally {
+      rmSync(home, { force: true, recursive: true });
+      rmSync(worktree, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "a read-only shell has no route to the network",
+  { skip: !existsSync("/usr/bin/bwrap") },
+  () => {
+    const worktree = mkdtempSync(join(process.cwd(), ".agent-shell-test-"));
+    try {
+      // A route, not a reachable host: this asserts the network namespace is
+      // unshared, so it holds on a machine that is offline anyway.
+      const denied = runAgentShell("prober", worktree, "ip -o link show | grep -cv ' lo:'");
+      assert.equal(denied.stdout.trim(), "0", "prober mode kept a network interface");
+
+      const permitted = runAgentShell("agent", worktree, "ip -o link show | grep -cv ' lo:'");
+      assert.notEqual(
+        permitted.stdout.trim(),
+        "0",
+        "the writing agent still needs the network it uses to fetch and push",
+      );
+    } finally {
+      rmSync(worktree, { force: true, recursive: true });
+    }
+  },
+);
+
 function runAgentShell(
   mode: "agent" | "prober",
   worktree: string,
   command: string,
+  overrides: NodeJS.ProcessEnv = {},
 ): SpawnSyncReturns<string> {
   return spawnSync(
     agentShell,
@@ -234,6 +298,7 @@ function runAgentShell(
         ...process.env,
         DATABASE_URL: "postgres://synthetic-secret.invalid/database",
         TEST_SECRET_TOKEN: "must-not-reach-shell",
+        ...overrides,
       },
     },
   );
