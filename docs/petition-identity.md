@@ -578,9 +578,11 @@ The target control plane separately records, before admission or launch:
 - the exact received envelope and normalized proof record or durable
   content-addressed copies;
 - its source-owned receipt time;
-- a first-write uniqueness binding from principal and petition ID to exactly one
+- a first-write uniqueness binding from petition ID alone to exactly one
   envelope digest and `userProofDigest`, with exact redelivery idempotent and any
-  conflict refused;
+  conflict refused. The binding is global, not scoped to a principal: two
+  principals presenting different envelopes under one visible ID would break
+  the correlation the ID exists to provide;
 - proof verification result, profile, credential mapping, and current
   revocation evidence;
 - the mandate revision and evidence used for its decision;

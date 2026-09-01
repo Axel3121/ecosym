@@ -25,8 +25,10 @@ thing:
 > product least survives. (l. 159–162)
 
 Everything downstream — mandate, admission, case — either waits on this or is
-built without knowing the shape it must hold. This design unblocks three links
-at once. That is why it comes before any storage work.
+built without knowing the shape it must hold. This design defines the identity
+boundary those downstream designs need. Admission stays unavailable, and the
+credential profile, request type, mandate, storage and correlation decisions
+stay open — this settles none of them.
 
 ## Outcome
 
@@ -109,6 +111,10 @@ from it alone:
 
 A second reader must be able to find at least one thing the design cannot do.
 A design with no stated limits has not been thought through.
+
+This document sets an authority boundary, so an independent review of the
+finished design is part of completion, not a courtesy. A material change after
+that review means the affected evidence is reviewed again.
 
 ## Out of scope
 
