@@ -1,0 +1,84 @@
+# An independent automated reader of every candidate, as DEVELOPMENT.md
+# requires: "Every review — automated, independent, and empirical — lands
+# here." This workflow reviews. It merges nothing and it approves nothing.
+#
+# PR-Agent is the community-owned project Qodo donated in April 2026
+# (qodo-ai/pr-agent -> The-PR-Agent/pr-agent, back to MIT). It reads the diff
+# through the GitHub API and sends it to the configured model provider.
+name: review
+
+# pull_request, never pull_request_target: a fork's code must not run with
+# access to this repository's secrets.
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+
+# The token may write review comments. It may not write code.
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: review-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: automated review
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # A review of a review is noise, and a bot answering itself is a loop.
+    if: github.event.sender.type != 'Bot'
+
+    steps:
+      # Pinned to an immutable image digest, not to a tag and not to @main.
+      # The published action is a one-line Dockerfile over the mutable tag
+      # `pragent/pr-agent:github_action`, so pinning the action ref alone
+      # would pin nothing. This is pr-agent v0.44.0.
+      - uses: docker://pragent/pr-agent@sha256:b70f4a41621a838cb0dfbc199f86f595ab9cfe698ac4b19ec2b5562b05d49858
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          # Reviewing, describing and suggesting are three different claims.
+          # Only the review runs: a generated description would overwrite what
+          # the author wrote, and DEVELOPMENT.md gives the pull request body
+          # to the author.
+          github_action_config.auto_review: "true"
+          github_action_config.auto_describe: "false"
+          github_action_config.auto_improve: "false"
+
+          # DeepSeek V4 Pro. The older `deepseek-chat` and `deepseek-reasoner`
+          # names were retired on 2026-07-24 and now fail outright, so do not
+          # "fix" this to the name most tutorials still show. Pro rather than
+          # Flash because review quality is the whole point and a PR review
+          # costs on the order of two cents either way.
+          config.model: "deepseek/deepseek-v4-pro"
+          config.fallback_models: '[]'
+          DEEPSEEK.KEY: ${{ secrets.DEEPSEEK_KEY }}
+
+          # The repository's canonical owners are the standard a change is
+          # measured against; v0.39.0 feeds AGENTS.md and friends to /review
+          # by default, and AGENTS.md points at the four owners.
+          pr_reviewer.extra_instructions: >-
+            Judge this change against PRODUCT.md, ARCHITECTURE.md, SECURITY.md
+            and DEVELOPMENT.md at the repository root, which own product
+            invariants, boundaries, security obligations and evidence
+            obligations respectively.
+
+            Report a finding only when you can name the exact sequence of
+            events that produces it. A concern you cannot reproduce is not a
+            finding. Say plainly when you found nothing.
+
+            Weigh these repository invariants above general style:
+            the store must never report a fact the source did not express, and
+            unknown must stay unknown rather than becoming a quiet default;
+            stored identity, ordering keys and timestamps are evidence, and a
+            change to how they are derived must not rewrite what is already
+            stored; a rule that exists only as prose in a document is not
+            enforced, so prefer a check, a test, or an OS boundary.
+
+          # A reviewer that cannot fail the merge is advisory by construction.
+          # This one comments; the maintainer decides.
+          pr_reviewer.persistent_comment: "true"
+          pr_reviewer.final_update_message: "false"
