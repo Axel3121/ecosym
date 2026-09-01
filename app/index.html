@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="nb">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ecosym — orbis</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+<!--
+THESIS: A kept chart, not a dashboard. Civilizations are places you descend into; the same ink thickens from coastline to rooftop to walking figure. It refuses the node-graph-plus-side-panel arrangement.
+OWN-WORLD: vellum #d9c49a under raking light, iron-gall ink #3b2a1a, one seal red #9c3524 earned only by petitions and council matters, IM Fell English marginalia, Alegreya sheets. Unobserved is bare skin, never grey.
+STORY: Axel opens the chart, sees which places are inked and which are bare, reads the Capital's docket, descends into a settlement, watches who is working, and addresses the seat with a petition that is drawn as a letter, never as a result.
+FIRST VIEWPORT: full-bleed vellum; four coasts around a central compass-citadel; one cartouche upper-left; the Capital's docket as marginalia lower-right; ink routes only where a border was crossed. Primary action: click a place.
+FORM: Treasure chart fused with Civitates engraving and the byōbu's cloud-as-unknown; user-pinned over the roll (seed key b0f9c328).
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+-->
+  <div id="app">
+    <canvas id="chart"></canvas>
+    <div id="cartouche" class="cartouche panel">
+      <h1>Ecosym</h1>
+      <p class="sub">orbis · <span id="observed-at"></span></p>
+      <p class="synthetic" id="synthetic" hidden>synthetic fixture — nothing here was observed</p>
+    </div>
+    <aside id="docket" class="docket panel" aria-label="Council docket"></aside>
+    <div id="hover" class="hover panel" hidden></div>
+    <section id="sheet" class="sheet panel" hidden aria-live="polite"></section>
+    <section id="focus" class="focus panel" hidden aria-live="polite">
+      <div class="focus-side">
+        <button class="back" id="focus-back">← tilbake til verden</button>
+        <div class="portrait" id="focus-portrait"></div>
+        <h2 id="focus-name"></h2>
+        <p class="kind" id="focus-kind"></p>
+        <div id="focus-facts" class="facts"></div>
+      </div>
+      <div class="focus-main">
+        <div class="thread" id="focus-thread"></div>
+        <form id="focus-form" class="ask">
+          <input id="focus-input" type="text" autocomplete="off" placeholder="skriv til dem…" />
+          <button type="submit">Send</button>
+        </form>
+      </div>
+    </section>
+    <p class="hint panel" id="hint">scroll to descend · click a place · drag to pan</p>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
