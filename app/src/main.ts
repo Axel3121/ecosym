@@ -68,7 +68,7 @@ canvas.addEventListener("pointerup", (e) => {
 canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
   const before = chart.toWorld(e.clientX, e.clientY);
-  const factor = Math.exp(-e.deltaY * 0.0016);
+  const factor = Math.exp(-e.deltaY * 0.0014);
   const zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, chart.camera.zoom * factor));
   chart.camera.zoom = zoom;
   const after = chart.toWorld(e.clientX, e.clientY);
@@ -88,10 +88,10 @@ function select(h: Hit | null) {
   if (!h) { sheet.hidden = true; return; }
   const s = h.settlementId ? scene.settlements.find((x) => x.civilizationId === h.settlementId) : undefined;
   if (h.kind === "settlement" && s) {
-    if (s.epistemic === "observed") flyTo(s.ground.x, s.ground.y + 6, Math.max(chart.camera.zoom, 4.6));
-    else flyTo(s.ground.x, s.ground.y, Math.max(chart.camera.zoom, 1.4));
+    if (s.epistemic === "observed") flyTo(s.ground.x, s.ground.y - 40, Math.max(chart.camera.zoom, 2.4));
+    else flyTo(s.ground.x, s.ground.y, Math.max(chart.camera.zoom, 1.2));
   }
-  if (h.kind === "capital") flyTo(0, 12, Math.max(chart.camera.zoom, 2.2));
+  if (h.kind === "capital") flyTo(760, 470, Math.max(chart.camera.zoom, 2.2));
   sheet.hidden = false;
   sheet.innerHTML = sheetFor(h);
   sheet.querySelector<HTMLButtonElement>(".close")?.addEventListener("click", () => select(null));

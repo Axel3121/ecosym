@@ -11,7 +11,7 @@ page.on("pageerror", (e) => errors.push(String(e)));
 page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
 await page.goto(base);
 await page.waitForFunction(() => document.fonts.status === "loaded");
-await page.waitForTimeout(600);
+await page.waitForTimeout(1500);
 await page.screenshot({ path: "shots/1-chart.png" });
 
 await page.evaluate(() => window.__ecosym.select({ kind: "capital", label: "Capital" }));
@@ -26,7 +26,7 @@ await page.evaluate(() => window.__ecosym.select({ kind: "seat", settlementId: "
 await page.waitForTimeout(300);
 await page.screenshot({ path: "shots/4-curia.png" });
 
-await page.evaluate(() => { window.__ecosym.select(null); window.__ecosym.flyTo(-300, 300, 2.2); });
+await page.evaluate(() => { window.__ecosym.select(null); window.__ecosym.flyTo(260, 730, 1.6); });
 await page.waitForTimeout(1200);
 await page.screenshot({ path: "shots/5-thule-unobserved.png" });
 

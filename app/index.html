@@ -6,7 +6,7 @@
   <title>Ecosym — orbis</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&family=Alegreya:ital,wght@0,400;0,500;0,700;1,400&family=Alegreya+SC:wght@400;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;700&family=Alegreya:ital,wght@0,400;0,500;0,700;1,400&family=Alegreya+SC:wght@400;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
@@ -20,15 +20,15 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 -->
   <div id="app">
     <canvas id="chart"></canvas>
-    <div id="cartouche" class="cartouche">
+    <div id="cartouche" class="cartouche panel">
       <h1>Ecosym</h1>
       <p class="sub">orbis · <span id="observed-at"></span></p>
       <p class="synthetic" id="synthetic" hidden>synthetic fixture — nothing here was observed</p>
     </div>
-    <aside id="docket" class="docket" aria-label="Council docket"></aside>
-    <div id="hover" class="hover" hidden></div>
-    <section id="sheet" class="sheet" hidden aria-live="polite"></section>
-    <p class="hint" id="hint">scroll to descend · click a place · drag to pan</p>
+    <aside id="docket" class="docket panel" aria-label="Council docket"></aside>
+    <div id="hover" class="hover panel" hidden></div>
+    <section id="sheet" class="sheet panel" hidden aria-live="polite"></section>
+    <p class="hint panel" id="hint">scroll to descend · click a place · drag to pan</p>
   </div>
   <script type="module" src="/src/main.ts"></script>
 </body>
