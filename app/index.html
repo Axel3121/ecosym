@@ -16,11 +16,11 @@ FORM: Treasure chart fused with Civitates engraving and the byōbu's cloud-as-un
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
 -->
   <div id="app">
-    <canvas id="chart"></canvas>
+    <canvas id="chart" tabindex="0" aria-label="Verdenskart"></canvas>
     <div id="cartouche" class="cartouche panel">
       <h1>Ecosym</h1>
       <p class="sub">orbis · <span id="observed-at"></span></p>
-      <p class="synthetic" id="synthetic" hidden>synthetic fixture — nothing here was observed</p>
+      <p class="synthetic" id="synthetic" hidden>syntetisk fixture — ingenting her er observert</p>
     </div>
     <aside id="docket" class="docket panel" aria-label="Council docket"></aside>
     <div id="hover" class="hover panel" hidden></div>
@@ -41,7 +41,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
         </form>
       </div>
     </section>
-    <p class="hint panel" id="hint">scroll to descend · click a place · drag to pan</p>
+    <p class="hint panel" id="hint">scroll for å gå ned · klikk et sted · dra for å panorere</p>
   </div>
   <script type="module" src="/src/main.ts"></script>
 </body>

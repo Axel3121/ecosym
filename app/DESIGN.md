@@ -5,97 +5,100 @@ Everything the surface renders arrives as a scene description derived from
 observations; the surface never reads a source. Synthetic fixture data is
 labelled as such in the UI.
 
+Direction chosen 2026-09-02 (Axel, from a Stardew-like reference): a **hi-bit
+pixel-art world**. The earlier vellum/engraving direction was built, shown, and
+rejected ("dette er fis"); this document replaces it.
+
 ## Feeling
 
-Opening Ecosym is unrolling a chart that someone has been keeping by hand.
-The map is drawn in iron-gall ink on vellum; what has been seen is inked, what
-has not been seen is bare skin. Coming down into a settlement is not a page
-change: the same ink thickens into roofs, lanes, and people going about work.
-Reference boundary: **a kept chart, not a game HUD; an engraving, not a
-dashboard.** No glass, no glow, no gradient panels, no floating nameplates.
+Opening Ecosym is looking down on a small painted country where your work
+lives. Each civilization is a village in the landscape; the Capital is the
+walled town in the middle. Going into a village is not a page change: the
+same painting sharpens into lanes, houses, and people at work. Talking to a
+place is leaving the map: focus mode, like a Stardew dialogue.
+Reference boundary: **a cozy game world, not a dashboard; a place, not a
+node graph.** No glass, no glow, no gradient panels.
 
-## The three cameras
+## What is art and what is code
 
-One continuous camera. Zoom preserves the point under the pointer. Three
-levels of detail are crossed by zoom alone, and a click on a place flies the
-camera to the level that place deserves:
+- **Art (generated, static):** the world painting (`world.png`), one
+  close-up plate per settlement type (harbor, hill, orchard, lake), the
+  Capital plate, walker sprites, smoke, fog. Art never carries state.
+- **Code (the truth layer):** everything that depends on observations —
+  which villages are fogged, where smoke rises, who walks, pennants,
+  letters, labels. If it can be wrong, it is drawn by code from the scene.
+
+Known prototype debt: a village's *form* is painted, not derived from what
+it contains. PRODUCT.md says form is derived, never authored. Acceptable for
+a prototype; a real build places buildings on the plate from observations.
+
+## The cameras
+
+One continuous camera over one painted world with an edge; the camera is
+clamped to the map. Zoom preserves the point under the pointer.
 
 | Level | Zoom | What is drawn |
 |---|---|---|
-| **Chart** | 0.35 – 1.6 | Vellum, coastlines, each civilization as an engraved city on its own ground, the Capital as a compass-rose citadel, ink routes only where a petition or exchange actually crossed a border, and the plate's own marginalia (title, date of last observation). |
-| **Settlement** | 1.6 – 6 | Top-down: walls, lanes, buildings derived from what the civilization contains, inhabitants walking between the buildings they are working in. The civilization's **seat** (its own name for it — Curia, Ting, Diet) as the largest structure. |
-| **Inside** (panel, not zoom) | any | Clicking an inhabitant opens its transient-work sheet; clicking a seat opens the seat: mandate, what it may do alone, the council matters it raised, and a petition composer. The panel is a sheet laid on the chart, never covering the focused place. |
+| **World** | 0.7 – 1.5 | The painting. Labels on places, fog on the unobserved, smoke and tiny walkers where work runs, pennants for council matters, letters on roads. |
+| **Settlement** | 1.5 – 5 | The settlement plate crossfades in over the painting. Walkers at readable size, smoke on occupied workshops, the seat as the largest building. |
+| **Focus** (leaves the map) | — | Talking to a seat, an agent, or the council. Map blurred behind; portrait + facts left, conversation right. |
 
-Scale contract:
-
-- **World geometry** (coastlines, inter-city distance, lanes, walls) scales
-  with the camera.
-- **Identity sprites** (inhabitants, seat silhouettes) hold a fixed logical
-  size once the settlement level is reached; below that they are hidden, not
-  shrunk. A person must read as a person (head, body, direction of travel) at
-  the size it is drawn or it is not drawn.
-- Level transitions are a crossfade of ink, 400 ms, ease-out; the vellum and
-  camera never jump. `prefers-reduced-motion` drops the crossfade to a cut.
+Scale contract: world geometry scales with the camera; walker sprites hold a
+readable logical size (26–96 px) and are clamped, never blurred up.
 
 ## Truth on the surface
 
-- **Unobserved is bare vellum.** A civilization Ecosym has stopped seeing is
-  drawn as an outline with no ink inside and the note *non observatum* plus the
-  time of the last observation. Never dimmed, never greyed: absent.
-- **Live is a moving figure. Finished is a trace.** A running inhabitant walks
-  and carries something. Finished work is a footprint-line in the lane that
-  fades over the retention window. Nothing walks that is not observed running.
-- **A petition is a sealed letter**, drawn on the route from the Capital to the
-  seat it was sent to, stamped with its state (sent, accepted, queued, in
-  progress). It never becomes a building. Outcome is only ever shown when
-  observed, as a separate object attributed to the petition.
-- **Prosperity is derived, never authored.** Building count, lane wear, and
-  ink density come from observed work volume; there is no "health" colour.
-- **The Capital is the world's headquarters.** It holds a hall for every
-  civilization's seat, in summary only: name, seat name, open council matters,
-  observation freshness. Detail is reached by going there.
+- **Unobserved is fog.** Never grey, never dimmed: covered. Label says
+  "aldri observert" and nothing inside is drawn.
+- **Live is smoke and a walking figure. Finished is nothing.** Smoke rises
+  only over a workshop with an observed running inhabitant. Nothing walks
+  that is not observed running.
+- **A petition is a sealed letter** on the road from the Capital, positioned
+  by its state, never by time. It never becomes a building.
+- **Council matters are red pennants** over the seat. Red is earned only by
+  a request or a council matter.
+- **The Capital summarises.** One hall per civilization: name, seat name,
+  live/quiet/unobserved, open matters. Detail is reached by going there.
+- **Dialogue is fact + voice.** Facts come from the scene only. The voice
+  (Curia terse, Ting dry, Bakufu courteous; agents by tool) is flavour and
+  carries no facts. An order inside the mandate is sealed to the
+  civilization; one that crosses it is sealed to the council. Agents refuse
+  orders and point to their seat. "Why" is answered honestly: not observed.
 
 ## Colour
 
-Strategy: Committed — the vellum owns the surface.
-
 | Token | Value | Role |
 |---|---|---|
-| `--vellum` | `#d9c49a` | ground; darkens to `#c7ad7c` at the edges under raking light |
-| `--ink` | `#3b2a1a` | every drawn line, all type |
-| `--ink-faint` | `#8a7452` | faded routes, old traces, marginalia |
-| `--seal` | `#9c3524` | petitions and council matters, the only red, never decoration |
-| `--tide` | `#7f8c86` | sea wash, coastal stain |
-| `--wash-live` | `#b89a4a` | ochre wash under a settlement with observed running work |
-
-Accent (`--seal`) is earned only by a request or a council matter. Running work
-is shown by motion and the ochre wash, not by a colour chip.
+| `--paper` | `#f6e2b8` | panel ground |
+| `--paper-dark` | `#e3c894` | panel inset / conversation ground |
+| `--frame` / `--frame-dark` / `--frame-light` | `#8b5a2b` / `#4a2c14` / `#c98a4b` | wood frame, buttons |
+| `--ink` / `--ink-soft` | `#3a2410` / `#7a5a3a` | text |
+| `--seal` | `#9e2a1e` | petitions, council matters, synthetic warnings (≥4.5:1 on paper) |
+| `--live` | `#6fae4b` | the one "talk" affordance and hover states |
 
 ## Typography
 
-- Marginalia, cartouche, seat names: **IM Fell English** (Fell types are the
-  chart's own hand; italic for notes).
-- Sheets, inspectors, petition composer: **Alegreya**, 16/24, with Alegreya
-  small caps for labels.
-- Numbers and timestamps: Alegreya, tabular.
-- Ratio: cartouche 40 → seat name 22 → sheet body 16 → marginal note 13.
+Bitmap fonts served locally (`/fonts`): **Silkscreen** for headings and
+labels, **Pixelify Sans** for body. No smooth sans anywhere in the chrome.
+Ratio: title 26 → sheet/focus heading 24 → body 17–18 → captions 12–16.
 
-No sans-serif anywhere on the surface.
+UI chrome is Norwegian. Domain strings from fixtures may be whatever the
+source says.
 
 ## Motion
 
-- Inhabitants walk at 24 logical px/s along lanes; a carried object bobs.
-- Camera fly: 600 ms, cubic ease-out, focal point preserved.
-- Petition letters slide along their route on state change, 300 ms.
-- Nothing pulses, breathes, or glows. A quiet world is still.
-- `prefers-reduced-motion`: walking becomes standing at the building; camera
-  flies become cuts; letters snap.
+- Walkers move 0.06–0.11 plate-units/s along a short errand, flip to face
+  travel, 4-frame cycle.
+- Smoke: 3 frames, rises and thins.
+- Fog drifts slowly.
+- Camera fly 600 ms ease-out. `prefers-reduced-motion`: walkers stand,
+  camera cuts.
 
 ## Bans
 
-- No nameplates at chart level; identity on hover or in the sheet.
 - No status colour semaphore (green/amber/red).
-- No side panel as the primary selected state; the sheet lies on the chart.
-- No "health", "score", or "progress" number the observations do not contain.
-- No building, route, or figure that does not correspond to an observation or
-  a declared mandate.
+- No "health", "score", or "progress" the observations do not contain.
+- No building, smoke, figure, or route that does not correspond to an
+  observation or a declared mandate.
+- No sending: the petition path is not built; sealed letters stay in the
+  prototype.

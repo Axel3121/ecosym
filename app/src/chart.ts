@@ -4,18 +4,11 @@ import type { Scene, Settlement } from "./scene.ts";
 import { hash01 } from "./scene.ts";
 
 export interface Camera { x: number; y: number; zoom: number }
-export const ZOOM_MIN = 0.22;
+export const ZOOM_MIN = 0.7;
 export const ZOOM_MAX = 5;
-export const SETTLEMENT_ZOOM = 1.9; // plate fully in by here
-export const GROUND = 1024;
-const GROUNDS = ["/art/ground-forest.png", "/art/ground-wood.png", "/art/ground-meadow.png"];
-const FEATURES: Array<{ img: string; x: number; y: number; w: number }> = [
-  { img: "/art/lakefeat.png", x: -1500, y: 900, w: 700 },
-  { img: "/art/hillfeat.png", x: 1700, y: -1300, w: 720 },
-  { img: "/art/lakefeat.png", x: 2200, y: 1500, w: 620 },
-  { img: "/art/hillfeat.png", x: -2300, y: -700, w: 680 },
-  { img: "/art/lakefeat.png", x: 300, y: -2200, w: 560 },
-];
+export const SETTLEMENT_ZOOM = 2.2; // plate fully in by here
+export const WORLD_W = 1536, WORLD_H = 1024;
+
 
 export interface Hit {
   kind: "settlement" | "seat" | "inhabitant" | "capital" | "letter";
@@ -32,7 +25,7 @@ export const PLATES: Record<string, { img: string; aspect: number; seat: P; well
 };
 type P = { x: number; y: number };
 export const PLATE_OF: Record<string, keyof typeof PLATES> = { roma: "harbor", midgard: "hill", edo: "orchard", thule: "lake" };
-const CAPITAL = { x: 0, y: 0, r: 260 };
+const CAPITAL = { x: 760, y: 460, r: 200 };
 
 // sprite sheet cells
 export const WCOLS = [100, 400, 660, 960], WROWS = [60, 360, 660, 940], WCELL = { w: 200, h: 240 };
@@ -40,7 +33,7 @@ export const WCOLS = [100, 400, 660, 960], WROWS = [60, 360, 660, 940], WCELL = 
 function plateRect(s: Settlement) {
   const key = PLATE_OF[s.civilizationId] ?? "lake";
   const p = PLATES[key]!;
-  const w = s.radius * 2.4, h = w / p.aspect;
+  const w = s.radius * 2.3, h = w / p.aspect;
   return { p, x: s.ground.x - w / 2, y: s.ground.y - h * 0.5, w, h };
 }
 export function plateLocalToWorld(s: Settlement, l: P): P {
@@ -84,9 +77,9 @@ export class Chart {
   private img = new Map<string, HTMLImageElement>();
   private t0 = performance.now();
 
-  constructor(private canvas: HTMLCanvasElement, public camera: Camera = { x: 0, y: 80, zoom: 0.42 }) {
+  constructor(private canvas: HTMLCanvasElement, public camera: Camera = { x: 768, y: 512, zoom: 0.9 }) {
     this.ctx = canvas.getContext("2d")!;
-    for (const src of [...GROUNDS, "/art/lakefeat.png", "/art/hillfeat.png", "/art/capital.png", "/art/walkers.png", "/art/smoke.png", "/art/fog.png", ...Object.values(PLATES).map((p) => p.img)]) {
+    for (const src of ["/art/world.png", "/art/capital.png", "/art/walkers.png", "/art/smoke.png", "/art/fog.png", ...Object.values(PLATES).map((p) => p.img)]) {
       const im = new Image(); im.src = src; this.img.set(src, im);
     }
     this.resize();
@@ -112,39 +105,14 @@ export class Chart {
     ctx.imageSmoothingEnabled = false;
     ctx.fillStyle = "#1e2a1c"; ctx.fillRect(0, 0, this.w, this.h);
 
-    // open world: seamless ground tiled to infinity, then landscape features
-    {
-      const tl = this.toWorld(0, 0), br = this.toWorld(this.w, this.h);
-      const gz = GROUND * z;
-      for (let gx = Math.floor(tl.x / GROUND); gx <= Math.floor(br.x / GROUND); gx++)
-        for (let gy = Math.floor(tl.y / GROUND); gy <= Math.floor(br.y / GROUND); gy++) {
-          // biome from low-frequency noise: forest far out, wood in between, meadow near the roads
-          const n = hash01(`b${gx},${gy}`);
-          const src = n < 0.4 ? GROUNDS[0]! : n < 0.75 ? GROUNDS[1]! : GROUNDS[2]!;
-          const ground = this.im(src); if (!ground) continue;
-          const p = this.toScreen(gx * GROUND, gy * GROUND);
-          ctx.drawImage(ground, p.x, p.y, gz + 1, gz + 1);
-        }
-    }
-    for (const f of FEATURES) {
-      const im = this.im(f.img); if (!im) continue;
-      const p = this.toScreen(f.x - f.w / 2, f.y - f.w / 2);
-      if (p.x > this.w || p.y > this.h || p.x + f.w * z < 0 || p.y + f.w * z < 0) continue;
-      ctx.drawImage(im, p.x, p.y, f.w * z, f.w * z);
-    }
-    // roads: capital → every observed settlement (declared connection), drawn as dirt
-    for (const s of scene.settlements) {
-      if (s.epistemic !== "observed") continue;
-      const a = this.toScreen(CAPITAL.x, CAPITAL.y + CAPITAL.r * 0.55), b = this.toScreen(s.ground.x, s.ground.y + s.radius * 0.3);
-      const mx = (a.x + b.x) / 2 + (b.y - a.y) * 0.18, my = (a.y + b.y) / 2 - (b.x - a.x) * 0.18;
-      ctx.lineCap = "round";
-      ctx.strokeStyle = "#6b4a2b"; ctx.lineWidth = Math.max(3, 9 * z);
-      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.quadraticCurveTo(mx, my, b.x, b.y); ctx.stroke();
-      ctx.strokeStyle = "#a8865a"; ctx.lineWidth = Math.max(2, 6 * z);
-      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.quadraticCurveTo(mx, my, b.x, b.y); ctx.stroke();
-    }
-    // plates are always drawn in the open world (they ARE the places)
-    {
+    // one painted world. The map has an edge; beyond it is nothing.
+    const world = this.im("/art/world.png");
+    const o = this.toScreen(0, 0);
+    if (world) ctx.drawImage(world, o.x, o.y, WORLD_W * z, WORLD_H * z);
+    const plateAlpha = Math.max(0, Math.min(1, (z - 1.5) / (SETTLEMENT_ZOOM - 1.5)));
+    const now = (performance.now() - this.t0) / 1000;
+    if (plateAlpha > 0) {
+      ctx.globalAlpha = plateAlpha;
       const cap = this.im("/art/capital.png");
       if (cap) { const w = CAPITAL.r * 2.3; const a = this.toScreen(CAPITAL.x - w / 2, CAPITAL.y - w / 2); ctx.drawImage(cap, a.x, a.y, w * z, w * z); }
       for (const s of scene.settlements) {
@@ -152,21 +120,15 @@ export class Chart {
         const r = plateRect(s); const im = this.im(r.p.img); if (!im) continue;
         const a = this.toScreen(r.x, r.y); ctx.drawImage(im, a.x, a.y, r.w * z, r.h * z);
       }
+      ctx.globalAlpha = 1;
     }
-
-    const plateAlpha = Math.max(0, Math.min(1, (z - 1.3) / (SETTLEMENT_ZOOM - 1.3)));
-    const now = (performance.now() - this.t0) / 1000;
 
     // truth layer per settlement
     for (const s of scene.settlements) {
       const c = this.toScreen(s.ground.x, s.ground.y);
       const R = s.radius * z;
-      this.hits.push({ kind: "settlement", settlementId: s.civilizationId, label: s.name, sub: s.epistemic === "observed" ? s.domain : "never observed", x: c.x, y: c.y, r: R });
-      if (s.epistemic !== "observed") {
-        const r = plateRect(s); const im = this.im(r.p.img);
-        if (im) { const a = this.toScreen(r.x, r.y); ctx.globalAlpha = 0.35; ctx.filter = "grayscale(0.7)"; ctx.drawImage(im, a.x, a.y, r.w * z, r.h * z); ctx.filter = "none"; ctx.globalAlpha = 1; }
-        this.fog(s, now); continue;
-      }
+      this.hits.push({ kind: "settlement", settlementId: s.civilizationId, label: s.name, sub: s.epistemic === "observed" ? s.domain : "aldri observert", x: c.x, y: c.y, r: R });
+      if (s.epistemic !== "observed") { this.fog(s, now); continue; }
 
       const r = plateRect(s);
       const seat = plateLocalToWorld(s, r.p.seat);
@@ -180,7 +142,7 @@ export class Chart {
         const w = plateLocalToWorld(s, { x: slot.x + 0.03, y: slot.y - 0.06 });
         this.smoke(this.toScreen(w.x, w.y), z, now + i);
         const sc = this.toScreen(w.x, w.y + r.h * 0.05);
-        this.hits.push({ kind: "inhabitant", settlementId: s.civilizationId, runId: b.runId!, label: s.inhabitants.find((x) => x.runId === b.runId)?.label ?? "work", sub: "running now", x: sc.x, y: sc.y, r: Math.max(14, r.w * 0.06 * z) });
+        this.hits.push({ kind: "inhabitant", settlementId: s.civilizationId, runId: b.runId!, label: s.inhabitants.find((x) => x.runId === b.runId)?.label ?? "arbeid", sub: "kjører nå", x: sc.x, y: sc.y, r: Math.max(14, r.w * 0.06 * z) });
       });
 
       // walkers
@@ -191,12 +153,12 @@ export class Chart {
         const p = this.toScreen(wx, wy);
         const dx = (b.x - a.x) * wk.dir, dy = (b.y - a.y) * wk.dir;
         this.walker(p, z, dx, dy, wk.depth, now + hash01(wk.runId) * 3);
-        this.hits.push({ kind: "inhabitant", settlementId: s.civilizationId, runId: wk.runId, label: wk.label, sub: "running now", x: p.x, y: p.y, r: Math.max(14, 10 * z) });
+        this.hits.push({ kind: "inhabitant", settlementId: s.civilizationId, runId: wk.runId, label: wk.label, sub: "kjører nå", x: p.x, y: p.y, r: Math.max(14, 10 * z) });
       }
 
       // pennants for council matters, above the seat
       if (s.openMatters > 0) this.pennants(sp, z, s.openMatters);
-      this.hits.push({ kind: "seat", settlementId: s.civilizationId, label: s.seatName, sub: `${s.name} · ${s.openMatters} open at the council`, x: sp.x, y: sp.y + 10 * z, r: Math.max(18, r.w * 0.12 * z) });
+      this.hits.push({ kind: "seat", settlementId: s.civilizationId, label: s.seatName, sub: `${s.name} · ${s.openMatters} åpne for rådet`, x: sp.x, y: sp.y + 10 * z, r: Math.max(18, r.w * 0.12 * z) });
 
       // name at world level
       if (plateAlpha < 1) this.label(c.x, c.y + R * 0.8, s.name, 1 - plateAlpha);
@@ -205,7 +167,7 @@ export class Chart {
     // capital
     {
       const c = this.toScreen(CAPITAL.x, CAPITAL.y);
-      this.hits.push({ kind: "capital", label: "Capital", sub: `${scene.capital.matters.length} matters before the council`, x: c.x, y: c.y, r: CAPITAL.r * 0.7 * z });
+      this.hits.push({ kind: "capital", label: "Capital", sub: `${scene.capital.matters.length} saker for rådet`, x: c.x, y: c.y, r: CAPITAL.r * 0.7 * z });
       if (scene.capital.matters.length > 0) this.pennants({ x: c.x, y: c.y - CAPITAL.r * 0.45 * z }, z, scene.capital.matters.length);
       if (plateAlpha < 1) this.label(c.x, c.y - CAPITAL.r * 0.75 * z, "Capital", 1 - plateAlpha);
     }
@@ -219,7 +181,7 @@ export class Chart {
       ctx.fillStyle = "#f3e7c8"; ctx.fillRect(x - sz, y - sz * 0.7, sz * 2, sz * 1.4);
       ctx.fillStyle = "#6b4a2b"; ctx.fillRect(x - sz, y - sz * 0.7, sz * 2, 2); ctx.fillRect(x - sz, y + sz * 0.7 - 2, sz * 2, 2); ctx.fillRect(x - sz, y - sz * 0.7, 2, sz * 1.4); ctx.fillRect(x + sz - 2, y - sz * 0.7, 2, sz * 1.4);
       ctx.fillStyle = "#b8342a"; ctx.fillRect(x - 2, y - 2, 5, 5);
-      this.hits.push({ kind: "letter", petitionId: l.petitionId, settlementId: s.civilizationId, label: `petition · ${l.state}`, sub: l.text, x, y, r: sz * 1.5 });
+      this.hits.push({ kind: "letter", petitionId: l.petitionId, settlementId: s.civilizationId, label: `petisjon · ${l.state}`, sub: l.text, x, y, r: sz * 1.5 });
     }
   }
 
@@ -241,14 +203,18 @@ export class Chart {
     this.ctx.globalAlpha = 0.95; this.ctx.drawImage(fog, a.x, a.y, r * 3.4 * z, r * 2.3 * z);
     this.ctx.globalAlpha = 0.7; this.ctx.drawImage(fog, b.x, b.y, r * 2.6 * z, r * 1.7 * z);
     this.ctx.globalAlpha = 1;
-    this.label(this.toScreen(s.ground.x, s.ground.y).x, this.toScreen(s.ground.x, s.ground.y).y, `${s.name} · never observed`, 1);
+    this.label(this.toScreen(s.ground.x, s.ground.y).x, this.toScreen(s.ground.x, s.ground.y).y, `${s.name} · aldri observert`, 1);
   }
 
   private smoke(p: P, z: number, t: number) {
     const im = this.im("/art/smoke.png"); if (!im) return;
-    const f = Math.floor((t * 4) % 6); const sw = 100, sh = 270, sx = 15 + f * 102;
-    const s = Math.max(0.2, 0.16 * z);
-    this.ctx.drawImage(im, sx, 8, sw, sh, p.x - sw * s * 0.5, p.y - sh * s, sw * s, sh * s);
+    // frames 0-2 only (3-5 are sparkle residue); the puff rises and thins
+    const f = Math.floor((t * 2.5) % 3); const sw = 90, sh = 150, sx = 10 + f * 107, sy = 55;
+    const s = Math.max(0.22, 0.2 * z);
+    const rise = ((t * 0.6) % 1) * 12 * z;
+    this.ctx.globalAlpha = 0.85 - f * 0.2;
+    this.ctx.drawImage(im, sx, sy, sw, sh, p.x - sw * s * 0.5, p.y - sh * s - rise, sw * s, sh * s);
+    this.ctx.globalAlpha = 1;
   }
 
   private walker(p: P, z: number, dx: number, dy: number, depth: number, t: number) {

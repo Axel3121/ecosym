@@ -20,7 +20,7 @@ export const fixture: Observations = {
         alone: ["read watchlist and settings", "score listings", "write reports"],
         council: ["spend money", "contact a seller", "widen the taxonomy"],
       },
-      ground: { x: -1250, y: -650 },
+      ground: { x: 230, y: 220 },
     },
     {
       id: "midgard",
@@ -32,7 +32,7 @@ export const fixture: Observations = {
         alone: ["read the repository", "run tests", "commit on a branch"],
         council: ["merge to main", "publish", "found a civilization"],
       },
-      ground: { x: 1150, y: -900 },
+      ground: { x: 1160, y: 150 },
     },
     {
       id: "edo",
@@ -44,7 +44,7 @@ export const fixture: Observations = {
         alone: ["draft scripts", "render", "schedule"],
         council: ["publish", "delete a live post", "change channel strategy"],
       },
-      ground: { x: 1450, y: 700 },
+      ground: { x: 1260, y: 560 },
     },
     {
       id: "thule",
@@ -52,7 +52,7 @@ export const fixture: Observations = {
       domain: "jarvis — voice",
       seatName: "Moot",
       mandate: { alone: ["listen", "transcribe"], council: ["speak on my behalf"] },
-      ground: { x: -1000, y: 1000 },
+      ground: { x: 280, y: 760 },
     },
   ],
   lastSeen: {

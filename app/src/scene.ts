@@ -152,7 +152,7 @@ export interface Scene {
 
 // ---- derivation ------------------------------------------------------------
 
-const CAPITAL_GROUND = { x: 0, y: 0 };
+const CAPITAL_GROUND = { x: 760, y: 460 };
 
 const PROGRESS: Record<PetitionState, number> = {
   sent: 0.15,
@@ -254,7 +254,7 @@ export function deriveScene(obs: Observations): Scene {
       .filter((t) => t.freshness > 0);
 
     const volume = roots.length + traces.length * 0.5;
-    const radius = epistemic === "observed" ? 190 + Math.min(volume, 8) * 12 : 190;
+    const radius = epistemic === "observed" ? 140 + Math.min(volume, 8) * 8 : 140;
 
     const s: Settlement = {
       civilizationId: civ.id,

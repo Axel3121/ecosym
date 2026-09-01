@@ -31,7 +31,7 @@ type Voice = {
 const VOICES: Record<string, Voice> = {
   Curia: {
     hello: (_s, f) => `Curia. ${f}. Si hva du vil, jeg har ting å gjøre.`,
-    status: (f) => `${f}. Neste.`,
+    status: (f) => `Akkurat nå: ${f}. Neste.`,
     why: (f) => `Hvorfor? Jeg fører protokoll, ikke motiver. Det som er ført: ${f}. Vil du ha mer, spør runtimen — den er ikke koblet.`,
     mandate: (a, c) => `Uten deg: ${a}. Med rådet: ${c}. Ikke be meg om det siste.`,
     inside: (o) => `Innenfor. Forseglet: «${o}». Kom tilbake når det er observert, ikke før.`,
@@ -40,7 +40,7 @@ const VOICES: Record<string, Voice> = {
   },
   Ting: {
     hello: (_s, f) => `Tinget er satt. ${f}. Tal.`,
-    status: (f) => `Det er sett: ${f}. Mer er ikke sett.`,
+    status: (f) => `Nå: ${f}. Mer er ikke sett.`,
     why: (f) => `Hvorfor er ikke sett. Det som er sett: ${f}.`,
     mandate: (a, c) => `Loven: alene ${a}. For rådet: ${c}.`,
     inside: (o) => `Innenfor loven. Forseglet: «${o}». Utfallet blir sett når det blir sett.`,
@@ -49,7 +49,7 @@ const VOICES: Record<string, Voice> = {
   },
   Bakufu: {
     hello: (s, f) => `Vær hilset. Bakufu i ${s.name} ber om unnskyldning for ventetiden. ${f}. Hva kan vi gjøre for Dem?`,
-    status: (f) => `Med respekt: ${f}. Høsten er stille hos oss.`,
+    status: (f) => `Med respekt — for øyeblikket ${f}.`,
     why: (f) => `Beklageligvis vet vi kun hva som er iakttatt, ikke hvorfor. Iakttatt: ${f}.`,
     mandate: (a, c) => `Vårt embete tillater: ${a}. Med rådets velsignelse: ${c}.`,
     inside: (o) => `Det skal gjøres. Forseglet: «${o}». De vil bli underrettet når det er iakttatt.`,
@@ -78,6 +78,14 @@ const AGENT_DEFAULT = { hello: ["{label}. Her så lenge det varer.", "Jobber med
 
 function fill(t: string, a: Inhabitant, s: Settlement) { return t.replace("{label}", a.label).replace("{seat}", s.seatName); }
 function voiceOf(s: Settlement) { return VOICES[s.seatName] ?? DEFAULT_VOICE; }
+function newest(scene: Scene, s: Settlement) {
+  const live = s.inhabitants.filter((i) => i.depth === 0);
+  const kids = s.inhabitants.filter((i) => i.depth > 0);
+  if (!live.length) return s.traces.length ? `siste spor: «${s.traces[0]!.label}». Ingen i arbeid nå` : "ingenting — ingen i arbeid, ingen spor";
+  const root = live[0]!;
+  const under = kids.filter((k) => k.parentRunId === root.runId);
+  return `«${root.label}»${root.tool ? ` (${root.tool})` : ""}${under.length ? `, som har satt ut ${under.map((k) => `«${k.label}»`).join(" og ")}` : ""}${live.length > 1 ? `; i tillegg ${live.slice(1).map((r) => `«${r.label}»`).join(", ")}` : ""}`;
+}
 function statusFacts(scene: Scene, s: Settlement) {
   const now = s.inhabitants.length ? `i arbeid: ${s.inhabitants.map((i) => `«${i.label}»${i.depth ? " (delegert)" : ""}`).join(", ")}` : "ingen i arbeid";
   const done = s.traces.length ? `nylig ferdig: ${s.traces.map((tr) => `«${tr.label}»`).join(", ")}` : "ingenting nylig ferdig";
@@ -127,7 +135,7 @@ export function reply(scene: Scene, t: Target, raw: string): Line[] {
   }
 
   const v = voiceOf(s);
-  if (has(q, "hva", "what", "driver", "jobber", "gjør dere", "status", "skjer", "hvordan")) return [{ who: "them", text: v.status(statusFacts(scene, s)) }];
+  if (has(q, "hva", "what", "driver", "jobber", "gjør dere", "status", "skjer", "hvordan")) return [{ who: "them", text: v.status(newest(scene, s)) }];
   if (has(q, "hvorfor", "why")) return [{ who: "them", text: v.why(statusFacts(scene, s)) }];
   if (has(q, "mandat", "kan du", "lov", "may", "allowed", "får du")) return [{ who: "them", text: v.mandate(s.mandate.alone.join(", "), s.mandate.council.join(", ")) }];
   if (has(q, "råd", "council", "sak")) {

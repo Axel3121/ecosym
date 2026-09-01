@@ -28,11 +28,11 @@ function renderDocket() {
       return `<li><span class="who">${s?.name ?? m.raisedBy}</span> — ${m.summary}<br><span class="when">${ago(m.raisedAt)}</span></li>`;
     })
     .join("");
-  d.innerHTML = `<h2>Concilium</h2><ol>${items || '<li class="when">nothing before the council</li>'}</ol>`;
+  d.innerHTML = `<h2>Rådet</h2><ol>${items || '<li class="when">ingenting for rådet</li>'}</ol>`;
 }
 function ago(iso: string) {
   const m = Math.round((Date.parse(scene.observedAt) - Date.parse(iso)) / 60000);
-  return m < 1 ? "just now" : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`;
+  return m < 1 ? "nå nettopp" : m < 60 ? `${m} min siden` : `${Math.round(m / 60)} t siden`;
 }
 
 // ---- camera -----------------------------------------------------------------
@@ -91,10 +91,10 @@ function select(h: Hit | null) {
   if (!h) { sheet.hidden = true; return; }
   const s = h.settlementId ? scene.settlements.find((x) => x.civilizationId === h.settlementId) : undefined;
   if (h.kind === "settlement" && s) {
-    if (s.epistemic === "observed") flyTo(s.ground.x, s.ground.y - 40, Math.max(chart.camera.zoom, 1.9));
+    if (s.epistemic === "observed") flyTo(s.ground.x, s.ground.y - 30, Math.max(chart.camera.zoom, 2.4));
     else flyTo(s.ground.x, s.ground.y, Math.max(chart.camera.zoom, 1.2));
   }
-  if (h.kind === "capital") flyTo(0, 20, Math.max(chart.camera.zoom, 1.7));
+  if (h.kind === "capital") flyTo(760, 470, Math.max(chart.camera.zoom, 1.7));
   sheet.hidden = false;
   sheet.innerHTML = sheetFor(h);
   sheet.querySelector<HTMLButtonElement>(".close")?.addEventListener("click", () => select(null));
@@ -114,23 +114,23 @@ function select(h: Hit | null) {
 
 function sheetFor(h: Hit): string {
   const close = `<button class="close" aria-label="close">✕</button>`;
-  const syn = scene.synthetic ? `<p class="synthetic-note">synthetic — nothing on this sheet was observed</p>` : "";
+  const syn = scene.synthetic ? `<p class="synthetic-note">syntetisk — ingenting på dette arket er observert</p>` : "";
   const s = h.settlementId ? scene.settlements.find((x) => x.civilizationId === h.settlementId) : undefined;
   switch (h.kind) {
     case "capital": {
-      const halls = scene.capital.halls.map((x) => `<li data-go="${x.civilizationId}"><span>${x.name} <span class="seatname">${x.seatName}</span></span><span>${x.epistemic === "observed" ? `${x.live ? "at work" : "quiet"} · <span class="seal">${x.openMatters}</span>` : `<span class="bare">non observatum</span>`}</span></li>`).join("");
-      return `${close}<p class="kind">the world's headquarters</p><h2>Capital</h2><h3>Halls</h3><ul class="halls">${halls}</ul><h3>Before the council</h3><ul>${scene.capital.matters.map((m) => `<li>${m.summary} <span class="muted">${ago(m.raisedAt)}</span></li>`).join("")}</ul><p class="muted">Detail lives where the work lives. Click a hall to go there.</p><button class="talk" data-talk="council">Gå inn i rådskammeret</button>${syn}`;
+      const halls = scene.capital.halls.map((x) => `<li data-go="${x.civilizationId}"><span>${x.name} <span class="seatname">${x.seatName}</span></span><span>${x.epistemic === "observed" ? `${x.live ? "i arbeid" : "stille"} · <span class="seal">${x.openMatters}</span>` : `<span class="bare">aldri observert</span>`}</span></li>`).join("");
+      return `${close}<p class="kind">verdens hovedkvarter</p><h2>Capital</h2><h3>Haller</h3><ul class="halls">${halls}</ul><h3>For rådet</h3><ul>${scene.capital.matters.map((m) => `<li>${m.summary} <span class="muted">${ago(m.raisedAt)}</span></li>`).join("")}</ul><p class="muted">Detaljene bor der arbeidet bor. Klikk en hall for å dra dit.</p><button class="talk" data-talk="council">Gå inn i rådskammeret</button>${syn}`;
     }
     case "settlement": {
       if (!s) return close;
-      if (s.epistemic !== "observed") return `${close}<p class="kind">civilization</p><h2>${s.name}</h2><p class="muted">non observatum. Ecosym has never seen this place; nothing is drawn because nothing is known.</p>${syn}`;
-      return `${close}<p class="kind">civilization · ${s.domain}</p><h2>${s.name}</h2><p>last seen <span class="muted">${ago(s.lastSeen!)}</span> · ${s.inhabitants.length} at work · ${s.traces.length} recent traces</p><h3>Seat</h3><p class="muted">${s.seatName}</p><button class="talk" data-talk="seat">Snakk med ${s.seatName}</button><h3>Working now</h3><ul>${s.inhabitants.map((i) => `<li>${"— ".repeat(i.depth)}${i.label}${i.tool ? ` <span class="muted">(${i.tool})</span>` : ""}</li>`).join("") || '<li class="muted">nobody</li>'}</ul>${syn}`;
+      if (s.epistemic !== "observed") return `${close}<p class="kind">sivilisasjon</p><h2>${s.name}</h2><p class="muted">Aldri observert. Ecosym har ikke sett dette stedet; ingenting tegnes fordi ingenting er kjent.</p>${syn}`;
+      return `${close}<p class="kind">sivilisasjon · ${s.domain}</p><h2>${s.name}</h2><p>sist sett <span class="muted">${ago(s.lastSeen!)}</span> · ${s.inhabitants.length} i arbeid · ${s.traces.length} spor</p><h3>Sete</h3><p class="muted">${s.seatName}</p><button class="talk" data-talk="seat">Snakk med ${s.seatName}</button><h3>I arbeid nå</h3><ul>${s.inhabitants.map((i) => `<li style="margin-left:${i.depth * 1.2}em">${i.label}${i.tool ? ` <span class="muted">(${i.tool})</span>` : ""}</li>`).join("") || '<li class="muted">ingen</li>'}</ul>${syn}`;
     }
     case "seat": {
       if (!s) return close;
       const matters = scene.capital.matters.filter((m) => m.raisedBy === s.civilizationId);
       const letters = scene.letters.filter((l) => l.toCivilizationId === s.civilizationId);
-      return `${close}<p class="kind">seat of ${s.name}</p><h2>${s.seatName}</h2><h3>May do alone</h3><ul>${s.mandate.alone.map((m) => `<li>${m}</li>`).join("")}</ul><h3>Must go to the council</h3><ul>${s.mandate.council.map((m) => `<li>${m}</li>`).join("")}</ul><h3>Raised at the council</h3><ul>${matters.map((m) => `<li><span class="seal">●</span> ${m.summary}</li>`).join("") || '<li class="muted">nothing open</li>'}</ul><h3>Petitions to this seat</h3><ul>${letters.map((l) => `<li>${l.text} <span class="muted">— ${l.state}</span></li>`).join("") || '<li class="muted">none</li>'}</ul><button class="talk" data-talk="seat">Snakk med ${s.seatName}</button>${syn}`;
+      return `${close}<p class="kind">setet i ${s.name}</p><h2>${s.seatName}</h2><h3>Kan alene</h3><ul>${s.mandate.alone.map((m) => `<li>${m}</li>`).join("")}</ul><h3>Må til rådet</h3><ul>${s.mandate.council.map((m) => `<li>${m}</li>`).join("")}</ul><h3>Reist for rådet</h3><ul>${matters.map((m) => `<li><span class="seal">●</span> ${m.summary}</li>`).join("") || '<li class="muted">ingenting åpent</li>'}</ul><h3>Petisjoner hit</h3><ul>${letters.map((l) => `<li>${l.text} <span class="muted">— ${l.state}</span></li>`).join("") || '<li class="muted">ingen</li>'}</ul><button class="talk" data-talk="seat">Snakk med ${s.seatName}</button>${syn}`;
     }
     case "inhabitant": {
       if (!s) return close;
@@ -138,13 +138,13 @@ function sheetFor(h: Hit): string {
       const tr = s.traces.find((t) => t.runId === h.runId);
       if (inh) {
         const children = s.inhabitants.filter((c) => c.parentRunId === inh.runId);
-        return `${close}<p class="kind">transient inhabitant · running now</p><h2>${inh.label}</h2><ul><li>tool: ${inh.tool ?? "—"}</li><li>depth: ${inh.depth}${inh.parentRunId ? ` (under ${s.inhabitants.find((p) => p.runId === inh.parentRunId)?.label ?? inh.parentRunId})` : ""}</li></ul>${children.length ? `<h3>Delegated</h3><ul>${children.map((c) => `<li>${c.label}</li>`).join("")}</ul>` : ""}<p class="muted">Leaves when the work leaves. No standing office.</p><button class="talk" data-talk="agent" data-run="${inh.runId}">Snakk med den</button>${syn}`;
+        return `${close}<p class="kind">forbipasserende arbeid · kjører nå</p><h2>${inh.label}</h2><ul><li>verktøy: ${inh.tool ?? "—"}</li><li>dybde: ${inh.depth}${inh.parentRunId ? ` (under ${s.inhabitants.find((p) => p.runId === inh.parentRunId)?.label ?? inh.parentRunId})` : ""}</li></ul>${children.length ? `<h3>Har delegert</h3><ul>${children.map((c) => `<li>${c.label}</li>`).join("")}</ul>` : ""}<p class="muted">Forsvinner når arbeidet gjør det. Intet fast embete.</p><button class="talk" data-talk="agent" data-run="${inh.runId}">Snakk med den</button>${syn}`;
       }
-      return `${close}<p class="kind">trace</p><h2>${h.label}</h2><p class="muted">Finished work. Fades over the retention window${tr ? ` (${Math.round(tr.freshness * 100)}% left)` : ""}.</p>${syn}`;
+      return `${close}<p class="kind">spor</p><h2>${h.label}</h2><p class="muted">Ferdig arbeid. Blekner over oppbevaringsvinduet${tr ? ` (${Math.round(tr.freshness * 100)}% igjen)` : ""}.</p>${syn}`;
     }
     case "letter": {
       const l = scene.letters.find((x) => x.petitionId === h.petitionId)!;
-      return `${close}<p class="kind">petition · ${l.state}</p><h2>${l.text}</h2><p>sent ${ago(l.sentAt)} to ${s?.seatName ?? l.toCivilizationId}</p><p class="muted">A thing that was asked. It is never depicted as a thing that happened.</p>${syn}`;
+      return `${close}<p class="kind">petisjon · ${l.state}</p><h2>${l.text}</h2><p>sendt ${ago(l.sentAt)} til ${s?.seatName ?? l.toCivilizationId}</p><p class="muted">Noe som ble bedt om. Vises aldri som noe som skjedde.</p>${syn}`;
     }
   }
 }
@@ -171,7 +171,7 @@ function focus(t: Target) {
     $("focus-name").textContent = "Rådet"; $("focus-kind").textContent = "Capital · verdens hovedkvarter";
     portrait.style.backgroundImage = `url(/art/capital.png)`; portrait.style.backgroundPosition = "50% 30%";
     $("focus-facts").innerHTML = `<b>Saker</b>${scene.capital.matters.map((m) => `${m.summary}<br>`).join("") || "ingen"}<b>Haller</b>${scene.capital.halls.map((h) => `${h.name} · ${h.epistemic === "observed" ? (h.live ? "i arbeid" : "stille") : "aldri sett"}<br>`).join("")}`;
-    flyTo(0, 20, 1.9);
+    flyTo(760, 470, 2.2);
   } else {
     const s = t.settlement; const plate = PLATES[PLATE_OF[s.civilizationId] ?? "lake"]!;
     if (t.kind === "seat") {
@@ -184,7 +184,7 @@ function focus(t: Target) {
       portrait.className = "portrait agent"; portrait.style.backgroundImage = `url(/art/walkers.png)`; portrait.style.backgroundPosition = a.depth === 0 ? "8% 6%" : "8% 98%";
       $("focus-facts").innerHTML = `<b>Verktøy</b>${a.tool ?? "—"}<b>Under</b>${a.parentRunId ? s.inhabitants.find((p) => p.runId === a.parentRunId)?.label ?? a.parentRunId : "ingen (rot)"}<b>Har delegert</b>${s.inhabitants.filter((c) => c.parentRunId === a.runId).map((c) => c.label).join("<br>") || "ingenting"}`;
     }
-    flyTo(s.ground.x, s.ground.y - 40, 2.1);
+    flyTo(s.ground.x, s.ground.y - 30, 2.4);
   }
   push(opening(scene, t));
   setTimeout(() => input.focus(), 50);
@@ -201,6 +201,7 @@ $("focus-form").addEventListener("submit", (e) => {
 });
 window.addEventListener("keydown", (e) => { if (e.key === "Escape" && current) unfocus(); });
 
+const chart_w = () => canvas.clientWidth, chart_h = () => canvas.clientHeight;
 // ---- loop -------------------------------------------------------------------
 let prev = performance.now();
 function frame(now: number) {
@@ -212,9 +213,13 @@ function frame(now: number) {
     chart.camera.zoom += (target.zoom - chart.camera.zoom) * k;
     if (Math.abs(target.zoom - chart.camera.zoom) < 0.002 && Math.abs(target.x - chart.camera.x) < 0.3 && Math.abs(target.y - chart.camera.y) < 0.3) { chart.camera = { ...target }; flying = false; }
   }
+  // the world has an edge: keep the camera on the map
+  { const hw = chart_w() / 2 / chart.camera.zoom, hh = chart_h() / 2 / chart.camera.zoom;
+    chart.camera.x = Math.min(Math.max(chart.camera.x, Math.min(hw, 768)), Math.max(1536 - hw, 768));
+    chart.camera.y = Math.min(Math.max(chart.camera.y, Math.min(hh, 512)), Math.max(1024 - hh, 512)); }
   stepWalkers(walkers, dt, reduced);
   chart.draw(scene, walkers, selected);
-  $("hint").textContent = chart.camera.zoom >= SETTLEMENT_ZOOM ? "scroll out to the chart · click a person or the seat · Esc closes" : "scroll to descend · click a place · drag to pan";
+  $("hint").textContent = chart.camera.zoom >= SETTLEMENT_ZOOM ? "scroll ut til kartet · klikk en person eller setet · Esc lukker" : "scroll for å gå ned · klikk et sted · dra for å panorere";
   requestAnimationFrame(frame);
 }
 renderDocket();
