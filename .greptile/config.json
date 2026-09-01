@@ -1,0 +1,38 @@
+{
+  "strictness": 3,
+  "commentTypes": [
+    "logic",
+    "syntax"
+  ],
+  "ignorePatterns": [
+    "docs/tasks/**",
+    "*.md",
+    ".gitattributes",
+    ".nvmrc",
+    "package-lock.json"
+  ],
+  "customContext": {
+    "files": [
+      {
+        "path": "PRODUCT.md"
+      },
+      {
+        "path": "ARCHITECTURE.md"
+      },
+      {
+        "path": "SECURITY.md"
+      },
+      {
+        "path": "DEVELOPMENT.md"
+      }
+    ],
+    "requirements": [
+      "The store must never report a fact the source did not express. Reject rather than transform; unknown must stay unknown rather than becoming a quiet default.",
+      "Stored identity, ordering keys and timestamps are evidence. A change to how they are derived must not rewrite what is already stored.",
+      "A rule that exists only as prose in a document is not enforced. Prefer a check, a test, or an OS boundary."
+    ]
+  },
+  "labels": [
+    "greptile"
+  ]
+}
