@@ -337,6 +337,34 @@ test("a recorded result outranks the branch it was made on", () => {
     assert.ok(keptRow !== undefined, ambiguous.stdout);
     assert.match(keptRow, /unproven/);
     assert.doesNotMatch(keptRow, /!!/);
+
+    // A commit that was named but that Git cannot find is a broken claim,
+    // not a missing one — it must not borrow a living branch's standing.
+    git(repository, ["branch", "task/alive", "main"]);
+    git(repository, ["checkout", "task/alive"]);
+    writeFileSync(join(repository, "file.txt"), "three\n");
+    git(repository, ["add", "."]);
+    commit(repository, "work on a living branch");
+    git(repository, ["checkout", "main"]);
+
+    ledger(["start", "typo-run", "unit-typo", "--branch", "task/alive"]);
+    ledger([
+      "close",
+      "unit-typo",
+      "--outcome",
+      "landed",
+      "--commit",
+      "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      "--evidence",
+      "PR #7",
+    ]);
+
+    const typo = ledger(["list"]);
+    const typoRow = typo.stdout.split("\n").find((line) => line.startsWith("unit-typo"));
+    assert.ok(typoRow !== undefined, typo.stdout);
+    assert.match(typoRow, /no-such-commit/);
+    assert.match(typoRow, /!!/);
+    assert.equal(typo.status, 1, "an unresolvable result commit must fail the command");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
