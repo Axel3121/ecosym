@@ -537,6 +537,288 @@ test("a collided unit name keeps its task and its timestamp", () => {
   }
 });
 
+test("a closed landed run is not hidden as RUNNING while its unit lingers", () => {
+  // A run's systemd unit can stay "active" for a while after `close` runs —
+  // the process is finishing up, or nothing has stopped it yet. Before the
+  // fix, `unit_active` was checked ahead of the closed-event branch, so a
+  // landed run whose unit was still active displayed as RUNNING instead of
+  // `landed`, and `disputed` — which only fires on the `landed` state — never
+  // got a chance to look at the (wrong) result commit. `list` exited 0 on a
+  // false claim it never actually examined.
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-ledger-running-"));
+  const repository = join(directory, "repository");
+  const scripts = join(repository, "scripts");
+  const dataHome = join(directory, "data");
+  const bin = join(directory, "bin");
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(bin);
+  copyFileSync(runLedger, join(scripts, "run-ledger"));
+  chmodSync(join(scripts, "run-ledger"), 0o700);
+
+  // A fake systemctl that always reports the unit active, standing in for a
+  // real run whose transient unit has not yet been reaped by systemd.
+  writeFileSync(
+    join(bin, "systemctl"),
+    '#!/bin/sh\nif [ "$1" = "--user" ] && [ "$2" = "is-active" ]; then echo active; exit 0; fi\nexit 1\n',
+    { mode: 0o700 },
+  );
+
+  const environment = {
+    ...process.env,
+    PATH: `${bin}:${process.env.PATH ?? ""}`,
+    XDG_DATA_HOME: dataHome,
+  };
+  const ledger = (arguments_: string[]) =>
+    spawnSync(join(scripts, "run-ledger"), arguments_, {
+      cwd: repository,
+      encoding: "utf8",
+      env: environment,
+    });
+
+  try {
+    git(repository, ["init", "-b", "main"]);
+    writeFileSync(join(repository, "file.txt"), "one\n");
+    git(repository, ["add", "."]);
+    commit(repository, "first");
+
+    assert.equal(ledger(["start", "demo", "unit-still-active"]).status, 0);
+    // A result commit Git cannot find at all — an unambiguous false claim,
+    // regardless of what state the ledger displays it under.
+    assert.equal(
+      ledger([
+        "close",
+        "unit-still-active",
+        "--outcome",
+        "landed",
+        "--commit",
+        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        "--evidence",
+        "merged",
+      ]).status,
+      0,
+    );
+
+    const listed = ledger(["list"]);
+    assert.doesNotMatch(
+      listed.stdout,
+      /RUNNING/,
+      "a closed run must report its outcome, not RUNNING, even while its unit lingers",
+    );
+    assert.match(listed.stdout, /landed/);
+    assert.match(listed.stdout, /!!/, "the false claim must still be disputed");
+    assert.equal(listed.status, 1, "list must fail on a landed claim Git cannot find");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a Git failure while checking a result commit is unproven, not no-such-commit", () => {
+  // resolves() distinguishes "Git confirmed the object is absent" (exit 1)
+  // from "Git could not answer the question at all" (any other non-zero
+  // code — 128 for a repository it can no longer read). Before the fix,
+  // both were collapsed into a bare truthiness check on git()'s output,
+  // which returns "" on ANY failure. A recorded commit could then be
+  // reported as `no-such-commit` and disputed purely because Git itself
+  // was broken, not because the claim was false.
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-ledger-gitfail-"));
+  const repository = join(directory, "repository");
+  const scripts = join(repository, "scripts");
+  const dataHome = join(directory, "data");
+  mkdirSync(scripts, { recursive: true });
+  copyFileSync(runLedger, join(scripts, "run-ledger"));
+  chmodSync(join(scripts, "run-ledger"), 0o700);
+
+  const ledger = (arguments_: string[]) =>
+    spawnSync(join(scripts, "run-ledger"), arguments_, {
+      cwd: repository,
+      encoding: "utf8",
+      env: { ...process.env, XDG_DATA_HOME: dataHome },
+    });
+
+  try {
+    git(repository, ["init", "-b", "main"]);
+    writeFileSync(join(repository, "file.txt"), "one\n");
+    git(repository, ["add", "."]);
+    commit(repository, "first");
+    const landed = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: repository,
+      encoding: "utf8",
+    }).stdout.trim();
+
+    assert.equal(ledger(["start", "demo", "unit-broken-git"]).status, 0);
+    assert.equal(
+      ledger([
+        "close",
+        "unit-broken-git",
+        "--outcome",
+        "landed",
+        "--commit",
+        landed,
+        "--evidence",
+        "merged",
+      ]).status,
+      0,
+    );
+
+    // Before corruption, the ledger can actually verify the commit.
+    const before = ledger(["list"]);
+    assert.match(before.stdout, /in-main/);
+    assert.doesNotMatch(before.stdout, /!!/);
+    assert.equal(before.status, 0);
+
+    // Break Git itself (not the commit): every git invocation from here on
+    // fails with exit 128, "not a git repository", the same way it does
+    // with a missing local main or a broken clone.
+    rmSync(join(repository, ".git", "HEAD"));
+
+    const after = ledger(["list"]);
+    assert.doesNotMatch(
+      after.stdout,
+      /no-such-commit/,
+      "a Git failure must not be read as a confirmed-absent commit",
+    );
+    assert.match(after.stdout, /unproven/, "an unanswerable question must read as unproven");
+    assert.doesNotMatch(after.stdout, /!!/);
+    assert.equal(after.status, 0, "a Git failure must not dispute a claim it could not check");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a launch reserves its unit name instead of hanging when it cannot", () => {
+  // Two launches racing on `[ -e log ]` then create is two steps, so both
+  // can find the log missing; `mkdir` is the atomic step meant to fix that.
+  // But the retry loop treated every mkdir failure as a same-second
+  // collision (EEXIST) and retried by appending 'b' forever. When $RUNS is
+  // unwritable for a real reason — permissions, a full disk — mkdir fails
+  // for that reason on every attempt too, and the old loop spun forever
+  // with no diagnostic instead of reporting the actual problem.
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-task-mkdirfail-"));
+  const repository = join(directory, "repository");
+  const scripts = join(repository, "scripts");
+  const tasks = join(repository, "docs", "tasks");
+  const dataHome = join(directory, "data");
+  const bin = join(directory, "bin");
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(tasks, { recursive: true });
+  mkdirSync(bin);
+  copyFileSync(runTask, join(scripts, "run-task"));
+  chmodSync(join(scripts, "run-task"), 0o700);
+  writeFileSync(join(scripts, "ecosym-sandbox"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  writeFileSync(join(scripts, "run-instruction.md"), "Test instruction\n");
+  writeFileSync(join(tasks, "example.md"), "# Test task\n");
+  writeFileSync(join(bin, "systemd-run"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+
+  try {
+    git(repository, ["init", "-b", "main"]);
+    git(repository, ["add", "."]);
+    commit(repository, "fixture");
+
+    // Make $RUNS exist but unwritable, standing in for a permissions
+    // problem or a full disk: every mkdir under it fails, and none of
+    // those failures are EEXIST.
+    const runs = join(dataHome, "ecosym", "runs");
+    mkdirSync(runs, { recursive: true });
+    chmodSync(runs, 0o500);
+
+    try {
+      const result = spawnSync(join(scripts, "run-task"), ["example"], {
+        cwd: repository,
+        encoding: "utf8",
+        timeout: 15_000,
+        env: {
+          ...process.env,
+          ECOSYM_PORT: "3213",
+          ECOSYM_PROJECT: "",
+          ECOSYM_WORKTREE: "",
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+          XDG_DATA_HOME: dataHome,
+        },
+      });
+
+      assert.notEqual(
+        result.signal,
+        "SIGTERM",
+        "run-task must not hang when it cannot reserve a unit name",
+      );
+      assert.notEqual(result.status, 0, "an unwritable run directory must fail the launch");
+      assert.match(result.stderr, /cannot reserve a unit name/);
+    } finally {
+      chmodSync(runs, 0o700);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("the watchdog starts after the run's own unit exists, not before", () => {
+  // run-watchdog's own loop is `while systemctl --user is-active --quiet
+  // "$UNIT"`. If the watchdog's systemd-run call happens before the run's
+  // systemd-run call, systemctl reports the run's unit inactive (or
+  // not-found) on the watchdog's very first check, the while body — the
+  // part that actually watches the log — never executes once, and the
+  // watchdog process exits immediately having monitored nothing. The run's
+  // own systemd-run call must come first, so the unit exists and is
+  // reported active by the time the watchdog's systemd-run call is made.
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-task-wdorder-"));
+  const repository = join(directory, "repository");
+  const scripts = join(repository, "scripts");
+  const tasks = join(repository, "docs", "tasks");
+  const dataHome = join(directory, "data");
+  const bin = join(directory, "bin");
+  const capture = join(directory, "systemd-arguments");
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(tasks, { recursive: true });
+  mkdirSync(bin);
+  copyFileSync(runTask, join(scripts, "run-task"));
+  chmodSync(join(scripts, "run-task"), 0o700);
+  writeFileSync(join(scripts, "ecosym-sandbox"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  writeFileSync(join(scripts, "run-instruction.md"), "Test instruction\n");
+  writeFileSync(join(tasks, "example.md"), "# Test task\n");
+  // Marks each systemd-run invocation with a line naming which unit it
+  // registers, in call order — that order is exactly what is under test.
+  writeFileSync(
+    join(bin, "systemd-run"),
+    '#!/bin/sh\nfor a in "$@"; do case "$a" in --unit=*) echo "unit-call:${a#--unit=}" >> "$SYSTEMD_CAPTURE";; esac; done\nexit 0\n',
+    { mode: 0o700 },
+  );
+
+  try {
+    git(repository, ["init", "-b", "main"]);
+    git(repository, ["add", "."]);
+    commit(repository, "fixture");
+
+    const result = spawnSync(join(scripts, "run-task"), ["example"], {
+      cwd: repository,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ECOSYM_PORT: "3214",
+        ECOSYM_PROJECT: "",
+        ECOSYM_WORKTREE: "",
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        SYSTEMD_CAPTURE: capture,
+        XDG_DATA_HOME: dataHome,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+
+    const calls = readFileSync(capture, "utf8")
+      .split("\n")
+      .filter((line) => line.trim() !== "");
+    const runIndex = calls.findIndex((line) => !line.includes("-watchdog"));
+    const watchdogIndex = calls.findIndex((line) => line.includes("-watchdog"));
+    assert.ok(runIndex !== -1, calls.join("\n"));
+    assert.ok(watchdogIndex !== -1, calls.join("\n"));
+    assert.ok(
+      runIndex < watchdogIndex,
+      `the run's own unit must be registered before its watchdog: ${calls.join(", ")}`,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("a task name that escapes the specification directory is refused", () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-run-task-name-"));
   const repository = join(directory, "repository");

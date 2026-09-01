@@ -144,7 +144,7 @@ def in_main(commit: str | None) -> bool | None:
     """
     if not commit:
         return None
-    if not git("rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"):
+    if resolves(commit) is not True:
         return None
     try:
         out = subprocess.run(
@@ -162,11 +162,32 @@ def in_main(commit: str | None) -> bool | None:
     return out.returncode == 0
 
 
-def resolves(commit: str | None) -> bool:
-    """Does Git know this commit at all?"""
+def resolves(commit: str | None) -> bool | None:
+    """Does Git know this commit at all? None when the question could not be asked.
+
+    `rev-parse --verify --quiet` exits 1 when the object is confirmed absent,
+    but any other non-zero code — 128 for no repository, a broken clone, a
+    timeout — means Git never actually looked. Collapsing both into False, as
+    a bare truthiness check on `git()`'s output did, made an environment that
+    could not check a commit indistinguishable from one that checked and it
+    was missing, and printed `no-such-commit` for a claim that was never
+    examined.
+    """
     if not commit:
         return False
-    return bool(git("rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"))
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root()), "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode == 0:
+        return True
+    if out.returncode == 1:
+        return False
+    return None
 
 
 def branch_carries_nothing(branch: str) -> bool | None:
@@ -204,8 +225,11 @@ def git_state(
     """
     # A commit that was named but that Git cannot find is a broken claim,
     # not a missing one. Falling through to the branch here would let a
-    # typo'd or truncated SHA borrow a healthy branch's standing.
-    if commit and not resolves(commit):
+    # typo'd or truncated SHA borrow a healthy branch's standing. Only a
+    # confirmed absence earns that label — `resolves` returning None means
+    # Git could not check at all, and that must read as `unproven`, not as
+    # proof the commit is missing.
+    if commit and resolves(commit) is False:
         return "no-such-commit"
 
     reachable = in_main(commit)
@@ -363,10 +387,15 @@ def cmd_list(args: argparse.Namespace) -> int:
         # or unproven, and can never soften or create a dispute.
         guessed = not last.get("branch") and branch is not None
 
-        if unit_active(unit):
-            state = "RUNNING"
-        elif last.get("event") == "closed":
+        # A close-out is the authoritative claim about a run's outcome. The
+        # unit can still show active for a while after `close` runs — the
+        # process is finishing up, or nothing has stopped it yet — and
+        # letting that override `landed` would hide a false claim behind
+        # `RUNNING`, where `disputed` never gets a chance to look at it.
+        if last.get("event") == "closed":
             state = last.get("outcome", "closed")
+        elif unit_active(unit):
+            state = "RUNNING"
         else:
             state = "OPEN"
 
