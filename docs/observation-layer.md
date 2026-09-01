@@ -94,11 +94,21 @@ For a version that remains ambiguous, `status` supplies its exact connection
 version. Run `resolve-record-index CONNECTION_ID CONNECTION_VERSION MODE` to
 preview a resolution. The preview changes nothing: it enumerates the exact
 affected fact IDs and collection-attempt IDs, states the consequence and
-recoverability, and returns a token bound to that inventory. Repeat the command with
-`--confirm TOKEN` to make the recorded choice. A resolution is refused while a collection for that version is running. If an
+recoverability, and issues a random, single-use confirmation token. The store
+records a hash of that token with the exact operation, inventory fingerprint,
+and issue time; `status`, `query`, and `verify` do not expose enough state to
+derive it. Every preview issues a different token. Repeat the command with
+`--confirm TOKEN` to make the recorded choice. A successful confirmation spends
+the token atomically with the choice, and a changed inventory refuses it as
+stale. Confirmations do not expire by elapsed time: this store has no operator
+session lifetime from which to derive a meaningful deadline, and time alone does
+not change the previewed consequence. They remain usable only while their exact
+subject state is unchanged and until they are spent. A resolution is refused
+while a collection for that version is running. If an
 operator has established that a marker is abandoned, `status` lists its exact
 `attemptId` under `collectionAttempts`. `retire-collection-attempt` requires a
-stable `ACTOR` identifier and a separate confirmation token. It is never
+stable `ACTOR` identifier and its own persisted preview and confirmation token.
+It is never
 automatic and does not use elapsed time. Confirmation changes only that attempt
 to the distinct `retired` outcome and appends a durable retirement record with
 the attempt, actor, time, connection version, and confirmation token. Retirement

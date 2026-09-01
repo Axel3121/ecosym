@@ -8,6 +8,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { parseConnectionConfig } from "../src/config.ts";
+import { canonicalJson, sha256 } from "../src/json.ts";
 import { materializeFacts } from "../src/materialize.ts";
 import { ObservationStore } from "../src/store.ts";
 
@@ -183,6 +184,7 @@ test("an ambiguous legacy record index can be resolved by a recorded user choice
   const downgraded = new DatabaseSync(join(stateDirectory, "observations.sqlite"));
   downgraded.exec(`
     DROP TABLE IF EXISTS record_index_mode_resolutions;
+    DROP TABLE IF EXISTS confirmation_previews;
     ALTER TABLE connection_versions DROP COLUMN jsonl_record_index_mode;
     PRAGMA user_version = 6;
   `);
@@ -219,6 +221,24 @@ test("an ambiguous legacy record index can be resolved by a recorded user choice
   assert.equal(typeof preview.output.recoverability, "string");
   const confirmationToken = preview.output.confirmationToken;
   assert.equal(typeof confirmationToken, "string");
+  const secondPreview = await runCli(
+    ["resolve-record-index", parsed.config.id, parsed.hash, "physical-line"],
+    xdgDataHome,
+  );
+  assert.notEqual(secondPreview.output.confirmationToken, confirmationToken);
+  const wrongChoice = await runCli(
+    [
+      "resolve-record-index",
+      parsed.config.id,
+      parsed.hash,
+      "record-ordinal",
+      "--confirm",
+      confirmationToken as string,
+    ],
+    xdgDataHome,
+  );
+  assert.equal(wrongChoice.code, 1);
+  assert.equal(wrongChoice.output.error, "confirmation_preview_not_found");
 
   const replacementSourcePath = join(directory, "replacement.jsonl");
   const replacementConfigPath = join(directory, "replacement.json");
@@ -264,6 +284,35 @@ test("an ambiguous legacy record index can be resolved by a recorded user choice
   assert.equal(resolution.output.recordIndexMode, "physical-line");
   assert.equal(typeof resolution.output.resolutionId, "string");
   assert.equal(typeof resolution.output.resolvedAt, "string");
+  const repeatedResolution = await runCli(
+    [
+      "resolve-record-index",
+      parsed.config.id,
+      parsed.hash,
+      "physical-line",
+      "--confirm",
+      confirmationToken as string,
+    ],
+    xdgDataHome,
+  );
+  assert.equal(repeatedResolution.code, 1);
+  assert.equal(repeatedResolution.output.error, "confirmation_already_spent");
+  const supersededPreview = await runCli(
+    [
+      "resolve-record-index",
+      parsed.config.id,
+      parsed.hash,
+      "physical-line",
+      "--confirm",
+      secondPreview.output.confirmationToken as string,
+    ],
+    xdgDataHome,
+  );
+  assert.equal(supersededPreview.code, 1);
+  assert.equal(
+    supersededPreview.output.error,
+    "record_index_resolution_state_changed",
+  );
 
   const verification = await runCli(["verify"], xdgDataHome);
   assert.equal(verification.code, 0);
@@ -366,6 +415,129 @@ test("an ambiguous legacy record index can be resolved by a recorded user choice
   }
 });
 
+test("record-index confirmation cannot be forged from readable empty state", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-cli-resolution-preview-"));
+  const xdgDataHome = join(directory, "data");
+  const stateDirectory = join(xdgDataHome, "ecosym");
+  const parsed = parseConnectionConfig({
+    schemaVersion: 1,
+    id: "empty-legacy-index",
+    factOwner: "external-owner",
+    reader: { type: "jsonl", path: "/unused.jsonl" },
+    sourceRecord: {
+      identity: [{ scope: "meta", value: "record-index" }],
+      retention: "history",
+      recordedAt: { unavailable: true },
+    },
+    facts: [
+      {
+        epistemicStatus: "observation",
+        kind: "api.value",
+        subject: { scope: "record", path: "subject" },
+        payload: { value: { scope: "record", path: "value" } },
+      },
+    ],
+  });
+  const store = new ObservationStore(stateDirectory);
+  store.register(parsed);
+  const database = new DatabaseSync(store.path);
+  database
+    .prepare(
+      "UPDATE connection_versions SET jsonl_record_index_mode = 'unknown' WHERE connection_id = ?",
+    )
+    .run(parsed.config.id);
+  database.close();
+  store.close();
+
+  const status = await runCli(["status"], xdgDataHome);
+  assert.equal(status.code, 0);
+  assert.deepEqual(status.output.collectionAttempts, []);
+  assert.deepEqual(
+    (await runCli(["query", "observations"], xdgDataHome)).output.records,
+    [],
+  );
+  assert.deepEqual(
+    (await runCli(["query", "claims"], xdgDataHome)).output.records,
+    [],
+  );
+  const forgedToken = `sha256:${sha256(
+    canonicalJson([
+      parsed.config.id,
+      parsed.hash,
+      "unknown",
+      "physical-line",
+      [],
+      [],
+      0,
+      0,
+    ]),
+  )}`;
+  const forgedConfirmation = await runCli(
+    [
+      "resolve-record-index",
+      parsed.config.id,
+      parsed.hash,
+      "physical-line",
+      "--confirm",
+      forgedToken,
+    ],
+    xdgDataHome,
+  );
+  assert.equal(forgedConfirmation.code, 1);
+  assert.equal(
+    forgedConfirmation.output.error,
+    "confirmation_preview_not_found",
+  );
+
+  const preview = await runCli(
+    ["resolve-record-index", parsed.config.id, parsed.hash, "physical-line"],
+    xdgDataHome,
+  );
+  const issuedToken = preview.output.confirmationToken as string;
+  const previewDatabase = new DatabaseSync(
+    join(stateDirectory, "observations.sqlite"),
+    { readOnly: true },
+  );
+  const persistedPreview = previewDatabase
+    .prepare(
+      `SELECT confirmation_token_hash, operation, issued_at, consumed_at
+         FROM confirmation_previews`,
+    )
+    .get() as {
+    confirmation_token_hash: string;
+    consumed_at: null | string;
+    issued_at: string;
+    operation: string;
+  };
+  previewDatabase.close();
+  assert.equal(persistedPreview.confirmation_token_hash, sha256(issuedToken));
+  assert.notEqual(persistedPreview.confirmation_token_hash, issuedToken);
+  assert.equal(persistedPreview.operation, "resolve-record-index");
+  assert.match(persistedPreview.issued_at, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(persistedPreview.consumed_at, null);
+  const resolution = await runCli(
+    [
+      "resolve-record-index",
+      parsed.config.id,
+      parsed.hash,
+      "physical-line",
+      "--confirm",
+      issuedToken,
+    ],
+    xdgDataHome,
+  );
+  assert.equal(resolution.code, 0);
+  const consumedDatabase = new DatabaseSync(
+    join(stateDirectory, "observations.sqlite"),
+    { readOnly: true },
+  );
+  const consumed = consumedDatabase
+    .prepare("SELECT consumed_at FROM confirmation_previews")
+    .get() as { consumed_at: null | string };
+  consumedDatabase.close();
+  assert.equal(consumed.consumed_at, resolution.output.resolvedAt);
+});
+
 test("retirement is an explicit, durable CLI recovery for an abandoned attempt", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-cli-retire-"));
   const xdgDataHome = join(directory, "data");
@@ -431,25 +603,110 @@ test("retirement is an explicit, durable CLI recovery for an abandoned attempt",
       startedAt: "2026-09-01T10:00:00.000Z",
     },
   ]);
-  const preview = await runCli(
-    ["retire-collection-attempt", "abandoned-attempt", "--by", "operator:recovery"],
-    xdgDataHome,
-  );
-  assert.equal(preview.code, 0);
-  assert.equal(preview.output.outcome, "confirmation-required");
-  const retired = await runCli(
+  const listedAttempt = (listed.output.collectionAttempts as {
+    attemptId: string;
+    connectionId: string;
+    connectionVersion: string;
+    outcome: string;
+    startedAt: string;
+  }[])[0] as {
+    attemptId: string;
+    connectionId: string;
+    connectionVersion: string;
+    outcome: string;
+    startedAt: string;
+  };
+  const forgedToken = `sha256:${sha256(
+    canonicalJson([
+      listedAttempt.attemptId,
+      listedAttempt.connectionId,
+      listedAttempt.connectionVersion,
+      listedAttempt.startedAt,
+      listedAttempt.outcome,
+      "operator:recovery",
+    ]),
+  )}`;
+  const forgedRetirement = await runCli(
     [
       "retire-collection-attempt",
       "abandoned-attempt",
       "--by",
       "operator:recovery",
       "--confirm",
+      forgedToken,
+    ],
+    xdgDataHome,
+  );
+  assert.equal(forgedRetirement.code, 1);
+  assert.equal(
+    forgedRetirement.output.error,
+    "confirmation_preview_not_found",
+  );
+  const preview = await runCli(
+    ["retire-collection-attempt", "abandoned-attempt", "--by", "operator:recovery"],
+    xdgDataHome,
+  );
+  assert.equal(preview.code, 0);
+  assert.equal(preview.output.outcome, "confirmation-required");
+  const secondPreview = await runCli(
+    ["retire-collection-attempt", "abandoned-attempt", "--by", "operator:recovery"],
+    xdgDataHome,
+  );
+  assert.notEqual(
+    secondPreview.output.confirmationToken,
+    preview.output.confirmationToken,
+  );
+  const wrongActor = await runCli(
+    [
+      "retire-collection-attempt",
+      "abandoned-attempt",
+      "--by",
+      "operator:other",
+      "--confirm",
       preview.output.confirmationToken as string,
     ],
     xdgDataHome,
   );
-  assert.equal(retired.code, 0);
-  assert.equal(retired.output.outcome, "retired");
+  assert.equal(wrongActor.code, 1);
+  assert.equal(wrongActor.output.error, "confirmation_preview_not_found");
+  const confirmationArguments = [
+    "retire-collection-attempt",
+    "abandoned-attempt",
+    "--by",
+    "operator:recovery",
+    "--confirm",
+    preview.output.confirmationToken as string,
+  ];
+  const competingConfirmations = await Promise.all([
+    runCli(confirmationArguments, xdgDataHome),
+    runCli(confirmationArguments, xdgDataHome),
+  ]);
+  const retired = competingConfirmations.find((result) => result.code === 0);
+  const refusedReplay = competingConfirmations.find((result) => result.code === 1);
+  assert.equal(retired?.output.outcome, "retired");
+  assert.equal(refusedReplay?.output.error, "confirmation_already_spent");
+  const repeatedRetirement = await runCli(
+    confirmationArguments,
+    xdgDataHome,
+  );
+  assert.equal(repeatedRetirement.code, 1);
+  assert.equal(repeatedRetirement.output.error, "confirmation_already_spent");
+  const supersededPreview = await runCli(
+    [
+      "retire-collection-attempt",
+      "abandoned-attempt",
+      "--by",
+      "operator:recovery",
+      "--confirm",
+      secondPreview.output.confirmationToken as string,
+    ],
+    xdgDataHome,
+  );
+  assert.equal(supersededPreview.code, 1);
+  assert.equal(
+    supersededPreview.output.error,
+    "record_index_resolution_state_changed",
+  );
   const recovered = await runCli(
     ["resolve-record-index", parsed.config.id, parsed.hash, "record-ordinal"],
     xdgDataHome,

@@ -21,7 +21,7 @@ import {
   verificationFactFromInput,
 } from "./verification-facts.ts";
 
-const STORE_SCHEMA_VERSION = 10;
+const STORE_SCHEMA_VERSION = 11;
 const STORE_FILENAME = "observations.sqlite";
 const BUSY_RETRY_WINDOW_MILLISECONDS = 250;
 const CREATE_COLLECTION_ATTEMPTS = `
@@ -88,6 +88,17 @@ const CREATE_RECORD_INDEX_MODE_RESOLUTIONS = `
     confirmation_token TEXT NOT NULL,
     FOREIGN KEY (connection_id, config_hash)
       REFERENCES connection_versions(connection_id, config_hash)
+  ) STRICT;
+`;
+const CREATE_CONFIRMATION_PREVIEWS = `
+  CREATE TABLE IF NOT EXISTS confirmation_previews (
+    confirmation_token_hash TEXT NOT NULL PRIMARY KEY,
+    operation TEXT NOT NULL
+      CHECK (operation IN ('resolve-record-index', 'retire-collection-attempt')),
+    arguments_json TEXT NOT NULL,
+    state_fingerprint TEXT NOT NULL,
+    issued_at TEXT NOT NULL,
+    consumed_at TEXT
   ) STRICT;
 `;
 
@@ -170,6 +181,11 @@ export interface CollectionAttemptRetirementPlan {
   startedAt: string;
 }
 
+type CollectionAttemptRetirementSnapshot = Omit<
+  CollectionAttemptRetirementPlan,
+  "confirmationToken"
+> & { stateFingerprint: string };
+
 export interface ConnectionStatus {
   connectionId: string;
   connectionVersion: string;
@@ -229,6 +245,11 @@ export interface RecordIndexModeResolutionPlan {
   recordIndexMode: JsonlRecordIndexMode;
 }
 
+type RecordIndexModeResolutionSnapshot = Omit<
+  RecordIndexModeResolutionPlan,
+  "confirmationToken"
+> & { stateFingerprint: string };
+
 export interface CollectionSink {
   recordSourceRecord(facts: () => readonly FactInput[]): void;
 }
@@ -284,6 +305,24 @@ export class RecordIndexResolutionStateChangedError extends Error {
   constructor() {
     super("The record-index resolution scope changed after confirmation was requested");
     this.name = "RecordIndexResolutionStateChangedError";
+  }
+}
+
+export class ConfirmationPreviewNotFoundError extends Error {
+  readonly code = "confirmation_preview_not_found";
+
+  constructor() {
+    super("No matching confirmation preview was issued");
+    this.name = "ConfirmationPreviewNotFoundError";
+  }
+}
+
+export class ConfirmationAlreadySpentError extends Error {
+  readonly code = "confirmation_already_spent";
+
+  constructor() {
+    super("The confirmation preview has already been spent");
+    this.name = "ConfirmationAlreadySpentError";
   }
 }
 
@@ -428,17 +467,28 @@ export class ObservationStore {
     connectionId: string,
     connectionVersion: string,
     recordIndexMode: JsonlRecordIndexMode,
+    now = new Date(),
   ): RecordIndexModeResolutionPlan {
     if (recordIndexMode !== "physical-line" && recordIndexMode !== "record-ordinal") {
       throw new TypeError("A record-index resolution must select a supported mode");
     }
-    return this.#readTransaction(() =>
-      this.#recordIndexModeResolutionPlan(
+    const issuedAt = now.toISOString();
+    return this.#transaction(() => {
+      const { stateFingerprint, ...plan } = this.#recordIndexModeResolutionSnapshot(
         connectionId,
         connectionVersion,
         recordIndexMode,
-      ),
-    );
+      );
+      return {
+        ...plan,
+        confirmationToken: this.#issueConfirmationPreview(
+          "resolve-record-index",
+          canonicalJson([connectionId, connectionVersion, recordIndexMode]),
+          stateFingerprint,
+          issuedAt,
+        ),
+      };
+    });
   }
 
   resolveRecordIndexMode(
@@ -453,12 +503,28 @@ export class ObservationStore {
     }
     const resolvedAt = now.toISOString();
     return this.#transaction(() => {
-      const plan = this.#recordIndexModeResolutionPlan(
-        connectionId,
-        connectionVersion,
-        recordIndexMode,
+      const preview = this.#confirmationPreview(
+        "resolve-record-index",
+        canonicalJson([connectionId, connectionVersion, recordIndexMode]),
+        confirmationToken,
       );
-      if (confirmationToken !== plan.confirmationToken) {
+      if (preview.consumed_at !== null) {
+        throw new ConfirmationAlreadySpentError();
+      }
+      let snapshot: RecordIndexModeResolutionSnapshot;
+      try {
+        snapshot = this.#recordIndexModeResolutionSnapshot(
+          connectionId,
+          connectionVersion,
+          recordIndexMode,
+        );
+      } catch (error) {
+        if (error instanceof StoredRecordIndexModeKnownError) {
+          throw new RecordIndexResolutionStateChangedError();
+        }
+        throw error;
+      }
+      if (preview.state_fingerprint !== snapshot.stateFingerprint) {
         throw new RecordIndexResolutionStateChangedError();
       }
       const updated = this.#database
@@ -472,7 +538,7 @@ export class ObservationStore {
           recordIndexMode,
           connectionId,
           connectionVersion,
-          plan.currentRecordIndexMode,
+          snapshot.currentRecordIndexMode,
         );
       if (numberOfChanges(updated) !== 1) {
         throw new RecordIndexResolutionStateChangedError();
@@ -500,21 +566,22 @@ export class ObservationStore {
           resolutionId,
           connectionId,
           connectionVersion,
-          plan.currentRecordIndexMode,
+          snapshot.currentRecordIndexMode,
           recordIndexMode,
           resolvedAt,
-          canonicalJson(plan.affectedFactIds),
-          canonicalJson(plan.collectionAttemptIds),
+          canonicalJson(snapshot.affectedFactIds),
+          canonicalJson(snapshot.collectionAttemptIds),
           confirmationToken,
         );
+      this.#spendConfirmationPreview(confirmationToken, resolvedAt);
       return {
-        affectedFactIds: plan.affectedFactIds,
-        collectionAttemptIds: plan.collectionAttemptIds,
-        collectionAttemptsRecorded: plan.collectionAttemptsRecorded,
+        affectedFactIds: snapshot.affectedFactIds,
+        collectionAttemptIds: snapshot.collectionAttemptIds,
+        collectionAttemptsRecorded: snapshot.collectionAttemptsRecorded,
         connectionId,
         connectionVersion,
-        factsAffected: plan.factsAffected,
-        previousRecordIndexMode: plan.currentRecordIndexMode,
+        factsAffected: snapshot.factsAffected,
+        previousRecordIndexMode: snapshot.currentRecordIndexMode,
         recordIndexMode,
         resolutionId,
         resolvedAt,
@@ -525,11 +592,23 @@ export class ObservationStore {
   planCollectionAttemptRetirement(
     attemptId: string,
     retiredBy: string,
+    now = new Date(),
   ): CollectionAttemptRetirementPlan {
     validateRetirementActor(retiredBy);
-    return this.#readTransaction(() =>
-      this.#collectionAttemptRetirementPlan(attemptId, retiredBy),
-    );
+    const issuedAt = now.toISOString();
+    return this.#transaction(() => {
+      const { stateFingerprint, ...plan } =
+        this.#collectionAttemptRetirementSnapshot(attemptId, retiredBy);
+      return {
+        ...plan,
+        confirmationToken: this.#issueConfirmationPreview(
+          "retire-collection-attempt",
+          canonicalJson([attemptId, retiredBy]),
+          stateFingerprint,
+          issuedAt,
+        ),
+      };
+    });
   }
 
   retireCollectionAttempt(
@@ -541,8 +620,24 @@ export class ObservationStore {
     validateRetirementActor(retiredBy);
     const retiredAt = now.toISOString();
     return this.#transaction(() => {
-      const plan = this.#collectionAttemptRetirementPlan(attemptId, retiredBy);
-      if (confirmationToken !== plan.confirmationToken) {
+      const preview = this.#confirmationPreview(
+        "retire-collection-attempt",
+        canonicalJson([attemptId, retiredBy]),
+        confirmationToken,
+      );
+      if (preview.consumed_at !== null) {
+        throw new ConfirmationAlreadySpentError();
+      }
+      let snapshot: CollectionAttemptRetirementSnapshot;
+      try {
+        snapshot = this.#collectionAttemptRetirementSnapshot(attemptId, retiredBy);
+      } catch (error) {
+        if (error instanceof CollectionAttemptNotRunningError) {
+          throw new RecordIndexResolutionStateChangedError();
+        }
+        throw error;
+      }
+      if (preview.state_fingerprint !== snapshot.stateFingerprint) {
         throw new RecordIndexResolutionStateChangedError();
       }
       const retired = this.#database
@@ -575,16 +670,17 @@ export class ObservationStore {
           retirementOrder,
           retirementId,
           attemptId,
-          plan.connectionId,
-          plan.connectionVersion,
+          snapshot.connectionId,
+          snapshot.connectionVersion,
           retiredAt,
           retiredBy,
           confirmationToken,
         );
+      this.#spendConfirmationPreview(confirmationToken, retiredAt);
       return {
         attemptId,
-        connectionId: plan.connectionId,
-        connectionVersion: plan.connectionVersion,
+        connectionId: snapshot.connectionId,
+        connectionVersion: snapshot.connectionVersion,
         retiredAt,
         retiredBy,
         retirementId,
@@ -1336,6 +1432,15 @@ export class ObservationStore {
     if (version.user_version === STORE_SCHEMA_VERSION) {
       return;
     }
+    if (version.user_version === 10) {
+      this.#transaction(() => {
+        this.#database.exec(`
+          ${CREATE_CONFIRMATION_PREVIEWS}
+          PRAGMA user_version = ${STORE_SCHEMA_VERSION};
+        `);
+      });
+      return;
+    }
     if (version.user_version === 9) {
       this.#migrateSchemaNine();
       return;
@@ -1393,6 +1498,8 @@ export class ObservationStore {
         ) STRICT;
 
         ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
+
+        ${CREATE_CONFIRMATION_PREVIEWS}
 
         ${CREATE_COLLECTION_ATTEMPTS}
         ${CREATE_COLLECTION_ATTEMPTS_LATEST_INDEX}
@@ -1698,6 +1805,7 @@ export class ObservationStore {
         `);
         this.#database.exec(CREATE_COLLECTION_ATTEMPTS_LATEST_INDEX);
         this.#database.exec(CREATE_COLLECTION_ATTEMPT_RETIREMENTS);
+        this.#database.exec(CREATE_CONFIRMATION_PREVIEWS);
         this.#database.exec(`PRAGMA user_version = ${STORE_SCHEMA_VERSION}`);
       });
     } finally {
@@ -1735,10 +1843,10 @@ export class ObservationStore {
     return parseStoredConfig(row.config_json, connection.configHash);
   }
 
-  #collectionAttemptRetirementPlan(
+  #collectionAttemptRetirementSnapshot(
     attemptId: string,
     retiredBy: string,
-  ): CollectionAttemptRetirementPlan {
+  ): CollectionAttemptRetirementSnapshot {
     const attempt = this.#database
       .prepare(
         `SELECT connection_id, config_hash, started_at, outcome
@@ -1758,7 +1866,7 @@ export class ObservationStore {
     }
     return {
       attemptId,
-      confirmationToken: `sha256:${sha256(
+      stateFingerprint: `sha256:${sha256(
         canonicalJson([
           attemptId,
           attempt.connection_id,
@@ -1775,11 +1883,11 @@ export class ObservationStore {
     };
   }
 
-  #recordIndexModeResolutionPlan(
+  #recordIndexModeResolutionSnapshot(
     connectionId: string,
     connectionVersion: string,
     recordIndexMode: JsonlRecordIndexMode,
-  ): RecordIndexModeResolutionPlan {
+  ): RecordIndexModeResolutionSnapshot {
     const active = this.#database
       .prepare(
         `SELECT c.config_hash, v.jsonl_record_index_mode
@@ -1846,7 +1954,7 @@ export class ObservationStore {
     }
     const affectedFactIds = facts.map((fact) => fact.fact_id);
     const collectionAttemptIds = attempts.map((attempt) => attempt.attempt_id);
-    const confirmationToken = `sha256:${sha256(
+    const stateFingerprint = `sha256:${sha256(
       canonicalJson([
         connectionId,
         connectionVersion,
@@ -1866,13 +1974,72 @@ export class ObservationStore {
       affectedFactIds,
       collectionAttemptIds,
       collectionAttemptsRecorded: collectionAttemptIds.length,
-      confirmationToken,
       connectionId,
       connectionVersion,
       currentRecordIndexMode,
       factsAffected: affectedFactIds.length,
       recordIndexMode,
+      stateFingerprint,
     };
+  }
+
+  #issueConfirmationPreview(
+    operation: "resolve-record-index" | "retire-collection-attempt",
+    argumentsJson: string,
+    stateFingerprint: string,
+    issuedAt: string,
+  ): string {
+    const confirmationToken = `confirmation:${randomUUID()}`;
+    this.#database
+      .prepare(
+        `INSERT INTO confirmation_previews
+           (confirmation_token_hash, operation, arguments_json, state_fingerprint,
+            issued_at, consumed_at)
+         VALUES (?, ?, ?, ?, ?, NULL)`,
+      )
+      .run(
+        sha256(confirmationToken),
+        operation,
+        argumentsJson,
+        stateFingerprint,
+        issuedAt,
+      );
+    return confirmationToken;
+  }
+
+  #confirmationPreview(
+    operation: "resolve-record-index" | "retire-collection-attempt",
+    argumentsJson: string,
+    confirmationToken: string,
+  ): ConfirmationPreviewRow {
+    const preview = this.#database
+      .prepare(
+        `SELECT state_fingerprint, consumed_at
+           FROM confirmation_previews
+          WHERE confirmation_token_hash = ?
+            AND operation = ?
+            AND arguments_json = ?`,
+      )
+      .get(sha256(confirmationToken), operation, argumentsJson) as
+      | ConfirmationPreviewRow
+      | undefined;
+    if (preview === undefined) {
+      throw new ConfirmationPreviewNotFoundError();
+    }
+    return preview;
+  }
+
+  #spendConfirmationPreview(confirmationToken: string, consumedAt: string): void {
+    const spent = this.#database
+      .prepare(
+        `UPDATE confirmation_previews
+            SET consumed_at = ?
+          WHERE confirmation_token_hash = ? AND consumed_at IS NULL`,
+      )
+      .run(consumedAt, sha256(confirmationToken));
+    if (numberOfChanges(spent) !== 1) {
+      throw new ConfirmationAlreadySpentError();
+    }
   }
 
   #assertStoredRecordIndexMode(
@@ -2081,6 +2248,11 @@ interface CollectionAttemptRetirementRow {
   retired_at: string;
   retired_by: string;
   retirement_id: string;
+}
+
+interface ConfirmationPreviewRow {
+  consumed_at: null | string;
+  state_fingerprint: string;
 }
 
 interface StoredFactRow {
