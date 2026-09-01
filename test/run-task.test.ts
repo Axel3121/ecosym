@@ -398,6 +398,20 @@ test("a recorded result outranks the branch it was made on", () => {
       assert.match(unanswerable.stdout, /unproven/);
       assert.doesNotMatch(unanswerable.stdout, /!!/);
       assert.equal(unanswerable.status, 0, "Git failing to answer must not dispute a claim");
+
+      // A branch that exists only on the remote cannot be counted from a
+      // local checkout. Git declining to answer must not become evidence
+      // that the branch carries work — nor that it merged.
+      git(elsewhere, ["update-ref", "refs/remotes/origin/task/remote-only", "HEAD"]);
+      away(["start", "remote-run", "unit-remote", "--branch", "task/remote-only"]);
+
+      const remoteOnly = away(["list"]);
+      const remoteRow = remoteOnly.stdout
+        .split("\n")
+        .find((line) => line.startsWith("unit-remote"));
+      assert.ok(remoteRow !== undefined, remoteOnly.stdout);
+      assert.match(remoteRow, /unproven/);
+      assert.doesNotMatch(remoteRow, /merged|open/);
     } finally {
       rmSync(noMain, { recursive: true, force: true });
     }

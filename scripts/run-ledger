@@ -163,15 +163,21 @@ def resolves(commit: str | None) -> bool:
     return bool(git("rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"))
 
 
-def branch_carries_nothing(branch: str) -> bool:
-    """True when Git says the branch holds no commit of its own.
+def branch_carries_nothing(branch: str) -> bool | None:
+    """Does the branch hold commits of its own? None when Git will not say.
 
-    This is genuinely ambiguous: a branch merged and left undeleted and a
-    branch created but never committed to both answer yes. It is never
-    evidence that a run failed to land.
+    Yes is genuinely ambiguous: a branch merged and left undeleted and a
+    branch created but never committed to both answer the same way. It is
+    never evidence that a run failed to land.
+
+    None is not a third flavour of no. `git()` returns "" on failure, which
+    happens for a branch that exists only on the remote and whenever local
+    main is missing — and an unanswered question must not become evidence.
     """
     out = git("rev-list", "--count", f"main..{branch}")
-    return out.isdigit() and int(out) == 0
+    if not out.isdigit():
+        return None
+    return int(out) == 0
 
 
 def git_state(
@@ -203,8 +209,10 @@ def git_state(
         return "unmerged"
 
     # No usable result commit. The branch is all that is left, and it can
-    # only speak for itself when it carries commits of its own.
-    if branch and branch in all_branches and not branch_carries_nothing(branch):
+    # only speak for itself when Git positively says it carries commits of
+    # its own. `is False` is exact: None means Git would not answer, and an
+    # unanswered question is not a yes.
+    if branch and branch in all_branches and branch_carries_nothing(branch) is False:
         return "merged" if branch in merged else "open"
     return "unproven"
 
@@ -344,6 +352,9 @@ def cmd_list(args: argparse.Namespace) -> int:
         )
         # A guessed branch is not this run's branch. Say so rather than
         # borrowing a same-named branch's merge state as if it were evidence.
+        # A guess is reached only when no result commit was recorded, and a
+        # dispute is raised only from one — so `~` can decorate merged, open
+        # or unproven, and can never soften or create a dispute.
         guessed = not last.get("branch") and branch is not None
 
         if unit_active(unit):
