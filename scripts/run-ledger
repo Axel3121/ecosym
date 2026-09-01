@@ -37,7 +37,13 @@ OUTCOMES = ("landed", "dropped", "superseded", "failed")
 
 # A run's unit name is <project>-task-<task>-<epoch>, or <project>-resume-<epoch>
 # for a resumed session that carries no task of its own.
-UNIT_RE = re.compile(r"^(?P<project>[^-]+)-(?:task-(?P<task>.+)|resume)-(?P<epoch>\d+)$")
+UNIT_RE = re.compile(
+    # run-task appends a 'b' per collision when two launches land in the same
+    # second, so the epoch is not always the end of the name. Without the
+    # suffix here a collided unit falls back to its raw name and loses both
+    # its task and its timestamp.
+    r"^(?P<project>[^-]+)-(?:task-(?P<task>.+)|resume)-(?P<epoch>\d+)(?P<collision>b*)$"
+)
 
 
 def data_home() -> Path:
