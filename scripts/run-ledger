@@ -1,0 +1,535 @@
+#!/usr/bin/env python3
+"""What autonomous runs came to, as far as anyone recorded it.
+
+A run leaves behind a log, a branch and a commit. None of those say whether the
+run *landed*. This ledger is where that is written down.
+
+    run-ledger list                     what every run is doing or did
+    run-ledger start  <task> <unit> ..  append a started record (run-task does this)
+    run-ledger close  <unit> --outcome landed|dropped|superseded|failed [--evidence ..]
+    run-ledger backfill                 create started records for logs already on disk
+    run-ledger show   <unit>            one run's records
+
+The file is append-only JSONL. A correction is a new record, never an edit;
+the current state of a run is its last record.
+
+What this tool does NOT do, because it cannot: it does not know an outcome. A
+close-out is a human claim, and a human who never runs `close` leaves a run
+`OPEN` forever. What the tool does instead is refuse to let a claim pass
+unexamined — it reads Git on every `list`, marks any `landed` that Git will
+not place in main with `!!`, exits non-zero when one exists, and lists runs
+that have a log but no record at all. Treat an `OPEN` row as an unanswered
+question, not as a finished run.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+OUTCOMES = ("landed", "dropped", "superseded", "failed")
+
+# A run's unit name is <project>-task-<task>-<epoch>, or <project>-resume-<epoch>
+# for a resumed session that carries no task of its own.
+UNIT_RE = re.compile(
+    # run-task appends a 'b' per collision when two launches land in the same
+    # second, so the epoch is not always the end of the name. Without the
+    # suffix here a collided unit falls back to its raw name and loses both
+    # its task and its timestamp.
+    r"^(?P<project>[^-]+)-(?:task-(?P<task>.+)|resume)-(?P<epoch>\d+)(?P<collision>b*)$"
+)
+
+
+def data_home() -> Path:
+    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+
+
+def runs_dir() -> Path:
+    return data_home() / "ecosym" / "runs"
+
+
+def ledger_path() -> Path:
+    return data_home() / "ecosym" / "ledger.jsonl"
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def git(*args: str) -> str:
+    """Read-only Git. A failure here is missing information, not an error."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root()), *args],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def parse_unit(unit: str) -> tuple[str, str, int | None]:
+    """-> (project, task, epoch). An unparseable unit still gets a row."""
+    m = UNIT_RE.match(unit)
+    if not m:
+        return ("?", unit, None)
+    return (m["project"], m["task"] or "(resume)", int(m["epoch"]))
+
+
+def read_records() -> list[dict]:
+    path = ledger_path()
+    if not path.exists():
+        return []
+    records = []
+    for lineno, line in enumerate(path.read_text().splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            print(f"warning: {path}:{lineno} is not JSON, skipped", file=sys.stderr)
+            continue
+        # JSON's scalars and arrays parse without error but carry no unit, and
+        # a record that cannot name its run is not a record of one. Skipping it
+        # here keeps a single malformed line from taking every command with it.
+        if not isinstance(record, dict):
+            print(f"warning: {path}:{lineno} is not a record, skipped", file=sys.stderr)
+            continue
+        records.append(record)
+    return records
+
+
+def append(record: dict) -> None:
+    path = ledger_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record.setdefault("ts", int(time.time()))
+    with path.open("a") as fh:
+        fh.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def by_unit(records: list[dict]) -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = {}
+    for r in records:
+        unit = r.get("unit")
+        if unit:
+            grouped.setdefault(unit, []).append(r)
+    return grouped
+
+
+def merged_branches() -> set[str]:
+    out = git("branch", "-a", "--format=%(refname:short)", "--merged", "main")
+    return {b.strip().removeprefix("origin/") for b in out.splitlines() if b.strip()}
+
+
+def known_branches() -> set[str]:
+    out = git("branch", "-a", "--format=%(refname:short)")
+    return {b.strip().removeprefix("origin/") for b in out.splitlines() if b.strip()}
+
+
+def in_main(commit: str | None) -> bool | None:
+    """Is this commit reachable from main? None when the question cannot be put.
+
+    None means the question was never asked — no commit was named. A commit
+    that was named but cannot be resolved is a different answer, and
+    `resolves` reports it separately so it is never mistaken for silence.
+    """
+    if not commit:
+        return None
+    if resolves(commit) is not True:
+        return None
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root()), "merge-base", "--is-ancestor", commit, "main"],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # 0 is yes and 1 is no; anything else is Git failing to answer at all —
+    # commonly 128 when there is no local main to compare against. Reading
+    # that as "no" would accuse a landed run on the strength of a missing ref.
+    if out.returncode not in (0, 1):
+        return None
+    return out.returncode == 0
+
+
+def resolves(commit: str | None) -> bool | None:
+    """Does Git know this commit at all? None when the question could not be asked.
+
+    `rev-parse --verify --quiet` exits 1 when the object is confirmed absent,
+    but any other non-zero code — 128 for no repository, a broken clone, a
+    timeout — means Git never actually looked. Collapsing both into False, as
+    a bare truthiness check on `git()`'s output did, made an environment that
+    could not check a commit indistinguishable from one that checked and it
+    was missing, and printed `no-such-commit` for a claim that was never
+    examined.
+    """
+    if not commit:
+        return False
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root()), "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode == 0:
+        return True
+    if out.returncode == 1:
+        return False
+    return None
+
+
+def branch_carries_nothing(branch: str) -> bool | None:
+    """Does the branch hold commits of its own? None when Git will not say.
+
+    Yes is genuinely ambiguous: a branch merged and left undeleted and a
+    branch created but never committed to both answer the same way. It is
+    never evidence that a run failed to land.
+
+    None is not a third flavour of no. `git()` returns "" on failure, which
+    happens for a branch that exists only on the remote and whenever local
+    main is missing — and an unanswered question must not become evidence.
+    """
+    out = git("rev-list", "--count", f"main..{branch}")
+    if not out.isdigit():
+        return None
+    return int(out) == 0
+
+
+def git_state(
+    branch: str | None,
+    commit: str | None,
+    all_branches: set[str],
+    merged: set[str],
+) -> str:
+    """What Git can prove about this run, in words that do not overstate it.
+
+    The recorded result commit is the specific claim and is asked first: it
+    survives the branch being deleted, renamed, reused by a later unrelated
+    run, or carrying work committed after the merge. Only when no result was
+    recorded does the branch stand in as the weaker, more general signal.
+
+    'unproven' is deliberate. It is the honest answer whenever Git was not
+    given enough to decide, and it must not be read as 'nothing happened'.
+    """
+    # A commit that was named but that Git cannot find is a broken claim,
+    # not a missing one. Falling through to the branch here would let a
+    # typo'd or truncated SHA borrow a healthy branch's standing. Only a
+    # confirmed absence earns that label — `resolves` returning None means
+    # Git could not check at all, and that must read as `unproven`, not as
+    # proof the commit is missing.
+    if commit and resolves(commit) is False:
+        return "no-such-commit"
+
+    reachable = in_main(commit)
+    if reachable is True:
+        return "in-main"
+    if reachable is False:
+        return "unmerged"
+
+    # No usable result commit. The branch is all that is left, and it can
+    # only speak for itself when Git positively says it carries commits of
+    # its own. `is False` is exact: None means Git would not answer, and an
+    # unanswered question is not a yes.
+    if branch and branch in all_branches and branch_carries_nothing(branch) is False:
+        return "merged" if branch in merged else "open"
+    return "unproven"
+
+
+def log_mtime(unit: str) -> int | None:
+    log = runs_dir() / f"{unit}.log"
+    return int(log.stat().st_mtime) if log.exists() else None
+
+
+def unit_active(unit: str) -> bool:
+    try:
+        out = subprocess.run(
+            ["systemctl", "--user", "is-active", f"{unit}.service"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.stdout.strip() == "active"
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    append(
+        {
+            "event": "started",
+            "unit": args.unit,
+            "task": args.task,
+            "branch": args.branch,
+            "worktree": args.worktree,
+            "base_commit": args.commit or git("rev-parse", "HEAD"),
+        }
+    )
+    return 0
+
+
+def cmd_close(args: argparse.Namespace) -> int:
+    records = read_records()
+    grouped = by_unit(records)
+
+    unit = args.unit
+    if unit not in grouped:
+        # Allow closing by task name when it is unambiguous.
+        matches = sorted(u for u in grouped if parse_unit(u)[1] == unit)
+        if len(matches) == 1:
+            unit = matches[0]
+        elif len(matches) > 1:
+            print(f"'{args.unit}' matches several runs; name one:", file=sys.stderr)
+            for m in matches:
+                print(f"  {m}", file=sys.stderr)
+            return 2
+        else:
+            print(f"no run named {args.unit} in the ledger", file=sys.stderr)
+            return 1
+
+    last = grouped[unit][-1]
+    if last.get("event") == "closed" and not args.reopen:
+        print(
+            f"{unit} is already closed as {last.get('outcome')!r}; "
+            f"pass --reopen to record a correction",
+            file=sys.stderr,
+        )
+        return 1
+
+    append(
+        {
+            "event": "closed",
+            "unit": unit,
+            "task": last.get("task"),
+            "branch": args.branch or last.get("branch"),
+            "outcome": args.outcome,
+            "evidence": args.evidence,
+            # The commit a run STARTED from is its base, and proves nothing
+            # about the work. Only a commit named at close-out is a result.
+            "base_commit": last.get("base_commit") or last.get("commit"),
+            "result_commit": args.commit,
+        }
+    )
+    print(f"{unit}: {args.outcome}")
+    return 0
+
+
+def cmd_backfill(args: argparse.Namespace) -> int:
+    """Give every log on disk a started record, so nothing is invisible."""
+    known = set(by_unit(read_records()))
+    added = 0
+    for log in sorted(runs_dir().glob("*.log")):
+        unit = log.stem
+        if unit in known:
+            continue
+        project, task, epoch = parse_unit(unit)
+        append(
+            {
+                "event": "started",
+                "unit": unit,
+                "task": task,
+                "project": project,
+                "branch": None,
+                "worktree": None,
+                "base_commit": None,
+                "ts": epoch or int(log.stat().st_mtime),
+                "backfilled": True,
+            }
+        )
+        added += 1
+    print(f"backfilled {added} run(s)")
+    return 0
+
+
+def cmd_show(args: argparse.Namespace) -> int:
+    grouped = by_unit(read_records())
+    if args.unit not in grouped:
+        print(f"no run named {args.unit}", file=sys.stderr)
+        return 1
+    for r in grouped[args.unit]:
+        print(json.dumps(r, sort_keys=True))
+    return 0
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    grouped = by_unit(read_records())
+    logs = {p.stem for p in runs_dir().glob("*.log")}
+
+    if not grouped and not logs:
+        print("ledger is empty — run `run-ledger backfill` to import existing logs")
+        return 0
+
+    all_branches = known_branches()
+    merged = merged_branches()
+
+    rows = []
+    for unit, records in grouped.items():
+        last = records[-1]
+        project, task, epoch = parse_unit(unit)
+        branch = last.get("branch") or (
+            f"task/{task}" if f"task/{task}" in all_branches else None
+        )
+        # A guessed branch is not this run's branch. Say so rather than
+        # borrowing a same-named branch's merge state as if it were evidence.
+        # A guess is reached only when no result commit was recorded, and a
+        # dispute is raised only from one — so `~` can decorate merged, open
+        # or unproven, and can never soften or create a dispute.
+        guessed = not last.get("branch") and branch is not None
+
+        # A close-out is the authoritative claim about a run's outcome. The
+        # unit can still show active for a while after `close` runs — the
+        # process is finishing up, or nothing has stopped it yet — and
+        # letting that override `landed` would hide a false claim behind
+        # `RUNNING`, where `disputed` never gets a chance to look at it.
+        if last.get("event") == "closed":
+            state = last.get("outcome", "closed")
+        elif unit_active(unit):
+            state = "RUNNING"
+        else:
+            state = "OPEN"
+
+        git_says = git_state(branch, last.get("result_commit"), all_branches, merged)
+        if guessed:
+            git_says = f"~{git_says}"
+
+        rows.append(
+            {
+                "task": task,
+                "unit": unit,
+                "state": state,
+                "git": git_says,
+                "when": epoch or last.get("ts") or 0,
+                "evidence": last.get("evidence") or "",
+                # A close-out is a claim. Only evidence that speaks to this
+                # run's own commit can contradict it; a shared branch name
+                # or an ambiguous state cannot.
+                "disputed": (
+                    state == "landed"
+                    and git_says.lstrip("~") in ("unmerged", "no-such-commit")
+                ),
+            }
+        )
+
+    # A run with a log but no ledger record is the failure this tool exists to
+    # catch. It must not be quietly absent from the tool's own inventory.
+    for unit in sorted(logs - set(grouped)):
+        project, task, epoch = parse_unit(unit)
+        rows.append(
+            {
+                "task": task,
+                "unit": unit,
+                "state": "UNRECORDED",
+                "git": "-",
+                "when": epoch or log_mtime(unit) or 0,
+                "evidence": "log on disk, never registered — run `run-ledger backfill`",
+                "disputed": False,
+            }
+        )
+
+    rows.sort(key=lambda r: r["when"])
+    if args.open_only:
+        rows = [
+            r for r in rows if r["state"] in ("OPEN", "RUNNING", "UNRECORDED") or r["disputed"]
+        ]
+
+    task_w = max((len(r["task"]) for r in rows), default=4)
+    task_w = min(max(task_w, 4), 46)
+
+    print(f"{'TASK'.ljust(task_w)}  {'STATE':10}  {'GIT':9}  WHEN")
+    for r in rows:
+        when = time.strftime("%m-%d %H:%M", time.localtime(r["when"])) if r["when"] else "?"
+        mark = " !!" if r["disputed"] else ""
+        print(f"{r['task'][:task_w].ljust(task_w)}  {r['state']:10}  {r['git']:9}  {when}{mark}")
+        if args.verbose or r["disputed"]:
+            print(f"{' ' * task_w}  · {r['unit']}")
+        if r["evidence"]:
+            print(f"{' ' * task_w}  └ {r['evidence']}")
+
+    disputed = [r for r in rows if r["disputed"]]
+    if disputed:
+        missing = [r for r in disputed if r["git"].lstrip("~") == "no-such-commit"]
+        if missing:
+            print(
+                f"\n!! {len(missing)} run(s) name a result commit Git cannot "
+                f"find. The SHA is wrong, or the commit never left the machine "
+                f"it was made on."
+            )
+        elsewhere = len(disputed) - len(missing)
+        if elsewhere:
+            print(
+                f"\n!! {elsewhere} run(s) recorded as landed that Git does not "
+                f"place in main. The close-out is wrong, or main is stale — "
+                f"`git fetch` and look again."
+            )
+
+    unrecorded = [r for r in rows if r["state"] == "UNRECORDED"]
+    if unrecorded:
+        print(f"\n{len(unrecorded)} run(s) have a log but no ledger record.")
+
+    open_runs = [r for r in rows if r["state"] == "OPEN"]
+    if open_runs and not args.open_only:
+        print(f"\n{len(open_runs)} run(s) never closed out.")
+
+    head = git("rev-parse", "--abbrev-ref", "HEAD")
+    if head and head != "main":
+        print(f"\nnote: main checkout is on '{head}', not main.")
+
+    stale = git("rev-list", "--count", "main..origin/main")
+    if stale.isdigit() and int(stale) > 0:
+        print(
+            f"note: local main is {stale} commit(s) behind origin/main; "
+            f"merge state above may be stale."
+        )
+    return 1 if disputed else 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(prog="run-ledger", description=__doc__.splitlines()[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("list", help="what every run is doing or did")
+    s.add_argument("--open-only", action="store_true", help="only unfinished or disputed runs")
+    s.add_argument("-v", "--verbose", action="store_true", help="show unit names")
+    s.set_defaults(fn=cmd_list)
+
+    s = sub.add_parser("start", help="record a run starting")
+    s.add_argument("task")
+    s.add_argument("unit")
+    s.add_argument("--branch")
+    s.add_argument("--worktree")
+    s.add_argument("--commit")
+    s.set_defaults(fn=cmd_start)
+
+    s = sub.add_parser("close", help="record what a run came to")
+    s.add_argument("unit", help="unit name, or task name when unambiguous")
+    s.add_argument("--outcome", required=True, choices=OUTCOMES)
+    s.add_argument("--evidence", help="what proves it, e.g. a PR or a test run")
+    s.add_argument("--commit")
+    s.add_argument("--branch")
+    s.add_argument("--reopen", action="store_true", help="correct an existing close-out")
+    s.set_defaults(fn=cmd_close)
+
+    s = sub.add_parser("backfill", help="import logs that predate the ledger")
+    s.set_defaults(fn=cmd_backfill)
+
+    s = sub.add_parser("show", help="every record for one run")
+    s.add_argument("unit")
+    s.set_defaults(fn=cmd_show)
+
+    args = p.parse_args()
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -94,6 +94,37 @@ fi
 # Run under a transient user unit so the work survives a Hermes restart.
 # The sandbox keeps --die-with-parent, but its parent is now systemd, not us.
 UNIT="ecosym-task-${TASK}-$(date +%s)"
+# Two launches inside one second would otherwise share a unit name, and the
+# ledger would show one run where two exist. Testing for the log and creating
+# it are two steps, so two launches can both find it missing; `mkdir` is one
+# step that only one of them can win. The directory is never removed: it marks
+# a unit name as spent, which stays true after the run ends, and the name
+# carries the launch second so it is not reused later anyway.
+#
+# A collision (EEXIST) is the only failure this loop should retry: it means
+# another launch already holds this second's name, and appending 'b' tries
+# the next one. Any other failure — an unwritable $RUNS, a full disk, a name
+# over the filesystem's length limit — is not a collision and will not
+# resolve itself by appending more letters; retrying it is an infinite hang
+# with no diagnostic. Give up and say why instead.
+MKDIR_ERR="$(mktemp)"
+ATTEMPTS=0
+while ! mkdir "$RUNS/${UNIT}.lock" 2>"$MKDIR_ERR"; do
+  if ! grep -qi 'file exists' "$MKDIR_ERR"; then
+    cat "$MKDIR_ERR" >&2
+    rm -f "$MKDIR_ERR"
+    echo "cannot reserve a unit name under $RUNS" >&2
+    exit 1
+  fi
+  UNIT="${UNIT}b"
+  ATTEMPTS=$((ATTEMPTS + 1))
+  if [ "$ATTEMPTS" -ge 1000 ]; then
+    rm -f "$MKDIR_ERR"
+    echo "cannot reserve a unit name: 1000 collisions in a row for $UNIT" >&2
+    exit 1
+  fi
+done
+rm -f "$MKDIR_ERR"
 LOG="$RUNS/${UNIT}.log"
 PORT="${ECOSYM_PORT:-$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")}"
 
@@ -104,6 +135,18 @@ echo "log:  $LOG"
 echo "port: $PORT"
 [ -n "$WORKTREE" ] && echo "tree: $WORKTREE (branch $BRANCH)"
 
+# A run that stops working holds its unit open, so nothing notices. Watch the
+# log rather than the clock: silence is what tells a hung run from a slow one.
+#
+# Started AFTER the run's own unit, not before: run-watchdog's loop condition
+# is `while systemctl --user is-active --quiet "$UNIT"`, so if the watchdog
+# starts before $UNIT exists, is-active reports it inactive/not-found on the
+# very first check, the loop body never runs, and the watchdog exits having
+# monitored nothing. `systemd-run` below registers the transient unit and
+# returns immediately — it does not wait for the run to finish, the same way
+# this script goes on to record the ledger entry right after — so by the time
+# the watchdog's systemd-run call is made, $UNIT is already active and a
+# launch that writes nothing at all is still covered.
 systemd-run --user --unit="$UNIT" --collect \
   --working-directory="${WORKTREE:-$REPO}" \
   ${ECOSYM_PROJECT:+--setenv=ECOSYM_PROJECT="$ECOSYM_PROJECT"} \
@@ -113,3 +156,20 @@ systemd-run --user --unit="$UNIT" --collect \
   "$REPO/scripts/ecosym-sandbox" run --variant max --port "$PORT" \
   "Follow the instructions in the attached files." \
   -f "$SPEC" -f scripts/run-instruction.md
+
+systemd-run --user --unit="${UNIT}-watchdog" --collect \
+  "$REPO/scripts/run-watchdog" "$UNIT" "$LOG" "${ECOSYM_IDLE_SECONDS:-900}" \
+  >/dev/null 2>&1 || echo "warning: no watchdog for $UNIT" >&2
+
+# The run is now the ledger's business. A launch that is not recorded is a run
+# nobody will account for later, so this failing must not pass unnoticed —
+# but it must not kill a run that has already started either.
+"$REPO/scripts/run-ledger" start "$TASK" "$UNIT" \
+  ${BRANCH:+--branch "$BRANCH"} \
+  ${WORKTREE:+--worktree "$WORKTREE"} \
+  --commit "$(git -C "${WORKTREE:-$REPO}" rev-parse HEAD 2>/dev/null || true)" \
+  || echo "warning: run started but the ledger did not record it: $UNIT" >&2
+
+echo
+echo "close it out when it is done:"
+echo "  scripts/run-ledger close $UNIT --outcome landed --evidence '<commit or PR>'"
