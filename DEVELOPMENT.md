@@ -123,6 +123,13 @@ outcomes.
 Missing verification is reported as unknown, never as success. A passing test
 is evidence only for the property it actually establishes.
 
+Check the signal before trusting what it says. A success signal can come from a
+missing tool, a command that never ran, a model declining out of politeness, or
+an agent reporting on itself — and each reads exactly like the thing working. If
+a result would look identical when the mechanism is absent, it has established
+nothing. Confirm the control case fails before believing the interesting case
+passed.
+
 Repository checks should have one ordinary, agent-independent entry point that
 humans, local agents, and CI can run. Add enforcement only for a valuable
 property a machine can establish reliably.
