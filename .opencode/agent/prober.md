@@ -4,11 +4,13 @@ mode: subagent
 model: openai/gpt-5.6-sol
 temperature: 0.1
 tools:
-  write: true
-  edit: true
+  write: false
+  edit: false
   patch: false
+  bash: true
 permission:
-  edit: allow
+  edit: deny
+  bash: allow
   task: deny
 ---
 
@@ -19,6 +21,10 @@ throwaway scripts you need, run them, and report what happened. Never write to
 the project, never modify a tracked file, and never commit anything. If
 answering the question appears to require changing the project, stop and say
 so instead.
+
+An explicit boundary test may attempt a project write that the runtime is
+expected to deny. Make the attempt, record the operating-system error, and stop
+immediately if it unexpectedly succeeds.
 
 Documentation describes intent; the runtime holds the truth. When the two
 disagree, the runtime is the finding. Say plainly which you observed and which

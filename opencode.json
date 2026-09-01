@@ -21,13 +21,17 @@
       "*credentials*": "deny",
       "*.pem": "deny",
       "*id_rsa*": "deny",
-      "*id_ed25519*": "deny"
+      "*id_ed25519*": "deny",
+      "/home/axellie/.local/share/opencode/**": "deny",
+      "/home/axellie/.local/state/opencode/**": "deny"
     },
 
     "edit": {
       "*": "allow",
       "/home/axellie/.hermes/**": "deny",
       "/home/axellie/shorts-content/**": "deny",
+      "/home/axellie/.local/share/opencode/**": "deny",
+      "/home/axellie/.local/state/opencode/**": "deny",
       "*.env": "deny",
       "*.env.*": "deny"
     },

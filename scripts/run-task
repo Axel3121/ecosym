@@ -34,12 +34,15 @@ REPO="$PWD"
 SPEC="docs/tasks/${TASK}.md"
 [ -f "$SPEC" ] || { echo "no spec at $SPEC" >&2; exit 1; }
 
+# Every linked worktree needs the main repository's Git directory to commit.
 # Launched from a linked worktree? Then that checkout is where the work belongs.
 # Without this the sandbox silently falls back to the main checkout, where the
 # spec does not exist and any commits would land on the wrong branch.
-if [ -z "${ECOSYM_WORKTREE:-}" ] && [ -f "$REPO/.git" ]; then
+if [ -z "${ECOSYM_PROJECT:-}" ]; then
   COMMON_DIR="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)"
   export ECOSYM_PROJECT="$(dirname "$COMMON_DIR")"
+fi
+if [ -z "${ECOSYM_WORKTREE:-}" ] && [ -f "$REPO/.git" ]; then
   export ECOSYM_WORKTREE="$REPO"
   echo "detected worktree launch: $ECOSYM_WORKTREE (repo $ECOSYM_PROJECT)"
 fi
@@ -97,6 +100,6 @@ systemd-run --user --unit="$UNIT" --collect \
   ${ECOSYM_WORKTREE:+--setenv=ECOSYM_WORKTREE="$ECOSYM_WORKTREE"} \
   --property=StandardOutput="append:$LOG" \
   --property=StandardError="append:$LOG" \
-  "$HOME/bin/ecosym-sandbox" run --variant max --port "$PORT" \
+  "$REPO/scripts/ecosym-sandbox" run --variant max --port "$PORT" \
   "Follow the instructions in the attached files." \
   -f "$SPEC" -f scripts/run-instruction.md
