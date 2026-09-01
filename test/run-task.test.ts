@@ -321,6 +321,21 @@ test("a recorded result outranks the branch it was made on", () => {
     assert.match(disputed.stdout, /unmerged/);
     assert.match(disputed.stdout, /!!/);
     assert.equal(disputed.status, 1, "a landed claim Git denies must fail the command");
+
+    // A branch merged and left undeleted carries no commit of its own, and
+    // neither does a branch nobody committed to. Ambiguous evidence must
+    // never be spent contradicting a close-out.
+    git(repository, ["branch", "task/kept", "main"]);
+    ledger(["start", "kept-run", "unit-kept", "--branch", "task/kept"]);
+    ledger(["close", "unit-kept", "--outcome", "landed", "--evidence", "merged, see PR"]);
+
+    const ambiguous = ledger(["list"]);
+    const keptRow = ambiguous.stdout
+      .split("\n")
+      .find((line) => line.startsWith("unit-kept"));
+    assert.ok(keptRow !== undefined, ambiguous.stdout);
+    assert.match(keptRow, /unproven/);
+    assert.doesNotMatch(keptRow, /!!/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

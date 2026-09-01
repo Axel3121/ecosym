@@ -138,8 +138,13 @@ def in_main(commit: str | None) -> bool | None:
     return out.returncode == 0
 
 
-def branch_is_empty(branch: str) -> bool:
-    """True only when Git positively says the branch carries nothing of its own."""
+def branch_carries_nothing(branch: str) -> bool:
+    """True when Git says the branch holds no commit of its own.
+
+    This is genuinely ambiguous: a branch merged and left undeleted and a
+    branch created but never committed to both answer yes. It is never
+    evidence that a run failed to land.
+    """
     out = git("rev-list", "--count", f"main..{branch}")
     return out.isdigit() and int(out) == 0
 
@@ -153,10 +158,9 @@ def git_state(
     """What Git can prove about this run, in words that do not overstate it.
 
     The recorded result commit is the specific claim and is asked first: it
-    survives the branch being deleted, renamed, or carrying later unrelated
-    work, and a branch that moved on after a merge says nothing about whether
-    this run's commit landed. Only when no result was recorded does the branch
-    stand in as the weaker, more general signal.
+    survives the branch being deleted, renamed, reused by a later unrelated
+    run, or carrying work committed after the merge. Only when no result was
+    recorded does the branch stand in as the weaker, more general signal.
 
     'unproven' is deliberate. It is the honest answer whenever Git was not
     given enough to decide, and it must not be read as 'nothing happened'.
@@ -167,10 +171,9 @@ def git_state(
     if reachable is False:
         return "unmerged"
 
-    # No usable result commit. The branch is all that is left.
-    if branch and branch in all_branches:
-        if branch_is_empty(branch):
-            return "empty"
+    # No usable result commit. The branch is all that is left, and it can
+    # only speak for itself when it carries commits of its own.
+    if branch and branch in all_branches and not branch_carries_nothing(branch):
         return "merged" if branch in merged else "open"
     return "unproven"
 
@@ -331,10 +334,11 @@ def cmd_list(args: argparse.Namespace) -> int:
                 "git": git_says,
                 "when": epoch or last.get("ts") or 0,
                 "evidence": last.get("evidence") or "",
-                # A close-out is a claim. Git either backs it or it does not.
+                # A close-out is a claim. Only evidence that speaks to this
+                # run's own commit can contradict it; a shared branch name
+                # or an ambiguous state cannot.
                 "disputed": (
-                    state == "landed"
-                    and git_says.lstrip("~") in ("open", "unmerged", "empty")
+                    state == "landed" and git_says.lstrip("~") == "unmerged"
                 ),
             }
         )
