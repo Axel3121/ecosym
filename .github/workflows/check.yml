@@ -58,15 +58,28 @@ jobs:
       - name: tests actually ran
         run: |
           set -o pipefail
-          node --test --test-reporter=tap test/*.test.ts > tap.txt || true
+          node --test --test-reporter=tap test/*.test.ts > tap.txt && status=0 || status=$?
+          for field in pass fail cancelled; do
+            grep -qE "^# $field [0-9]+$" tap.txt || {
+              echo "TAP output has no '# $field' line — the run did not finish" >&2
+              exit 1
+            }
+          done
           count=$(awk '/^# pass [0-9]+$/ { p=$3 } END { print p + 0 }' tap.txt)
           failed=$(awk '/^# fail [0-9]+$/ { f=$3 } END { print f + 0 }' tap.txt)
-          echo "passing assertions: $count, failing: $failed"
-          if [ "$failed" -ne 0 ]; then
-            echo "$failed test(s) failed" >&2
+          cancelled=$(awk '/^# cancelled [0-9]+$/ { c=$3 } END { print c + 0 }' tap.txt)
+          skipped=$(awk '/^# skip [0-9]+$/ { s=$3 } END { print s + 0 }' tap.txt)
+          echo "pass $count, fail $failed, cancelled $cancelled, skipped $skipped (node exit $status)"
+          if [ "$failed" -ne 0 ] || [ "$cancelled" -ne 0 ]; then
+            echo "$failed failed and $cancelled cancelled" >&2
             exit 1
           fi
           if [ "$count" -eq 0 ]; then
             echo "no tests ran — the check suite proves nothing" >&2
+            exit 1
+          fi
+          # Anything else non-zero is a runner problem, not a skip.
+          if [ "$status" -ne 0 ] && [ "$skipped" -eq 0 ]; then
+            echo "node --test exited $status with nothing skipped to explain it" >&2
             exit 1
           fi
