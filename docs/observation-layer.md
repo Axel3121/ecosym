@@ -108,6 +108,10 @@ root selector changes the scope to `root`, and source metadata is selected with
 `{ "scope": "meta", "value": "source-path" }` or `record-index`.
 `{ "coalesce": [SELECTOR, ...] }` chooses the first present non-null value.
 `{ "default": SCALAR, "selector": SELECTOR }` replaces missing or null.
+Temporal meaning follows [PRODUCT.md's distinction between history and current
+truth](../PRODUCT.md#history-and-current-truth-are-distinct) and
+[ARCHITECTURE.md's observation ownership boundary](../ARCHITECTURE.md#observation-owner).
+
 Source time formats are `iso8601`, `date`, `unix-seconds`, and
 `unix-milliseconds`. Numeric source times must convert exactly to a whole
 millisecond; values requiring sub-millisecond truncation are malformed. JSON

@@ -6,7 +6,7 @@ Lanes follow the `finding-triage` rule: fix now / spec it / record it.
 Reviews: Greptile CLI, plus independent compliance and quality reviews per
 round. Full reports archived outside the repository.
 
-## Lane B — specified and fixed under review
+## Lane B — specified and in progress
 
 | Finding | Round | Status |
 |---|---|---|

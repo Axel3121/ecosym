@@ -23,7 +23,7 @@ blank line, a record previously stored under index `2` is now index `1`.
 
 Confirmed twice:
 
-```
+```text
 record-index old (physical line): 0, 2
 record-index new (ordinal):       0, 1
 ```
@@ -34,9 +34,8 @@ under the new one, and verification reports `disagreement` with
 fact under a new identity. The source did not change.
 
 The store gains duplicate records and reports removals and additions that
-never happened. `PRODUCT.md` does not permit the world to report an event that
-did not occur, and a change of stored meaning is a migration with an owner —
-not a side effect of a bug fix.
+never happened. See [PRODUCT.md's canonical product
+invariant](../../PRODUCT.md#the-world-cannot-flatter).
 
 Decide how an existing store crosses this change. A recorded migration, a
 connection-scoped indexing mode, or refusing to read a store written under the

@@ -22,9 +22,8 @@ mode says `physical-line`, and verification will compare and report
 from a store the product had explicitly declared ambiguous. Collection refused
 the same forged connection, because collection does not trust the caller.
 
-This is the defect closed in round 003 for fact admission, reappearing in the
-verification path: a guard that reads its rule from the thing being guarded.
-`SECURITY.md` does not permit a claim to certify itself.
+This repeats the round-003 fact-admission defect in verification. The canonical
+provenance rule is in [SECURITY.md](../../SECURITY.md#ecosym-owned-state-is-user-controlled).
 
 Verification must resolve the mode from the same persisted source collection
 uses. A regression test must forge the field on the connection object and

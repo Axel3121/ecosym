@@ -23,9 +23,10 @@ date**, not about whether the two indexing rules disagree.
 
 The two questions are independent:
 
-- *Is the stored evidence still current?* — answered by collection and
-  verification, and legitimately unknown for a history-only store that has never
-  been re-observed.
+- *Whether the stored evidence is current* — governed by
+  [PRODUCT.md's history/current-truth invariant](../../PRODUCT.md#history-and-current-truth-are-distinct)
+  and the [ARCHITECTURE.md observation-owner boundary](../../ARCHITECTURE.md#observation-owner);
+  this task does not redefine that policy.
 - *Do the two indexing rules assign the same identity to what is already
   stored?* — answerable from the stored records alone.
 
@@ -39,15 +40,15 @@ loses access to its own history.
   changed since collection does not by itself make the stored identities
   ambiguous.
 
-- When the two rules would assign different identities to any stored record, the
-  mode stays `unknown` and the existing accountable remedy remains the only way
-  out. Refusing to guess is the behaviour task 008 established and it must not
-  weaken: unknown must stay unknown wherever a real ambiguity exists.
+- When the two rules assign different identities to any stored record, retain
+  `unknown` and the existing accountable remedy. The governing historical-state
+  policy is in [SECURITY.md](../../SECURITY.md#destructive-changes-to-owned-history);
+  this task preserves the predicate that detects a real ambiguity.
 
-- Nothing about this change lets verification claim agreement for a store whose
-  currentness is not known. Resolving the indexing mode says the identities are
-  unambiguous; it says nothing about whether the store is up to date, and the
-  two must remain separately reported.
+- Resolution must leave verification's currentness outcome unchanged; it proves
+  only that the stored identities are unambiguous. See
+  [PRODUCT.md](../../PRODUCT.md#history-and-current-truth-are-distinct) for the
+  canonical currentness rule.
 
 - Stored identities are never rewritten. Resolution records which rule was
   already in force; it does not renumber history.
@@ -75,6 +76,10 @@ and show the second case still refuses.
 - TypeScript, Node's built-in test runner, no new dependencies.
 - `npm run check` must pass with no test weakened, renamed away, or deleted.
 - Do not touch unrelated behaviour; this is a narrow correction to one predicate.
+- Before semantic reinterpretation of stored history, follow
+  [SECURITY.md's destructive-change requirements](../../SECURITY.md#destructive-changes-to-owned-history)
+  and include the required approval and recovery evidence in the delivery
+  record.
 
 ## Out of scope
 

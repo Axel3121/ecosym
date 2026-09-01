@@ -103,13 +103,10 @@ new rule pass. Do not rewrite stored rows.
 
 ## Evidence
 
-For each finding: the confirmation before the fix, the fix, and a regression
-test shown to fail against `c53f864`. Where a test needs a specific
-construction to be meaningful — as in finding 1 — use the construction the
-product uses.
-
-Run `npm run check` against your exact final commit and report its real
-output and that commit. Obtain an independent read-only review of that exact
-commit through whatever mechanism the repository provides, asking whether each
-guard holds under production settings. If none is available, report the review
-as unavailable rather than as passed.
+Follow [DEVELOPMENT.md's implementation-and-evidence requirements](../../DEVELOPMENT.md#implementation-and-evidence)
+and [independent-review requirements](../../DEVELOPMENT.md#review). For this
+task, retain each finding's pre-fix confirmation and regression evidence against
+`c53f864`; where a test needs a particular construction, use the construction
+the product uses. Once the exact candidate is frozen, ask an independent
+read-only reviewer whether each guard holds under production settings; report
+review as unavailable if no reviewer can run.

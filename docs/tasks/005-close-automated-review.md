@@ -50,7 +50,7 @@ precision.
 
 Reproduce:
 
-```
+```sh
 node -e 'const ms=1756550400.0005*1000; console.log(new Date(ms).toISOString())'
 ```
 
@@ -143,8 +143,10 @@ existing worktree — another run may be using it.
 **A count is a quantity.** Any counter reported in the machine-readable result
 counts the thing its name says, and cannot exceed the population it counts.
 
-**Nothing checked is not the same as nothing wrong.** This is the same rule the
-world obeys elsewhere: absence of observation is not absence of activity.
+**Empty verification remains distinct.** A `verify` result that compared no
+facts is neither `agreement` nor `disagreement`; the outcome and reason must
+make the empty comparison explicit. See [PRODUCT.md's epistemic
+invariant](../../PRODUCT.md#unknown-remains-unknown) for the canonical rule.
 
 **Numeric and textual source times obey one rule.** A source time is accepted
 when it can be held exactly, whatever notation the source used to express it.
@@ -156,21 +158,14 @@ never disagree. It is recorded here so it is not re-raised as new.
 
 ## Evidence
 
-Each finding needs a regression test that fails before its fix. Run it against
-the unfixed code first and record the assertion that failed, quoted from the
-runner. A test that passes before the change proves nothing, and a claim that
-it failed is not the same as its failure output.
-
-For finding 5, record `EXPLAIN QUERY PLAN` output before and after.
-
-Run `npm run check` against your exact final commit and report its real output
-and that commit.
-
-Then freeze that commit and obtain an independent read-only review of it,
-through whatever mechanism this repository currently provides. Ask it whether
-each finding is genuinely closed and whether any regression test would still
-pass with its fix reverted. If review cannot run, report that as unknown —
-absence of review is never evidence of passing.
+Follow [DEVELOPMENT.md's implementation-and-evidence requirements](../../DEVELOPMENT.md#implementation-and-evidence)
+and [independent-review requirements](../../DEVELOPMENT.md#review). For this
+task, retain the finding-specific pre-fix reproduction for every numbered
+finding, including the regression assertion quoted from the runner. For finding
+5, record `EXPLAIN QUERY PLAN` output before and after. Once the exact candidate
+is frozen, ask an independent read-only reviewer whether every finding is closed
+and whether each regression test would still pass with its fix reverted; report
+review as unknown if it cannot run.
 
 Report each finding by number: what you changed, what proves it, and any you
 could not reproduce.
