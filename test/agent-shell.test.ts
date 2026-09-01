@@ -165,6 +165,50 @@ test(
   },
 );
 
+test(
+  "an agent that declares no writes gets the read-only boundary",
+  { skip: !existsSync("/usr/bin/bwrap") },
+  async () => {
+    const worktree = mkdtempSync(join(process.cwd(), ".agent-shell-test-"));
+    mkdirSync(join(worktree, ".opencode", "agent"), { recursive: true });
+    for (const [name, write] of [
+      ["reader", "false"],
+      ["writer", "true"],
+    ]) {
+      writeFileSync(
+        join(worktree, ".opencode", "agent", `${name}.md`),
+        `---\nmode: subagent\ntools:\n  write: ${write}\n---\nrole\n`,
+      );
+    }
+    const tracked = join(worktree, "tracked.txt");
+    try {
+      for (const [agent, expectWrite] of [
+        ["reader", false],
+        ["writer", true],
+      ] as [string, boolean][]) {
+        writeFileSync(tracked, "original\n");
+        await executeAgentShellCommand(
+          { command: `printf changed > ${shellQuote(tracked)}` },
+          {
+            abort: new AbortController().signal,
+            agent,
+            directory: worktree,
+            worktree,
+          },
+          { HOME: process.env.HOME, PATH: process.env.PATH } as NodeJS.ProcessEnv,
+        );
+        assert.equal(
+          readFileSync(tracked, "utf8") === "changed",
+          expectWrite,
+          `${agent} declares write: ${String(expectWrite)} and the shell must match it`,
+        );
+      }
+    } finally {
+      rmSync(worktree, { force: true, recursive: true });
+    }
+  },
+);
+
 function runAgentShell(
   mode: "agent" | "prober",
   worktree: string,

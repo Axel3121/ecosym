@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
@@ -161,7 +161,9 @@ export async function executeAgentShellCommand(
   context: AgentShellCommandContext,
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<string> {
-  const mode = context.agent === "prober" ? "prober" : "agent";
+  const mode = declaresNoWrites(context.agent, context.worktree, environment.ECOSYM_PROJECT)
+    ? "prober"
+    : "agent";
   const requestedWorkdir = input.workdir ?? context.directory;
   const workdir = isAbsolute(requestedWorkdir)
     ? requestedWorkdir
@@ -187,6 +189,25 @@ export async function executeAgentShellCommand(
   } finally {
     rmSync(emptyDirectory, { force: true, recursive: true });
   }
+}
+
+function declaresNoWrites(
+  agent: string,
+  worktree: string,
+  project: string | undefined,
+): boolean {
+  if (!/^[A-Za-z0-9._-]+$/u.test(agent)) {
+    return true;
+  }
+  for (const root of [worktree, ...(project === undefined ? [] : [resolve(project)])]) {
+    const definition = join(root, ".opencode", "agent", `${agent}.md`);
+    if (!existsSync(definition)) {
+      continue;
+    }
+    const frontmatter = readFileSync(definition, "utf8").split(/^---\s*$/mu)[1] ?? "";
+    return /^\s*write:\s*false\s*$/mu.test(frontmatter);
+  }
+  return false;
 }
 
 function sandboxDefinitionPaths(worktree: string, project: string | undefined): string[] {
