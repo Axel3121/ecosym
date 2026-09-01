@@ -1,3 +1,16 @@
+---
+needs:
+  - 004-accept-real-utc-instants
+touches:
+  - scripts/run-task
+  - src/materialize.ts
+  - src/store.ts
+  - src/verify.ts
+  - test/collection.test.ts
+  - test/run-task.test.ts
+  - test/store.test.ts
+  - test/verify.test.ts
+---
 # Task 005 - Close what the automated reviewer found
 
 Read `PRODUCT.md`, `ARCHITECTURE.md`, `SECURITY.md` and `DEVELOPMENT.md` first.

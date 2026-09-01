@@ -1,3 +1,24 @@
+---
+needs:
+  - 001-observation-layer
+touches:
+  - .opencode/agent/prober.md
+  - .opencode/tools/bash.ts
+  - docs/observation-layer.md
+  - opencode.json
+  - scripts/agent-shell
+  - scripts/ecosym-sandbox
+  - scripts/run-task
+  - scripts/verify-sandbox
+  - src/agent-shell-cli.ts
+  - src/agent-shell.ts
+  - src/sandbox-cli.ts
+  - src/sandbox-runtime.ts
+  - src/sandbox.ts
+  - test/agent-shell.test.ts
+  - test/run-task.test.ts
+  - test/sandbox.test.ts
+---
 # Task 010 — A run reaches only the evidence it was connected to
 
 Read `PRODUCT.md`, `ARCHITECTURE.md`, `SECURITY.md` and `DEVELOPMENT.md` first.

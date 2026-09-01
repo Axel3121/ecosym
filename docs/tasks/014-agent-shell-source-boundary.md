@@ -1,3 +1,13 @@
+---
+needs: []
+touches:
+  - src/agent-shell.ts
+  - src/sandbox.ts
+  - src/sandbox-cli.ts
+  - src/sandbox-runtime.ts
+  - test/agent-shell.test.ts
+  - test/sandbox.test.ts
+---
 # Task 014 — A connected source is unwritable through every shell this repository ships
 
 Closes #9.

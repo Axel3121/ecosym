@@ -1,3 +1,15 @@
+---
+needs:
+  - 003-store-boundary-values
+touches:
+  - src/materialize.ts
+  - src/store.ts
+  - src/time.ts
+  - src/verify.ts
+  - test/collection.test.ts
+  - test/store.test.ts
+  - test/verify.test.ts
+---
 # Task 004 - Accept the UTC instants we can actually hold
 
 Read `PRODUCT.md`, `ARCHITECTURE.md`, `SECURITY.md` and `DEVELOPMENT.md` first.

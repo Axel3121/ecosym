@@ -1,3 +1,34 @@
+---
+needs: []
+touches:
+  - .github/workflows/check.yml
+  - package.json
+  - package-lock.json
+  - src/cli.ts
+  - src/collect.ts
+  - src/config.ts
+  - src/json.ts
+  - src/materialize.ts
+  - src/paths.ts
+  - src/readers.ts
+  - src/record-index.ts
+  - src/store.ts
+  - src/time.ts
+  - src/verification-facts.ts
+  - src/verify.ts
+  - test/cli.test.ts
+  - test/collection.test.ts
+  - test/config.test.ts
+  - test/csv-cli.test.ts
+  - test/fifth-source.test.ts
+  - test/store.test.ts
+  - test/verify.test.ts
+  - test/fixtures/fifth-source/habitat-survey.csv
+  - test/fixtures/verification/corrupted.jsonl
+  - test/fixtures/verification/original.jsonl
+  - test/helpers/interrupted-collection-worker.ts
+  - test/helpers/register-worker.ts
+---
 # Task 001 - The observation layer
 
 Read `PRODUCT.md`, `ARCHITECTURE.md`, `SECURITY.md` and `DEVELOPMENT.md` at the

@@ -1,3 +1,16 @@
+---
+needs:
+  - 007-stored-identity-migration
+touches:
+  - src/collect.ts
+  - src/record-index.ts
+  - src/store.ts
+  - src/verification-facts.ts
+  - src/verify.ts
+  - test/cli.test.ts
+  - test/collection.test.ts
+  - test/store.test.ts
+---
 # Task 008 - Verification must trust the store, and refuse only what is ambiguous
 
 Read `PRODUCT.md`, `ARCHITECTURE.md`, `SECURITY.md` and `DEVELOPMENT.md` first.

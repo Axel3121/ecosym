@@ -1,3 +1,11 @@
+---
+needs: []
+touches:
+  - .github/dependabot.yml
+  - .github/workflows/check.yml
+  - package.json
+  - test/check-workflow.test.ts
+---
 # Task 016 — The dependency check examines dependencies that exist
 
 Closes #12.

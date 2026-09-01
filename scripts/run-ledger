@@ -32,8 +32,10 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from pathlib import PurePosixPath
 
 OUTCOMES = ("landed", "dropped", "superseded", "failed")
+TASK_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 # A run's unit name is <project>-task-<task>-<epoch>, or <project>-resume-<epoch>
 # for a resumed session that carries no task of its own.
@@ -60,6 +62,76 @@ def ledger_path() -> Path:
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
+
+
+class DeclarationError(ValueError):
+    pass
+
+
+def read_declaration(path: Path) -> dict[str, list[str]]:
+    """Read the strict YAML subset used at the start of every task spec."""
+    try:
+        lines = path.read_text().splitlines()
+    except OSError as error:
+        raise DeclarationError(f"cannot read declaration: {error}") from error
+
+    if not lines or lines[0] != "---":
+        raise DeclarationError("missing scheduling declaration at the start of the file")
+    try:
+        end = lines.index("---", 1)
+    except ValueError as error:
+        raise DeclarationError("scheduling declaration has no closing '---'") from error
+
+    values: dict[str, list[str] | None] = {"needs": None, "touches": None}
+    current: str | None = None
+    for lineno, line in enumerate(lines[1:end], 2):
+        if not line.strip():
+            continue
+        header = re.fullmatch(r"(needs|touches):(?: (\[\]))?", line)
+        if header:
+            name = header.group(1)
+            if values[name] is not None:
+                raise DeclarationError(f"line {lineno}: duplicate '{name}' field")
+            values[name] = []
+            current = None if header.group(2) else name
+            continue
+        item = re.fullmatch(r"  - (\S(?:.*\S)?)", line)
+        if item and current:
+            assert values[current] is not None
+            values[current].append(item.group(1))
+            continue
+        raise DeclarationError(f"line {lineno}: invalid scheduling declaration syntax")
+
+    for name in ("needs", "touches"):
+        if values[name] is None:
+            raise DeclarationError(f"missing '{name}' field")
+
+    needs = values["needs"] or []
+    touches = values["touches"] or []
+    if not touches:
+        raise DeclarationError("'touches' must name at least one repository path")
+    if len(needs) != len(set(needs)):
+        raise DeclarationError("'needs' contains a duplicate task")
+    if len(touches) != len(set(touches)):
+        raise DeclarationError("'touches' contains a duplicate path")
+
+    for need in needs:
+        if not TASK_RE.fullmatch(need) or ".." in need:
+            raise DeclarationError(f"invalid task in 'needs': {need!r}")
+    for touch in touches:
+        stripped = touch.removesuffix("/")
+        parts = PurePosixPath(stripped).parts
+        if (
+            not stripped
+            or touch.startswith("/")
+            or "\\" in touch
+            or any(part in ("", ".", "..") for part in parts)
+            or any(character in touch for character in "*?[")
+            or PurePosixPath(stripped).as_posix() != stripped
+        ):
+            raise DeclarationError(f"invalid repository path in 'touches': {touch!r}")
+
+    return {"needs": needs, "touches": touches}
 
 
 def git(*args: str) -> str:
@@ -253,6 +325,11 @@ def log_mtime(unit: str) -> int | None:
 
 
 def unit_active(unit: str) -> bool:
+    return unit_activity(unit) is True
+
+
+def unit_activity(unit: str) -> bool | None:
+    """True while a unit can still touch files, False only when confirmed done."""
     try:
         out = subprocess.run(
             ["systemctl", "--user", "is-active", f"{unit}.service"],
@@ -261,22 +338,228 @@ def unit_active(unit: str) -> bool:
             timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
+        return None
+    state = out.stdout.strip()
+    if state in ("active", "activating", "reloading", "deactivating"):
+        return True
+    if state in ("inactive", "failed", "unknown", "not-found"):
         return False
-    return out.stdout.strip() == "active"
+    return None
+
+
+def path_parts(path: str) -> tuple[str, ...]:
+    return PurePosixPath(path.removesuffix("/")).parts
+
+
+def paths_overlap(left: str, right: str) -> bool:
+    left_parts = path_parts(left)
+    right_parts = path_parts(right)
+    shorter = min(len(left_parts), len(right_parts))
+    return left_parts[:shorter] == right_parts[:shorter]
+
+
+def record_declaration(record: dict) -> dict[str, list[str]] | None:
+    needs = record.get("needs")
+    touches = record.get("touches")
+    if not isinstance(needs, list) or not isinstance(touches, list):
+        return None
+    if not all(isinstance(value, str) for value in needs + touches) or not touches:
+        return None
+    return {"needs": needs, "touches": touches}
+
+
+def started_record(records: list[dict]) -> dict | None:
+    return next((record for record in reversed(records) if record.get("event") == "started"), None)
+
+
+def landed_tasks(records: list[dict]) -> set[str]:
+    """Tasks with a recorded result commit that Git still places in main."""
+    landed: set[str] = set()
+    for unit_records in by_unit(records).values():
+        record = unit_records[-1]
+        task = record.get("task")
+        if (
+            record.get("event") == "closed"
+            and record.get("outcome") == "landed"
+            and isinstance(task, str)
+            and in_main(record.get("result_commit")) is True
+        ):
+            landed.add(task)
+    return landed
+
+
+def running_runs(records: list[dict]) -> tuple[list[dict], list[str]]:
+    """Live declarations plus uncertainties that prevent a safe answer."""
+    grouped = by_unit(records)
+    running: list[dict] = []
+    unknown: list[str] = []
+    for unit, unit_records in grouped.items():
+        if unit_records[-1].get("event") == "closed":
+            continue
+        activity = unit_activity(unit)
+        if activity is None:
+            unknown.append(f"cannot determine whether run {unit} is active")
+            continue
+        if not activity:
+            continue
+        started = started_record(unit_records)
+        task = (started or {}).get("task") or parse_unit(unit)[1]
+        declaration = record_declaration(started or {})
+        running.append(
+            {
+                "unit": unit,
+                "task": task,
+                "touches": declaration["touches"] if declaration else None,
+            }
+        )
+
+    logs = {path.stem for path in runs_dir().glob("*.log")}
+    for unit in sorted(logs - set(grouped)):
+        activity = unit_activity(unit)
+        if activity is None:
+            unknown.append(f"cannot determine whether unrecorded run {unit} is active")
+        elif activity:
+            running.append(
+                {
+                    "unit": unit,
+                    "task": parse_unit(unit)[1],
+                    "touches": None,
+                }
+            )
+    return running, unknown
+
+
+def start_reasons(
+    task: str,
+    declaration: dict[str, list[str]],
+    records: list[dict],
+) -> list[str]:
+    reasons: list[str] = []
+    landed = landed_tasks(records)
+    if task in landed:
+        reasons.append(f"task {task} already landed")
+    unmet = [need for need in declaration["needs"] if need not in landed]
+    if unmet:
+        reasons.append(f"needs not landed: {', '.join(unmet)}")
+
+    running, unknown = running_runs(records)
+    reasons.extend(unknown)
+    for run in running:
+        held = run["touches"]
+        if held is None:
+            reasons.append(
+                f"running task {run['task']} ({run['unit']}) has no launch-time territory declaration"
+            )
+            continue
+        overlaps = sorted(
+            {
+                f"{candidate} <> {occupied}"
+                for candidate in declaration["touches"]
+                for occupied in held
+                if paths_overlap(candidate, occupied)
+            }
+        )
+        if overlaps:
+            reasons.append(
+                f"territory conflicts with running task {run['task']} ({run['unit']}): "
+                + ", ".join(overlaps)
+            )
+    return reasons
 
 
 def cmd_start(args: argparse.Namespace) -> int:
-    append(
-        {
-            "event": "started",
-            "unit": args.unit,
-            "task": args.task,
-            "branch": args.branch,
-            "worktree": args.worktree,
-            "base_commit": args.commit or git("rev-parse", "HEAD"),
-        }
-    )
+    record = {
+        "event": "started",
+        "unit": args.unit,
+        "task": args.task,
+        "branch": args.branch,
+        "worktree": args.worktree,
+        "base_commit": args.commit or git("rev-parse", "HEAD"),
+    }
+    if args.spec:
+        try:
+            declaration = read_declaration(Path(args.spec))
+        except DeclarationError as error:
+            print(f"{args.spec}: {error}", file=sys.stderr)
+            return 1
+        record.update(declaration)
+        record["spec"] = str(Path(args.spec).resolve())
+    append(record)
     return 0
+
+
+def git_paths(worktree: Path, *args: str) -> set[str] | None:
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(worktree), *args],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return {
+        value.decode("utf-8", errors="surrogateescape")
+        for value in out.stdout.split(b"\0")
+        if value
+    }
+
+
+def changed_paths(started: dict, result_commit: str | None) -> tuple[set[str] | None, str | None]:
+    worktree_value = started.get("worktree")
+    base_commit = started.get("base_commit")
+    if not isinstance(worktree_value, str) or not worktree_value:
+        return None, "the run has no recorded worktree"
+    if not isinstance(base_commit, str) or not base_commit:
+        return None, "the run has no recorded base commit"
+    worktree = Path(worktree_value)
+    if not worktree.is_dir():
+        return None, f"the recorded worktree does not exist: {worktree}"
+
+    target = result_commit or "HEAD"
+    committed = git_paths(
+        worktree,
+        "diff",
+        "--name-only",
+        "--no-renames",
+        "-z",
+        base_commit,
+        target,
+        "--",
+    )
+    unstaged = git_paths(worktree, "diff", "--name-only", "--no-renames", "-z", "--")
+    staged = git_paths(
+        worktree,
+        "diff",
+        "--cached",
+        "--name-only",
+        "--no-renames",
+        "-z",
+        "--",
+    )
+    untracked = git_paths(worktree, "ls-files", "--others", "--exclude-standard", "-z")
+    if any(paths is None for paths in (committed, unstaged, staged, untracked)):
+        return None, "Git could not determine every path changed by the run"
+    return set().union(committed or set(), unstaged or set(), staged or set(), untracked or set()), None
+
+
+def territory_audit(
+    started: dict,
+    result_commit: str | None,
+) -> tuple[list[str] | None, list[str] | None, str | None]:
+    declaration = record_declaration(started)
+    if declaration is None:
+        return None, None, None
+    changed, error = changed_paths(started, result_commit)
+    if changed is None:
+        return None, None, error
+    undeclared = sorted(
+        path
+        for path in changed
+        if not any(paths_overlap(path, declared) for declared in declaration["touches"])
+    )
+    return sorted(changed), undeclared, None
 
 
 def cmd_close(args: argparse.Namespace) -> int:
@@ -298,7 +581,8 @@ def cmd_close(args: argparse.Namespace) -> int:
             print(f"no run named {args.unit} in the ledger", file=sys.stderr)
             return 1
 
-    last = grouped[unit][-1]
+    unit_records = grouped[unit]
+    last = unit_records[-1]
     if last.get("event") == "closed" and not args.reopen:
         print(
             f"{unit} is already closed as {last.get('outcome')!r}; "
@@ -307,18 +591,52 @@ def cmd_close(args: argparse.Namespace) -> int:
         )
         return 1
 
+    started = started_record(unit_records) or last
+    changed, undeclared, audit_error = territory_audit(started, args.commit)
+    if record_declaration(started) is not None and args.outcome == "landed":
+        if audit_error:
+            append(
+                {
+                    "event": "territory-audit-failed",
+                    "unit": unit,
+                    "task": started.get("task"),
+                    "reason": audit_error,
+                }
+            )
+            print(f"cannot close {unit} as landed: {audit_error}", file=sys.stderr)
+            return 1
+        if undeclared:
+            append(
+                {
+                    "event": "territory-violation",
+                    "unit": unit,
+                    "task": started.get("task"),
+                    "changed_paths": changed,
+                    "undeclared_paths": undeclared,
+                }
+            )
+            print(
+                f"cannot close {unit} as landed; paths outside its declared territory: "
+                + ", ".join(undeclared),
+                file=sys.stderr,
+            )
+            return 1
+
     append(
         {
             "event": "closed",
             "unit": unit,
-            "task": last.get("task"),
-            "branch": args.branch or last.get("branch"),
+            "task": started.get("task"),
+            "branch": args.branch or started.get("branch"),
             "outcome": args.outcome,
             "evidence": args.evidence,
             # The commit a run STARTED from is its base, and proves nothing
             # about the work. Only a commit named at close-out is a result.
-            "base_commit": last.get("base_commit") or last.get("commit"),
+            "base_commit": started.get("base_commit") or started.get("commit"),
             "result_commit": args.commit,
+            "changed_paths": changed,
+            "undeclared_paths": undeclared,
+            "territory_audit": "unknown" if audit_error else ("passed" if changed is not None else None),
         }
     )
     print(f"{unit}: {args.outcome}")
@@ -359,6 +677,55 @@ def cmd_show(args: argparse.Namespace) -> int:
         return 1
     for r in grouped[args.unit]:
         print(json.dumps(r, sort_keys=True))
+    return 0
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    failed = False
+    for value in args.specs:
+        path = Path(value)
+        try:
+            read_declaration(path)
+        except DeclarationError as error:
+            print(f"{path}: {error}", file=sys.stderr)
+            failed = True
+    return 1 if failed else 0
+
+
+def declaration_for_task(task: str, spec: str | None = None) -> tuple[dict[str, list[str]] | None, str | None]:
+    path = Path(spec) if spec else repo_root() / "docs" / "tasks" / f"{task}.md"
+    try:
+        return read_declaration(path), None
+    except DeclarationError as error:
+        return None, f"{path}: {error}"
+
+
+def cmd_can_start(args: argparse.Namespace) -> int:
+    declaration, error = declaration_for_task(args.task, args.spec)
+    if error:
+        print(f"cannot start {args.task}: {error}", file=sys.stderr)
+        return 1
+    assert declaration is not None
+    reasons = start_reasons(args.task, declaration, read_records())
+    if reasons:
+        for reason in reasons:
+            print(f"cannot start {args.task}: {reason}", file=sys.stderr)
+        return 1
+    print(f"{args.task} may start")
+    return 0
+
+
+def cmd_ready(args: argparse.Namespace) -> int:
+    records = read_records()
+    for path in sorted((repo_root() / "docs" / "tasks").glob("*.md")):
+        task = path.stem
+        try:
+            declaration = read_declaration(path)
+        except DeclarationError as error:
+            print(f"{task} is not startable: {error}", file=sys.stderr)
+            continue
+        if not start_reasons(task, declaration, records):
+            print(task)
     return 0
 
 
@@ -509,6 +876,7 @@ def main() -> int:
     s.add_argument("--branch")
     s.add_argument("--worktree")
     s.add_argument("--commit")
+    s.add_argument("--spec", help="launch-time task specification to snapshot")
     s.set_defaults(fn=cmd_start)
 
     s = sub.add_parser("close", help="record what a run came to")
@@ -526,6 +894,18 @@ def main() -> int:
     s = sub.add_parser("show", help="every record for one run")
     s.add_argument("unit")
     s.set_defaults(fn=cmd_show)
+
+    s = sub.add_parser("validate", help="validate task scheduling declarations")
+    s.add_argument("specs", nargs="+")
+    s.set_defaults(fn=cmd_validate)
+
+    s = sub.add_parser("can-start", help="refuse a task whose needs or territory are blocked")
+    s.add_argument("task")
+    s.add_argument("--spec", help="candidate specification (defaults to docs/tasks/<task>.md)")
+    s.set_defaults(fn=cmd_can_start)
+
+    s = sub.add_parser("ready", help="list declared tasks that may begin now")
+    s.set_defaults(fn=cmd_ready)
 
     args = p.parse_args()
     return args.fn(args)

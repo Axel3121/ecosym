@@ -1,3 +1,19 @@
+---
+needs: []
+touches:
+  - src/config.ts
+  - src/json.ts
+  - src/materialize.ts
+  - src/readers.ts
+  - src/store.ts
+  - src/time.ts
+  - test/cli.test.ts
+  - test/collection.test.ts
+  - test/config.test.ts
+  - test/csv-cli.test.ts
+  - test/store.test.ts
+  - test/verify.test.ts
+---
 # Task 015 — A guard is defended by a test or it is deleted
 
 Closes #10.

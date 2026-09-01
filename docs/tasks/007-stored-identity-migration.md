@@ -1,3 +1,14 @@
+---
+needs:
+  - 006-guards-under-production-settings
+touches:
+  - src/collect.ts
+  - src/readers.ts
+  - src/store.ts
+  - src/verify.ts
+  - test/collection.test.ts
+  - test/store.test.ts
+---
 # Task 007 - Do not rewrite identity that is already stored
 
 Read `PRODUCT.md`, `ARCHITECTURE.md`, `SECURITY.md` and `DEVELOPMENT.md` first.

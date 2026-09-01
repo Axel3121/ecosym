@@ -1,3 +1,12 @@
+---
+needs:
+  - 001-observation-layer
+  - 002-close-review-findings
+  - 003-store-boundary-values
+  - 004-accept-real-utc-instants
+touches:
+  - docs/tasks/triage-observation-layer.md
+---
 # Finding triage — observation layer, rounds 001-004
 
 Every finding from the independent reviews of this branch, and where it went.

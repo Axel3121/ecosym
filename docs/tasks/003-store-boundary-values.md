@@ -1,3 +1,20 @@
+---
+needs:
+  - 002-close-review-findings
+touches:
+  - src/collect.ts
+  - src/materialize.ts
+  - src/store.ts
+  - src/time.ts
+  - test/cli.test.ts
+  - test/collection.test.ts
+  - test/store.test.ts
+  - test/verify.test.ts
+  - test/fixtures/fifth-source/habitat-survey.csv
+  - test/fixtures/verification/corrupted.jsonl
+  - test/fixtures/verification/original.jsonl
+  - test/helpers/interrupted-collection-worker.ts
+---
 # Task 003 - Make the store boundary check values, not just field names
 
 Read `PRODUCT.md`, `ARCHITECTURE.md`, `SECURITY.md` and `DEVELOPMENT.md` first.

@@ -1,3 +1,19 @@
+---
+needs:
+  - 005-close-automated-review
+touches:
+  - scripts/run-task
+  - src/cli.ts
+  - src/materialize.ts
+  - src/readers.ts
+  - src/store.ts
+  - src/verify.ts
+  - test/cli.test.ts
+  - test/collection.test.ts
+  - test/run-task.test.ts
+  - test/store.test.ts
+  - test/verify.test.ts
+---
 # Task 006 - Make the new guards hold under production settings
 
 Read `PRODUCT.md`, `ARCHITECTURE.md`, `SECURITY.md` and `DEVELOPMENT.md` first.

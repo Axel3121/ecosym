@@ -1,3 +1,10 @@
+---
+needs:
+  - 008-verification-trusts-the-store
+touches:
+  - src/store.ts
+  - test/store.test.ts
+---
 # Task 009 — Equivalence is decided on stored identity, not on a still source
 
 Read `PRODUCT.md`, `ARCHITECTURE.md`, `SECURITY.md` and `DEVELOPMENT.md` first.

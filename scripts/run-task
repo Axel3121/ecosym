@@ -1,33 +1,33 @@
 #!/usr/bin/env bash
 # Launch a task specification as a sandboxed OpenCode run.
 #
-#   run-task 001-observation-layer                  # in the main checkout
-#   run-task 004-fix --worktree                     # isolated, branch task/004-fix
-#   run-task 004-fix --worktree --branch other      # isolated, on an existing branch
+#   run-task 001-observation-layer                  # isolated, branch task/001-observation-layer
+#   run-task 004-fix --branch other                 # isolated, on an existing branch
 #
-# --worktree gives the run its own checkout so concurrent runs cannot overwrite
-# each other's files or test against half-finished work. The repository, its
-# history and its branches stay shared; only the working tree is private.
+# Every run gets its own checkout so concurrent runs cannot overwrite each
+# other's files or test against half-finished work. The repository, its history
+# and its branches stay shared; only the working tree is private.
 #
 # Model, subagents, permissions and canonical reading all come from
 # opencode.json and .opencode/agent/ — not from here.
 set -euo pipefail
 
 TASK=""
-USE_WORKTREE=0
 BRANCH=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --worktree) USE_WORKTREE=1; shift ;;
-    --branch)   BRANCH="${2:?--branch needs a name}"; USE_WORKTREE=1; shift 2 ;;
+    # Kept as a harmless spelling for callers written before worktrees became
+    # mandatory. It no longer changes launch behaviour.
+    --worktree) shift ;;
+    --branch)   BRANCH="${2:?--branch needs a name}"; shift 2 ;;
     -*)         echo "unknown option: $1" >&2; exit 2 ;;
     *)          [ -z "$TASK" ] || { echo "one task at a time" >&2; exit 2; }
                 TASK="$1"; shift ;;
   esac
 done
 
-[ -n "$TASK" ] || { echo "usage: run-task <task-name> [--worktree] [--branch <name>]" >&2; exit 2; }
+[ -n "$TASK" ] || { echo "usage: run-task <task-name> [--branch <name>]" >&2; exit 2; }
 
 # A task name selects a specification the agent will follow as instructions.
 # Anything that escapes docs/tasks/ would let an unrelated file be treated as
@@ -45,51 +45,59 @@ SPEC="docs/tasks/${TASK}.md"
 [ -f "$SPEC" ] || { echo "no spec at $SPEC" >&2; exit 1; }
 
 # Every linked worktree needs the main repository's Git directory to commit.
-# Launched from a linked worktree? Then that checkout is where the work belongs.
-# Without this the sandbox silently falls back to the main checkout, where the
-# spec does not exist and any commits would land on the wrong branch.
 if [ -z "${ECOSYM_PROJECT:-}" ]; then
   COMMON_DIR="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)"
   export ECOSYM_PROJECT="$(dirname "$COMMON_DIR")"
 fi
-if [ -z "${ECOSYM_WORKTREE:-}" ] && [ -f "$REPO/.git" ]; then
-  export ECOSYM_WORKTREE="$REPO"
-  echo "detected worktree launch: $ECOSYM_WORKTREE (repo $ECOSYM_PROJECT)"
-fi
 
-RUNS="${XDG_DATA_HOME:-$HOME/.local/share}/ecosym/runs"
-mkdir -p "$RUNS"
+STATE="${XDG_DATA_HOME:-$HOME/.local/share}/ecosym"
+RUNS="$STATE/runs"
+mkdir -p "$RUNS" "$STATE/worktrees"
 
-WORKTREE=""
-if [ "$USE_WORKTREE" = 1 ]; then
-  BRANCH="${BRANCH:-task/${TASK}}"
-  WORKTREE="${XDG_DATA_HOME:-$HOME/.local/share}/ecosym/worktrees/${TASK}"
+# Two launchers must not both inspect an empty territory and then start. The
+# kernel releases this lock if a launcher dies, unlike a lock directory that
+# can strand every later run after an interruption.
+exec 9>"$STATE/schedule.lock"
+flock -x 9
 
-  if [ -d "$WORKTREE" ]; then
-    if HELD_BRANCH="$(git -C "$WORKTREE" symbolic-ref --quiet --short HEAD 2>/dev/null)"; then
-      if [ "$HELD_BRANCH" != "$BRANCH" ]; then
-        echo "worktree $WORKTREE holds branch $HELD_BRANCH; requested branch $BRANCH" >&2
-        exit 1
-      fi
-    elif HELD_COMMIT="$(git -C "$WORKTREE" rev-parse --short HEAD 2>/dev/null)"; then
-      echo "worktree $WORKTREE is detached at $HELD_COMMIT; requested branch $BRANCH" >&2
-      exit 1
-    else
-      echo "existing worktree path is not a Git worktree: $WORKTREE" >&2
+# The second launcher in a race waits above and then asks again here, after the
+# first run has been registered. This call is intentionally one line: the
+# regression test removes it to prove the refusal comes from this check.
+"$REPO/scripts/run-ledger" can-start "$TASK" --spec "$SPEC"
+
+BRANCH="${BRANCH:-task/${TASK}}"
+WORKTREE="$STATE/worktrees/${TASK}"
+
+if [ -d "$WORKTREE" ]; then
+  if HELD_BRANCH="$(git -C "$WORKTREE" symbolic-ref --quiet --short HEAD 2>/dev/null)"; then
+    if [ "$HELD_BRANCH" != "$BRANCH" ]; then
+      echo "worktree $WORKTREE holds branch $HELD_BRANCH; requested branch $BRANCH" >&2
       exit 1
     fi
-    echo "reusing worktree: $WORKTREE"
-  elif git show-ref --quiet --verify "refs/heads/${BRANCH}"; then
-    git worktree add "$WORKTREE" "$BRANCH" >&2
+  elif HELD_COMMIT="$(git -C "$WORKTREE" rev-parse --short HEAD 2>/dev/null)"; then
+    echo "worktree $WORKTREE is detached at $HELD_COMMIT; requested branch $BRANCH" >&2
+    exit 1
   else
-    git worktree add -b "$BRANCH" "$WORKTREE" >&2
+    echo "existing worktree path is not a Git worktree: $WORKTREE" >&2
+    exit 1
   fi
-
-  # The spec may be untracked in the main checkout; the run needs it either way.
-  mkdir -p "$WORKTREE/docs/tasks"
-  cp "$SPEC" "$WORKTREE/$SPEC"
-  export ECOSYM_WORKTREE="$WORKTREE"
+  if [ -n "$(git -C "$WORKTREE" status --porcelain --untracked-files=all)" ]; then
+    echo "worktree $WORKTREE has changes from an earlier run; refusing to reuse it" >&2
+    exit 1
+  fi
+  echo "reusing worktree: $WORKTREE"
+elif git show-ref --quiet --verify "refs/heads/${BRANCH}"; then
+  git worktree add "$WORKTREE" "$BRANCH" >&2
+else
+  git worktree add -b "$BRANCH" "$WORKTREE" >&2
 fi
+
+# This copy is the declaration the run starts with. run-ledger snapshots its
+# parsed needs and touches below, so edits made during the run cannot shrink the
+# territory it holds and the shared branch is never consulted for a live run.
+mkdir -p "$WORKTREE/docs/tasks"
+cp "$SPEC" "$WORKTREE/$SPEC"
+export ECOSYM_WORKTREE="$WORKTREE"
 
 # Run under a transient user unit so the work survives a Hermes restart.
 # The sandbox keeps --die-with-parent, but its parent is now systemd, not us.
@@ -133,7 +141,7 @@ echo "$PORT" > "$RUNS/${UNIT}.port"
 echo "unit: $UNIT"
 echo "log:  $LOG"
 echo "port: $PORT"
-[ -n "$WORKTREE" ] && echo "tree: $WORKTREE (branch $BRANCH)"
+echo "tree: $WORKTREE (branch $BRANCH)"
 
 # A run that stops working holds its unit open, so nothing notices. Watch the
 # log rather than the clock: silence is what tells a hung run from a slow one.
@@ -148,7 +156,7 @@ echo "port: $PORT"
 # the watchdog's systemd-run call is made, $UNIT is already active and a
 # launch that writes nothing at all is still covered.
 systemd-run --user --unit="$UNIT" --collect \
-  --working-directory="${WORKTREE:-$REPO}" \
+  --working-directory="$WORKTREE" \
   ${ECOSYM_PROJECT:+--setenv=ECOSYM_PROJECT="$ECOSYM_PROJECT"} \
   ${ECOSYM_WORKTREE:+--setenv=ECOSYM_WORKTREE="$ECOSYM_WORKTREE"} \
   --property=StandardOutput="append:$LOG" \
@@ -157,18 +165,26 @@ systemd-run --user --unit="$UNIT" --collect \
   "Follow the instructions in the attached files." \
   -f "$SPEC" -f scripts/run-instruction.md
 
+# The run is now the ledger's business. A launch that is not recorded is a run
+# nobody will account for later. It also has no territory other launchers can
+# inspect, so allowing it to continue would break the collision guarantee.
+if ! "$REPO/scripts/run-ledger" start "$TASK" "$UNIT" \
+  --branch "$BRANCH" \
+  --worktree "$WORKTREE" \
+  --spec "$WORKTREE/$SPEC" \
+  --commit "$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null || true)"; then
+  systemctl --user stop "$UNIT.service" >/dev/null 2>&1 || true
+  echo "run stopped because the ledger did not record its territory: $UNIT" >&2
+  exit 1
+fi
+
+# The registration above makes the territory visible before another launcher
+# can acquire the lock and check it.
+flock -u 9
+
 systemd-run --user --unit="${UNIT}-watchdog" --collect \
   "$REPO/scripts/run-watchdog" "$UNIT" "$LOG" "${ECOSYM_IDLE_SECONDS:-900}" \
   >/dev/null 2>&1 || echo "warning: no watchdog for $UNIT" >&2
-
-# The run is now the ledger's business. A launch that is not recorded is a run
-# nobody will account for later, so this failing must not pass unnoticed —
-# but it must not kill a run that has already started either.
-"$REPO/scripts/run-ledger" start "$TASK" "$UNIT" \
-  ${BRANCH:+--branch "$BRANCH"} \
-  ${WORKTREE:+--worktree "$WORKTREE"} \
-  --commit "$(git -C "${WORKTREE:-$REPO}" rev-parse HEAD 2>/dev/null || true)" \
-  || echo "warning: run started but the ledger did not record it: $UNIT" >&2
 
 echo
 echo "close it out when it is done:"

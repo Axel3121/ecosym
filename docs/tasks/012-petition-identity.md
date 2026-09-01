@@ -1,3 +1,9 @@
+---
+needs: []
+touches:
+  - docs/petition-identity.md
+  - docs/tasks/012-petition-identity.md
+---
 # Task 012 — Design how a petition proves it is the user's
 
 Read `PRODUCT.md`, `ARCHITECTURE.md`, `SECURITY.md` and `DEVELOPMENT.md` first.

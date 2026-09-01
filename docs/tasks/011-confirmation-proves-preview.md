@@ -1,3 +1,13 @@
+---
+needs:
+  - 008-verification-trusts-the-store
+touches:
+  - docs/observation-layer.md
+  - src/store.ts
+  - test/cli.test.ts
+  - test/collection.test.ts
+  - test/store.test.ts
+---
 # Task 011 — A confirmation must prove the operator saw the consequence
 
 Read `PRODUCT.md`, `ARCHITECTURE.md`, `SECURITY.md` and `DEVELOPMENT.md` first.

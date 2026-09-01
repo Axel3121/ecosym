@@ -1,3 +1,11 @@
+---
+needs: []
+touches:
+  - docs/tasks/
+  - scripts/run-ledger
+  - scripts/run-task
+  - test/run-task.test.ts
+---
 # Task 013 — Runs are scheduled by what they need and what they touch
 
 Closes #13.

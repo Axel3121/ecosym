@@ -1,3 +1,24 @@
+---
+needs:
+  - 001-observation-layer
+touches:
+  - src/collect.ts
+  - src/config.ts
+  - src/materialize.ts
+  - src/readers.ts
+  - src/store.ts
+  - src/verify.ts
+  - test/cli.test.ts
+  - test/collection.test.ts
+  - test/config.test.ts
+  - test/csv-cli.test.ts
+  - test/store.test.ts
+  - test/verify.test.ts
+  - test/fixtures/fifth-source/habitat-survey.csv
+  - test/fixtures/verification/corrupted.jsonl
+  - test/fixtures/verification/original.jsonl
+  - test/helpers/interrupted-collection-worker.ts
+---
 # Task 002 - Close what three independent reviews found
 
 Read `PRODUCT.md`, `ARCHITECTURE.md`, `SECURITY.md` and `DEVELOPMENT.md` at the
