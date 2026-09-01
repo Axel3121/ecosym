@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+"""The record of what autonomous runs actually did.
+
+A run leaves behind a log, a branch and a commit. None of those say whether the
+run *landed*. This ledger does, and it is the only place that claims to.
+
+    run-ledger list                     what every run is doing or did
+    run-ledger start  <task> <unit> ..  append a started record (run-task does this)
+    run-ledger close  <unit> --outcome landed|dropped|superseded|failed [--evidence ..]
+    run-ledger backfill                 create started records for logs already on disk
+    run-ledger show   <unit>            one run's records
+
+The file is append-only JSONL. A correction is a new record, never an edit;
+the current state of a run is its last record. Nothing here is derived from
+the ledger alone: `list` reads Git for branch and merge state every time, so a
+stale or missing close-out shows up as a disagreement rather than as a lie.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+OUTCOMES = ("landed", "dropped", "superseded", "failed")
+
+# A run's unit name is <project>-task-<task>-<epoch>, or <project>-resume-<epoch>
+# for a resumed session that carries no task of its own.
+UNIT_RE = re.compile(r"^(?P<project>[^-]+)-(?:task-(?P<task>.+)|resume)-(?P<epoch>\d+)$")
+
+
+def data_home() -> Path:
+    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+
+
+def runs_dir() -> Path:
+    return data_home() / "ecosym" / "runs"
+
+
+def ledger_path() -> Path:
+    return data_home() / "ecosym" / "ledger.jsonl"
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def git(*args: str) -> str:
+    """Read-only Git. A failure here is missing information, not an error."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root()), *args],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def parse_unit(unit: str) -> tuple[str, str, int | None]:
+    """-> (project, task, epoch). An unparseable unit still gets a row."""
+    m = UNIT_RE.match(unit)
+    if not m:
+        return ("?", unit, None)
+    return (m["project"], m["task"] or "(resume)", int(m["epoch"]))
+
+
+def read_records() -> list[dict]:
+    path = ledger_path()
+    if not path.exists():
+        return []
+    records = []
+    for lineno, line in enumerate(path.read_text().splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            print(f"warning: {path}:{lineno} is not JSON, skipped", file=sys.stderr)
+    return records
+
+
+def append(record: dict) -> None:
+    path = ledger_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record.setdefault("ts", int(time.time()))
+    with path.open("a") as fh:
+        fh.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def by_unit(records: list[dict]) -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = {}
+    for r in records:
+        unit = r.get("unit")
+        if unit:
+            grouped.setdefault(unit, []).append(r)
+    return grouped
+
+
+def merged_branches() -> set[str]:
+    out = git("branch", "-a", "--format=%(refname:short)", "--merged", "main")
+    return {b.strip().removeprefix("origin/") for b in out.splitlines() if b.strip()}
+
+
+def known_branches() -> set[str]:
+    out = git("branch", "-a", "--format=%(refname:short)")
+    return {b.strip().removeprefix("origin/") for b in out.splitlines() if b.strip()}
+
+
+def git_state(branch: str | None, all_branches: set[str], merged: set[str]) -> str:
+    """What Git says about this run's branch, independent of any close-out."""
+    if not branch:
+        return "-"
+    if branch not in all_branches:
+        return "gone"
+    return "merged" if branch in merged else "open"
+
+
+def log_mtime(unit: str) -> int | None:
+    log = runs_dir() / f"{unit}.log"
+    return int(log.stat().st_mtime) if log.exists() else None
+
+
+def unit_active(unit: str) -> bool:
+    try:
+        out = subprocess.run(
+            ["systemctl", "--user", "is-active", f"{unit}.service"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.stdout.strip() == "active"
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    append(
+        {
+            "event": "started",
+            "unit": args.unit,
+            "task": args.task,
+            "branch": args.branch,
+            "worktree": args.worktree,
+            "commit": args.commit or git("rev-parse", "HEAD"),
+        }
+    )
+    return 0
+
+
+def cmd_close(args: argparse.Namespace) -> int:
+    records = read_records()
+    grouped = by_unit(records)
+
+    unit = args.unit
+    if unit not in grouped:
+        # Allow closing by task name when it is unambiguous.
+        matches = sorted(u for u in grouped if parse_unit(u)[1] == unit)
+        if len(matches) == 1:
+            unit = matches[0]
+        elif len(matches) > 1:
+            print(f"'{args.unit}' matches several runs; name one:", file=sys.stderr)
+            for m in matches:
+                print(f"  {m}", file=sys.stderr)
+            return 2
+        else:
+            print(f"no run named {args.unit} in the ledger", file=sys.stderr)
+            return 1
+
+    last = grouped[unit][-1]
+    if last.get("event") == "closed" and not args.reopen:
+        print(
+            f"{unit} is already closed as {last.get('outcome')!r}; "
+            f"pass --reopen to record a correction",
+            file=sys.stderr,
+        )
+        return 1
+
+    append(
+        {
+            "event": "closed",
+            "unit": unit,
+            "task": last.get("task"),
+            "branch": args.branch or last.get("branch"),
+            "outcome": args.outcome,
+            "evidence": args.evidence,
+            "commit": args.commit or last.get("commit"),
+        }
+    )
+    print(f"{unit}: {args.outcome}")
+    return 0
+
+
+def cmd_backfill(args: argparse.Namespace) -> int:
+    """Give every log on disk a started record, so nothing is invisible."""
+    known = set(by_unit(read_records()))
+    added = 0
+    for log in sorted(runs_dir().glob("*.log")):
+        unit = log.stem
+        if unit in known:
+            continue
+        project, task, epoch = parse_unit(unit)
+        append(
+            {
+                "event": "started",
+                "unit": unit,
+                "task": task,
+                "project": project,
+                "branch": None,
+                "worktree": None,
+                "commit": None,
+                "ts": epoch or int(log.stat().st_mtime),
+                "backfilled": True,
+            }
+        )
+        added += 1
+    print(f"backfilled {added} run(s)")
+    return 0
+
+
+def cmd_show(args: argparse.Namespace) -> int:
+    grouped = by_unit(read_records())
+    if args.unit not in grouped:
+        print(f"no run named {args.unit}", file=sys.stderr)
+        return 1
+    for r in grouped[args.unit]:
+        print(json.dumps(r, sort_keys=True))
+    return 0
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    grouped = by_unit(read_records())
+    if not grouped:
+        print("ledger is empty — run `run-ledger backfill` to import existing logs")
+        return 0
+
+    all_branches = known_branches()
+    merged = merged_branches()
+
+    rows = []
+    for unit, records in grouped.items():
+        last = records[-1]
+        project, task, epoch = parse_unit(unit)
+        branch = last.get("branch") or (
+            f"task/{task}" if f"task/{task}" in all_branches else None
+        )
+
+        if unit_active(unit):
+            state = "RUNNING"
+        elif last.get("event") == "closed":
+            state = last.get("outcome", "closed")
+        else:
+            state = "OPEN"
+
+        rows.append(
+            {
+                "task": task,
+                "unit": unit,
+                "state": state,
+                "git": git_state(branch, all_branches, merged),
+                "when": epoch or last.get("ts") or 0,
+                "evidence": last.get("evidence") or "",
+            }
+        )
+
+    rows.sort(key=lambda r: r["when"])
+    if args.open_only:
+        rows = [r for r in rows if r["state"] in ("OPEN", "RUNNING")]
+
+    task_w = max((len(r["task"]) for r in rows), default=4)
+    task_w = min(max(task_w, 4), 46)
+
+    print(f"{'TASK'.ljust(task_w)}  {'STATE':9}  {'GIT':6}  WHEN")
+    for r in rows:
+        when = time.strftime("%m-%d %H:%M", time.localtime(r["when"])) if r["when"] else "?"
+        print(f"{r['task'][:task_w].ljust(task_w)}  {r['state']:9}  {r['git']:6}  {when}")
+        if r["evidence"]:
+            print(f"{' ' * task_w}  └ {r['evidence']}")
+
+    open_runs = [r for r in rows if r["state"] == "OPEN"]
+    if open_runs and not args.open_only:
+        print(f"\n{len(open_runs)} run(s) never closed out.")
+
+    head = git("rev-parse", "--abbrev-ref", "HEAD")
+    if head and head != "main":
+        print(f"\nnote: main checkout is on '{head}', not main.")
+    return 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(prog="run-ledger", description=__doc__.splitlines()[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("list", help="what every run is doing or did")
+    s.add_argument("--open-only", action="store_true", help="only unfinished runs")
+    s.set_defaults(fn=cmd_list)
+
+    s = sub.add_parser("start", help="record a run starting")
+    s.add_argument("task")
+    s.add_argument("unit")
+    s.add_argument("--branch")
+    s.add_argument("--worktree")
+    s.add_argument("--commit")
+    s.set_defaults(fn=cmd_start)
+
+    s = sub.add_parser("close", help="record what a run came to")
+    s.add_argument("unit", help="unit name, or task name when unambiguous")
+    s.add_argument("--outcome", required=True, choices=OUTCOMES)
+    s.add_argument("--evidence", help="what proves it, e.g. a PR or a test run")
+    s.add_argument("--commit")
+    s.add_argument("--branch")
+    s.add_argument("--reopen", action="store_true", help="correct an existing close-out")
+    s.set_defaults(fn=cmd_close)
+
+    s = sub.add_parser("backfill", help="import logs that predate the ledger")
+    s.set_defaults(fn=cmd_backfill)
+
+    s = sub.add_parser("show", help="every record for one run")
+    s.add_argument("unit")
+    s.set_defaults(fn=cmd_show)
+
+    args = p.parse_args()
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

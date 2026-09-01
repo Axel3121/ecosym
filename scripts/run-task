@@ -113,3 +113,16 @@ systemd-run --user --unit="$UNIT" --collect \
   "$REPO/scripts/ecosym-sandbox" run --variant max --port "$PORT" \
   "Follow the instructions in the attached files." \
   -f "$SPEC" -f scripts/run-instruction.md
+
+# The run is now the ledger's business. A launch that is not recorded is a run
+# nobody will account for later, so this failing must not pass unnoticed —
+# but it must not kill a run that has already started either.
+"$REPO/scripts/run-ledger" start "$TASK" "$UNIT" \
+  ${BRANCH:+--branch "$BRANCH"} \
+  ${WORKTREE:+--worktree "$WORKTREE"} \
+  --commit "$(git -C "${WORKTREE:-$REPO}" rev-parse HEAD 2>/dev/null || true)" \
+  || echo "warning: run started but the ledger did not record it: $UNIT" >&2
+
+echo
+echo "close it out when it is done:"
+echo "  scripts/run-ledger close $UNIT --outcome landed --evidence '<commit or PR>'"
