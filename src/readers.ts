@@ -272,9 +272,15 @@ async function* readJsonFiles(config: ConnectionConfig): AsyncGenerator<SourceRe
   for (const path of paths) {
     const handle = await openFileReadOnly(path);
     try {
+      let contents: string;
+      try {
+        contents = await handle.readFile({ encoding: "utf8" });
+      } catch (error) {
+        throw sourceError(error);
+      }
       let parsed: ParsedJson;
       try {
-        parsed = parseJson(await handle.readFile({ encoding: "utf8" }));
+        parsed = parseJson(contents);
       } catch (error) {
         throw new SourceReadError("source_malformed", error);
       }

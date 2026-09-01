@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -1441,6 +1441,42 @@ test("one instant spelled two ways is one observation, not two", async () => {
     assert.equal(verification.counts.matched, 1);
     assert.equal(verification.counts.sourceFacts, 1);
     assert.equal(verification.counts.storedFacts, 1);
+  } finally {
+    store.close();
+  }
+});
+
+test("a JSON source that cannot be read is unreadable, not malformed", async () => {
+  // Blaming the source for malformed content it never got to express is the
+  // same lie this layer exists to prevent: an unread source must say so.
+  const directory = workspace();
+  const sourcePath = join(directory, "records.json");
+  mkdirSync(sourcePath);
+  const parsed = parseConnectionConfig({
+    schemaVersion: 1,
+    id: "unreadable-json",
+    factOwner: "source-owner",
+    reader: { type: "json", pathPattern: sourcePath, recordsPath: "" },
+    sourceRecord: {
+      identity: [{ scope: "meta", value: "record-index" }],
+      retention: "history",
+      recordedAt: { unavailable: true },
+    },
+    facts: [
+      {
+        epistemicStatus: "observation",
+        kind: "example.value",
+        subject: { scope: "record", path: "subject" },
+        payload: { value: { scope: "record", path: "value" } },
+      },
+    ],
+  });
+  const store = new ObservationStore(join(directory, "state"));
+  try {
+    store.register(parsed);
+    await assert.rejects(collectConnection(store, parsed.config.id), {
+      code: "source_unreadable",
+    });
   } finally {
     store.close();
   }
