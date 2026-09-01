@@ -200,7 +200,7 @@ def cmd_start(args: argparse.Namespace) -> int:
             "task": args.task,
             "branch": args.branch,
             "worktree": args.worktree,
-            "commit": args.commit or git("rev-parse", "HEAD"),
+            "base_commit": args.commit or git("rev-parse", "HEAD"),
         }
     )
     return 0
@@ -269,7 +269,7 @@ def cmd_backfill(args: argparse.Namespace) -> int:
                 "project": project,
                 "branch": None,
                 "worktree": None,
-                "commit": None,
+                "base_commit": None,
                 "ts": epoch or int(log.stat().st_mtime),
                 "backfilled": True,
             }

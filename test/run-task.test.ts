@@ -15,6 +15,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const runTask = fileURLToPath(new URL("../scripts/run-task", import.meta.url));
+const runLedger = fileURLToPath(new URL("../scripts/run-ledger", import.meta.url));
 
 test("run-task launches the tracked sandbox with main and linked-worktree authority paths", () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-run-task-launch-"));
@@ -163,6 +164,87 @@ function git(repository: string, arguments_: string[]): void {
   });
   assert.equal(result.status, 0, result.stderr);
 }
+
+test("a launch is registered in the ledger, and a failing ledger does not fail the run", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-task-ledger-"));
+  const repository = join(directory, "repository");
+  const scripts = join(repository, "scripts");
+  const tasks = join(repository, "docs", "tasks");
+  const dataHome = join(directory, "data");
+  const bin = join(directory, "bin");
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(tasks, { recursive: true });
+  mkdirSync(bin);
+  copyFileSync(runTask, join(scripts, "run-task"));
+  chmodSync(join(scripts, "run-task"), 0o700);
+  writeFileSync(join(scripts, "ecosym-sandbox"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  writeFileSync(join(scripts, "run-instruction.md"), "Test instruction\n");
+  writeFileSync(join(tasks, "example.md"), "# Test task\n");
+  writeFileSync(join(bin, "systemd-run"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+
+  const environment = {
+    ...process.env,
+    ECOSYM_PORT: "3212",
+    ECOSYM_PROJECT: "",
+    ECOSYM_WORKTREE: "",
+    PATH: `${bin}:${process.env.PATH ?? ""}`,
+    XDG_DATA_HOME: dataHome,
+  };
+
+  try {
+    git(repository, ["init", "-b", "main"]);
+    git(repository, ["add", "."]);
+    git(repository, [
+      "-c",
+      "user.name=Ecosym Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "fixture",
+    ]);
+
+    // A launch nobody recorded is a run nobody will account for, so the
+    // ledger write is part of launching rather than an afterthought.
+    copyFileSync(runLedger, join(scripts, "run-ledger"));
+    chmodSync(join(scripts, "run-ledger"), 0o700);
+    const recorded = spawnSync(join(scripts, "run-task"), ["example"], {
+      cwd: repository,
+      encoding: "utf8",
+      env: environment,
+    });
+    assert.equal(recorded.status, 0, recorded.stderr);
+
+    const ledger = join(dataHome, "ecosym", "ledger.jsonl");
+    const records = readFileSync(ledger, "utf8")
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    assert.equal(records.length, 1);
+    const started = records[0];
+    assert.ok(started !== undefined);
+    assert.equal(started.event, "started");
+    assert.equal(started.task, "example");
+    // The commit a run starts from is its base. Recording it as the run's
+    // result would let every run that started on main read as landed.
+    assert.ok(typeof started.base_commit === "string");
+    assert.equal(started.result_commit, undefined);
+
+    // The run is already live by the time the ledger is written. A ledger
+    // that cannot be written must be reported, never allowed to kill it.
+    rmSync(ledger);
+    writeFileSync(join(scripts, "run-ledger"), "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+    const unrecorded = spawnSync(join(scripts, "run-task"), ["example"], {
+      cwd: repository,
+      encoding: "utf8",
+      env: environment,
+    });
+    assert.equal(unrecorded.status, 0, unrecorded.stderr);
+    assert.match(unrecorded.stderr, /the ledger did not record it/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("a task name that escapes the specification directory is refused", () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-run-task-name-"));
