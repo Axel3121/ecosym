@@ -54,7 +54,7 @@ jobs:
         run: |
           set -o pipefail
           node --test --test-reporter=tap test/*.test.ts > tap.txt
-          count=$(awk '/^ok / { c++ } /^# pass [0-9]+$/ { p=$3 } END { if (c > 0) print c; else if (p > 0) print p; else print 0 }' tap.txt)
+          count=$(awk '/^# pass [0-9]+$/ { p=$3 } END { print p + 0 }' tap.txt)
           echo "passing assertions: $count"
           if [ "$count" -eq 0 ]; then
             echo "no tests ran — the check suite proves nothing" >&2

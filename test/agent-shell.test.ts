@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdtempSync,
   mkdirSync,
@@ -13,9 +14,22 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { executeAgentShellCommand } from "../src/agent-shell.ts";
+import { executeAgentShellCommand, agentShellArguments } from "../src/agent-shell.ts";
 
 const agentShell = fileURLToPath(new URL("../scripts/agent-shell", import.meta.url));
+
+// `grep -cv` alone conflates "ip failed" with "zero interfaces matched" —
+// both print "0" and `grep` itself exits 1 on no match, colliding with
+// `pipefail`. Route `ip`'s own failure to a distinct, reserved exit code
+// instead of trusting stdout or the pipeline's combined status.
+const PROBE_FAILURE_STATUS = 99;
+const NETWORK_INTERFACE_PROBE =
+  `ip -o link show > /tmp/ecosym-probe-links-$$ 2>/tmp/ecosym-probe-err-$$; ` +
+  `status=$?; ` +
+  `if [ "$status" -ne 0 ]; then cat /tmp/ecosym-probe-err-$$ >&2; ` +
+  `rm -f /tmp/ecosym-probe-links-$$ /tmp/ecosym-probe-err-$$; exit ${PROBE_FAILURE_STATUS}; fi; ` +
+  `grep -cv ' lo:' /tmp/ecosym-probe-links-$$; ` +
+  `rm -f /tmp/ecosym-probe-links-$$ /tmp/ecosym-probe-err-$$`;
 
 test(
   "prober shell cannot modify the worktree and can write to scratch",
@@ -265,6 +279,105 @@ test(
 );
 
 test(
+  "a mount that equals or contains HOME is rejected rather than shadowing the tmpfs",
+  () => {
+    const home = mkdtempSync(join(tmpdir(), "ecosym-home-overlap-"));
+    try {
+      const shared = {
+        childArguments: ["/bin/true"] as string[],
+        emptyDirectory: home,
+        environment: {} as NodeJS.ProcessEnv,
+        home,
+        project: undefined,
+        stateDirectory: join(home, ".local", "share", "ecosym"),
+        workdir: home,
+      };
+      // The worktree equal to HOME shadows the tmpfs that hides credentials.
+      assert.throws(() => {
+        agentShellArguments({ ...shared, mode: "agent", worktree: home });
+      }, /HOME/u);
+      // An ancestor of HOME is worse: it re-exposes HOME plus siblings.
+      assert.throws(() => {
+        agentShellArguments({ ...shared, mode: "agent", worktree: dirname(home) });
+      }, /HOME/u);
+      // stateDirectory defaults from HOME too, so the same overlap applies.
+      const worktree = mkdtempSync(join(process.cwd(), ".agent-shell-test-"));
+      try {
+        assert.throws(() => {
+          agentShellArguments({
+            ...shared,
+            mode: "agent",
+            stateDirectory: home,
+            worktree,
+          });
+        }, /HOME/u);
+      } finally {
+        rmSync(worktree, { force: true, recursive: true });
+      }
+    } finally {
+      rmSync(home, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "HOME cannot be given as a traversal that resolves to the filesystem root",
+  () => {
+    assert.throws(() => {
+      agentShellArguments({
+        childArguments: ["/bin/true"],
+        emptyDirectory: "/tmp",
+        environment: {},
+        home: "/tmp/..",
+        mode: "agent",
+        project: undefined,
+        stateDirectory: "/tmp/state",
+        workdir: "/tmp",
+        worktree: "/tmp/worktree",
+      });
+    }, /HOME must name an absolute non-root directory/u);
+  },
+);
+
+test(
+  "a broken network probe is caught by its exit status rather than trusted stdout",
+  { skip: !existsSync("/usr/bin/bwrap") },
+  () => {
+    // `ip` failing still lets `grep -cv` print "0" for zero matched lines —
+    // the same string a genuinely empty interface list produces — and `grep`
+    // itself exits 1 whenever it matches nothing, which collides with
+    // `pipefail` on the legitimate empty case. A fake `ip` that fails
+    // simulates a broken probe; the probe command must surface that failure
+    // through a status distinguishable from "zero interfaces, matched".
+    const worktree = mkdtempSync(join(process.cwd(), ".agent-shell-test-"));
+    const fakeBin = mkdtempSync(join(tmpdir(), "ecosym-fake-ip-"));
+    writeFileSync(
+      join(fakeBin, "ip"),
+      "#!/bin/sh\necho 'ip: RTNETLINK answers: Operation not permitted' >&2\nexit 2\n",
+    );
+    try {
+      chmodSync(join(fakeBin, "ip"), 0o755);
+      const result = runAgentShell(
+        "prober",
+        worktree,
+        NETWORK_INTERFACE_PROBE,
+        { PATH: `${fakeBin}:${process.env.PATH ?? ""}` },
+      );
+      // Stdout alone would read "0" here, indistinguishable from a genuinely
+      // empty interface list — exactly the false pass this guards against.
+      assert.equal(
+        result.status,
+        PROBE_FAILURE_STATUS,
+        "a broken ip invocation must surface as the probe-failure status",
+      );
+    } finally {
+      rmSync(worktree, { force: true, recursive: true });
+      rmSync(fakeBin, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
   "a read-only shell has no route to the network",
   { skip: !existsSync("/usr/bin/bwrap") },
   () => {
@@ -272,10 +385,20 @@ test(
     try {
       // A route, not a reachable host: this asserts the network namespace is
       // unshared, so it holds on a machine that is offline anyway.
-      const denied = runAgentShell("prober", worktree, "ip -o link show | grep -cv ' lo:'");
+      const denied = runAgentShell("prober", worktree, NETWORK_INTERFACE_PROBE);
+      assert.notEqual(
+        denied.status,
+        PROBE_FAILURE_STATUS,
+        `the network probe itself failed: ${denied.stderr}`,
+      );
       assert.equal(denied.stdout.trim(), "0", "prober mode kept a network interface");
 
-      const permitted = runAgentShell("agent", worktree, "ip -o link show | grep -cv ' lo:'");
+      const permitted = runAgentShell("agent", worktree, NETWORK_INTERFACE_PROBE);
+      assert.notEqual(
+        permitted.status,
+        PROBE_FAILURE_STATUS,
+        `the network probe itself failed: ${permitted.stderr}`,
+      );
       assert.notEqual(
         permitted.stdout.trim(),
         "0",

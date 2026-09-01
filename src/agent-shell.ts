@@ -42,8 +42,28 @@ export function agentShellArguments(input: AgentShellArgumentsInput): string[] {
       throw new Error(`${name} must be absolute`);
     }
   }
-  if (input.home === "/") {
+  const home = resolve(input.home);
+  if (home === "/") {
     throw new Error("HOME must name an absolute non-root directory");
+  }
+  for (const [name, path] of [
+    ["worktree", input.worktree],
+    ["project", input.project],
+    ["state directory", input.stateDirectory],
+  ] as [string, string | undefined][]) {
+    if (path === undefined) {
+      continue;
+    }
+    const resolvedPath = resolve(path);
+    // `--tmpfs home` masks every credential under HOME, but a later mount
+    // whose destination is HOME itself — or an ancestor of it — shadows that
+    // tmpfs and hands the whole home directory back. A path nested under HOME
+    // (the ordinary case: the worktree lives inside it) only re-exposes that
+    // one subtree, which is intended; only equal-to or containing HOME is the
+    // overlap that defeats the tmpfs.
+    if (resolvedPath === home || `${home}/`.startsWith(`${resolvedPath}/`)) {
+      throw new Error(`${name} must not be HOME or an ancestor of HOME`);
+    }
   }
   if (input.mode === "prober") {
     for (const [name, path] of [
