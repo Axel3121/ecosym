@@ -1011,6 +1011,116 @@ test("process termination leaves a durable incomplete attempt and no partial fac
   }
 });
 
+test("retiring one explicitly named running attempt leaves another concurrent attempt guarding resolution", async () => {
+  const { directory, store } = temporaryStore();
+  const parsed = connection();
+  store.register(parsed);
+  const active = store.getConnection(parsed.config.id);
+  let firstStarted: (() => void) | undefined;
+  const firstReady = new Promise<void>((resolve) => {
+    firstStarted = resolve;
+  });
+  let releaseFirst: (() => void) | undefined;
+  const firstReleased = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let secondStarted: (() => void) | undefined;
+  const secondReady = new Promise<void>((resolve) => {
+    secondStarted = resolve;
+  });
+  let releaseSecond: (() => void) | undefined;
+  const secondReleased = new Promise<void>((resolve) => {
+    releaseSecond = resolve;
+  });
+  const first = store.collect(active, async () => {
+    firstStarted?.();
+    await firstReleased;
+  });
+  await firstReady;
+  const second = store.collect(active, async () => {
+    secondStarted?.();
+    await secondReleased;
+  });
+  await secondReady;
+
+  const modifier = new DatabaseSync(store.path);
+  modifier
+    .prepare("UPDATE connection_versions SET jsonl_record_index_mode = 'unknown' WHERE connection_id = ?")
+    .run(parsed.config.id);
+  modifier.close();
+
+  try {
+    assert.throws(
+      () =>
+        store.planRecordIndexModeResolution(
+          parsed.config.id,
+          parsed.hash,
+          "record-ordinal",
+        ),
+      { code: "record_index_resolution_collection_running" },
+    );
+    const running = store.collectionAttempts().filter((attempt) => attempt.outcome === "running");
+    assert.equal(running.length, 2);
+    const retirementPlan = store.planCollectionAttemptRetirement(
+      running[0]?.attemptId as string,
+      "operator:recovery",
+    );
+    const retirement = store.retireCollectionAttempt(
+      retirementPlan.attemptId,
+      retirementPlan.retiredBy,
+      retirementPlan.confirmationToken,
+      new Date("2026-09-01T12:00:00.000Z"),
+    );
+    assert.deepEqual(retirement, {
+      attemptId: retirementPlan.attemptId,
+      connectionId: parsed.config.id,
+      connectionVersion: parsed.hash,
+      retiredAt: "2026-09-01T12:00:00.000Z",
+      retiredBy: "operator:recovery",
+      retirementId: retirement.retirementId,
+    });
+    assert.throws(
+      () =>
+        store.planRecordIndexModeResolution(
+          parsed.config.id,
+          parsed.hash,
+          "record-ordinal",
+        ),
+      { code: "record_index_resolution_collection_running" },
+    );
+    assert.deepEqual(
+      store.collectionAttempts().map((attempt) => [attempt.attemptId, attempt.outcome]),
+      [
+        [running[0]?.attemptId, "retired"],
+        [running[1]?.attemptId, "running"],
+      ],
+    );
+    assert.deepEqual(store.collectionAttemptRetirements(), [retirement]);
+    releaseSecond?.();
+    await second.catch(() => undefined);
+    releaseFirst?.();
+    await first.catch(() => undefined);
+    const resolution = store.planRecordIndexModeResolution(
+      parsed.config.id,
+      parsed.hash,
+      "record-ordinal",
+    );
+    store.resolveRecordIndexMode(
+      parsed.config.id,
+      parsed.hash,
+      "record-ordinal",
+      resolution.confirmationToken,
+      new Date("2026-09-01T12:01:00.000Z"),
+    );
+    assert.equal(store.getConnection(parsed.config.id).jsonlRecordIndexMode, "record-ordinal");
+  } finally {
+    releaseFirst?.();
+    releaseSecond?.();
+    await Promise.allSettled([first, second]);
+    store.close();
+  }
+});
+
 test("version-one correction history stays unknown until it is observed again", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-v1-store-"));
   const parsed = connection();
@@ -1475,7 +1585,7 @@ test("the ordering-index migration does not rewrite version-five facts", async (
     const version = inspected.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(version.user_version, 9);
+    assert.equal(version.user_version, 10);
     const columns = (
       inspected.prepare("PRAGMA index_info(facts_identity_source_time)").all() as {
         name: string;
@@ -1525,7 +1635,7 @@ test("schema-eight stores gain an empty resolution log without rewriting facts",
     const version = inspected.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(version.user_version, 9);
+    assert.equal(version.user_version, 10);
     const resolutions = inspected
       .prepare("SELECT count(*) AS count FROM record_index_mode_resolutions")
       .get() as { count: number };

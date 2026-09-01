@@ -21,9 +21,57 @@ import {
   verificationFactFromInput,
 } from "./verification-facts.ts";
 
-const STORE_SCHEMA_VERSION = 9;
+const STORE_SCHEMA_VERSION = 10;
 const STORE_FILENAME = "observations.sqlite";
 const BUSY_RETRY_WINDOW_MILLISECONDS = 250;
+const CREATE_COLLECTION_ATTEMPTS = `
+  CREATE TABLE collection_attempts (
+    attempt_order INTEGER PRIMARY KEY,
+    attempt_id TEXT NOT NULL UNIQUE,
+    connection_id TEXT NOT NULL,
+    config_hash TEXT NOT NULL,
+    activation_id TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    outcome TEXT NOT NULL CHECK (outcome IN ('running', 'success', 'failed', 'skipped', 'retired')),
+    source_records_seen INTEGER NOT NULL CHECK (source_records_seen >= 0),
+    facts_seen INTEGER NOT NULL CHECK (facts_seen >= 0),
+    facts_added INTEGER NOT NULL CHECK (facts_added >= 0),
+    facts_changed INTEGER NOT NULL CHECK (facts_changed >= 0),
+    failure_code TEXT,
+    FOREIGN KEY (connection_id, config_hash)
+      REFERENCES connection_versions(connection_id, config_hash),
+    CHECK (
+      (outcome = 'running' AND completed_at IS NULL) OR
+      (outcome <> 'running' AND completed_at IS NOT NULL)
+    ),
+    CHECK (
+      (outcome IN ('failed', 'skipped') AND failure_code IS NOT NULL) OR
+      (outcome IN ('running', 'success', 'retired') AND failure_code IS NULL)
+    )
+  ) STRICT;
+`;
+const CREATE_COLLECTION_ATTEMPTS_LATEST_INDEX = `
+  CREATE INDEX collection_attempts_latest
+    ON collection_attempts(
+      connection_id, config_hash, activation_id, attempt_order DESC
+    );
+`;
+const CREATE_COLLECTION_ATTEMPT_RETIREMENTS = `
+  CREATE TABLE IF NOT EXISTS collection_attempt_retirements (
+    retirement_order INTEGER PRIMARY KEY,
+    retirement_id TEXT NOT NULL UNIQUE,
+    attempt_id TEXT NOT NULL UNIQUE,
+    connection_id TEXT NOT NULL,
+    config_hash TEXT NOT NULL,
+    retired_at TEXT NOT NULL,
+    retired_by TEXT NOT NULL,
+    confirmation_token TEXT NOT NULL,
+    FOREIGN KEY (attempt_id) REFERENCES collection_attempts(attempt_id),
+    FOREIGN KEY (connection_id, config_hash)
+      REFERENCES connection_versions(connection_id, config_hash)
+  ) STRICT;
+`;
 const CREATE_RECORD_INDEX_MODE_RESOLUTIONS = `
   CREATE TABLE record_index_mode_resolutions (
     resolution_order INTEGER PRIMARY KEY,
@@ -89,6 +137,39 @@ export interface CollectionResult {
   startedAt: string;
 }
 
+export interface CollectionAttempt {
+  activationId: string;
+  attemptId: string;
+  completedAt: null | string;
+  connectionId: string;
+  connectionVersion: string;
+  factsAdded: number;
+  factsChanged: number;
+  factsSeen: number;
+  failureCode: null | string;
+  outcome: "failed" | "retired" | "running" | "skipped" | "success";
+  sourceRecordsSeen: number;
+  startedAt: string;
+}
+
+export interface CollectionAttemptRetirement {
+  attemptId: string;
+  connectionId: string;
+  connectionVersion: string;
+  retiredAt: string;
+  retiredBy: string;
+  retirementId: string;
+}
+
+export interface CollectionAttemptRetirementPlan {
+  attemptId: string;
+  confirmationToken: string;
+  connectionId: string;
+  connectionVersion: string;
+  retiredBy: string;
+  startedAt: string;
+}
+
 export interface ConnectionStatus {
   connectionId: string;
   connectionVersion: string;
@@ -100,6 +181,7 @@ export interface ConnectionStatus {
      | "never-run"
      | "nothing-new"
      | "record-index-unknown"
+     | "retired"
      | "skipped";
   status: "changed" | "quiet" | "unread";
 }
@@ -220,6 +302,15 @@ export class RecordIndexResolutionCollectionRunningError extends Error {
   constructor(_connectionId: string) {
     super("A collection is still running for this connection version");
     this.name = "RecordIndexResolutionCollectionRunningError";
+  }
+}
+
+export class CollectionAttemptNotRunningError extends Error {
+  readonly code = "collection_attempt_not_running";
+
+  constructor(_attemptId: string) {
+    super("The collection attempt is no longer running");
+    this.name = "CollectionAttemptNotRunningError";
   }
 }
 
@@ -429,6 +520,107 @@ export class ObservationStore {
         resolvedAt,
       };
     });
+  }
+
+  planCollectionAttemptRetirement(
+    attemptId: string,
+    retiredBy: string,
+  ): CollectionAttemptRetirementPlan {
+    validateRetirementActor(retiredBy);
+    return this.#readTransaction(() =>
+      this.#collectionAttemptRetirementPlan(attemptId, retiredBy),
+    );
+  }
+
+  retireCollectionAttempt(
+    attemptId: string,
+    retiredBy: string,
+    confirmationToken: string,
+    now = new Date(),
+  ): CollectionAttemptRetirement {
+    validateRetirementActor(retiredBy);
+    const retiredAt = now.toISOString();
+    return this.#transaction(() => {
+      const plan = this.#collectionAttemptRetirementPlan(attemptId, retiredBy);
+      if (confirmationToken !== plan.confirmationToken) {
+        throw new RecordIndexResolutionStateChangedError();
+      }
+      const retired = this.#database
+        .prepare(
+          `UPDATE collection_attempts
+              SET completed_at = ?, outcome = 'retired'
+            WHERE attempt_id = ? AND outcome = 'running'`,
+        )
+        .run(retiredAt, attemptId);
+      if (numberOfChanges(retired) !== 1) {
+        throw new CollectionAttemptNotRunningError(attemptId);
+      }
+      const retirementOrder = (
+        this.#database
+          .prepare(
+            `SELECT COALESCE(MAX(retirement_order), 0) + 1 AS next
+               FROM collection_attempt_retirements`,
+          )
+          .get() as { next: number }
+      ).next;
+      const retirementId = randomUUID();
+      this.#database
+        .prepare(
+          `INSERT INTO collection_attempt_retirements
+             (retirement_order, retirement_id, attempt_id, connection_id, config_hash,
+              retired_at, retired_by, confirmation_token)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          retirementOrder,
+          retirementId,
+          attemptId,
+          plan.connectionId,
+          plan.connectionVersion,
+          retiredAt,
+          retiredBy,
+          confirmationToken,
+        );
+      return {
+        attemptId,
+        connectionId: plan.connectionId,
+        connectionVersion: plan.connectionVersion,
+        retiredAt,
+        retiredBy,
+        retirementId,
+      };
+    });
+  }
+
+  collectionAttempts(): CollectionAttempt[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT attempt_id, connection_id, config_hash, activation_id, started_at,
+                completed_at, outcome, source_records_seen, facts_seen, facts_added,
+                facts_changed, failure_code
+           FROM collection_attempts
+          ORDER BY attempt_order`,
+      )
+      .all() as unknown as CollectionAttemptRow[];
+    return rows.map(collectionAttemptFromRow);
+  }
+
+  collectionAttemptRetirements(): CollectionAttemptRetirement[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT retirement_id, attempt_id, connection_id, config_hash, retired_at, retired_by
+           FROM collection_attempt_retirements
+          ORDER BY retirement_order`,
+      )
+      .all() as unknown as CollectionAttemptRetirementRow[];
+    return rows.map((row) => ({
+      attemptId: row.attempt_id,
+      connectionId: row.connection_id,
+      connectionVersion: row.config_hash,
+      retiredAt: row.retired_at,
+      retiredBy: row.retired_by,
+      retirementId: row.retirement_id,
+    }));
   }
 
   getConnection(connectionId: string): ActiveConnection {
@@ -766,7 +958,7 @@ export class ObservationStore {
       facts_changed: null | number;
       jsonl_record_index_mode: string;
       last_attempt_at: null | string;
-      outcome: null | "failed" | "running" | "skipped" | "success";
+      outcome: null | "failed" | "retired" | "running" | "skipped" | "success";
     }[];
 
     return rows.map((row) => {
@@ -798,7 +990,11 @@ export class ObservationStore {
           status: "unread",
         };
       }
-      if (row.outcome === "failed" || row.outcome === "skipped") {
+      if (
+        row.outcome === "failed" ||
+        row.outcome === "retired" ||
+        row.outcome === "skipped"
+      ) {
         return {
           ...connection,
           lastAttemptAt: row.last_attempt_at,
@@ -1134,6 +1330,16 @@ export class ObservationStore {
   }
 
   #migrate(): void {
+    const version = this.#database.prepare("PRAGMA user_version").get() as {
+      user_version: number;
+    };
+    if (version.user_version === STORE_SCHEMA_VERSION) {
+      return;
+    }
+    if (version.user_version === 9) {
+      this.#migrateSchemaNine();
+      return;
+    }
     this.#transaction(() => {
       const row = this.#database.prepare("PRAGMA user_version").get() as {
         user_version: number;
@@ -1188,36 +1394,9 @@ export class ObservationStore {
 
         ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
 
-        CREATE TABLE collection_attempts (
-          attempt_order INTEGER PRIMARY KEY,
-          attempt_id TEXT NOT NULL UNIQUE,
-          connection_id TEXT NOT NULL,
-          config_hash TEXT NOT NULL,
-          activation_id TEXT NOT NULL,
-          started_at TEXT NOT NULL,
-          completed_at TEXT,
-          outcome TEXT NOT NULL CHECK (outcome IN ('running', 'success', 'failed', 'skipped')),
-          source_records_seen INTEGER NOT NULL CHECK (source_records_seen >= 0),
-          facts_seen INTEGER NOT NULL CHECK (facts_seen >= 0),
-          facts_added INTEGER NOT NULL CHECK (facts_added >= 0),
-          facts_changed INTEGER NOT NULL CHECK (facts_changed >= 0),
-          failure_code TEXT,
-          FOREIGN KEY (connection_id, config_hash)
-            REFERENCES connection_versions(connection_id, config_hash),
-          CHECK (
-            (outcome = 'running' AND completed_at IS NULL) OR
-            (outcome <> 'running' AND completed_at IS NOT NULL)
-          ),
-          CHECK (
-            (outcome IN ('failed', 'skipped') AND failure_code IS NOT NULL) OR
-            (outcome IN ('running', 'success') AND failure_code IS NULL)
-          )
-        ) STRICT;
-
-        CREATE INDEX collection_attempts_latest
-          ON collection_attempts(
-            connection_id, config_hash, activation_id, attempt_order DESC
-          );
+        ${CREATE_COLLECTION_ATTEMPTS}
+        ${CREATE_COLLECTION_ATTEMPTS_LATEST_INDEX}
+        ${CREATE_COLLECTION_ATTEMPT_RETIREMENTS}
 
         CREATE TABLE facts (
           fact_id INTEGER PRIMARY KEY,
@@ -1488,6 +1667,42 @@ export class ObservationStore {
         PRAGMA user_version = ${STORE_SCHEMA_VERSION};
       `);
     });
+    if (version.user_version !== 0) {
+      this.#migrateSchemaNine();
+    }
+  }
+
+  #migrateSchemaNine(): void {
+    this.#database.exec("PRAGMA foreign_keys = OFF");
+    try {
+      this.#transaction(() => {
+        this.#database.exec(
+          CREATE_COLLECTION_ATTEMPTS.replace(
+            "CREATE TABLE collection_attempts",
+            "CREATE TABLE collection_attempts_replacement",
+          ),
+        );
+        this.#database.exec(`
+          INSERT INTO collection_attempts_replacement (
+            attempt_order, attempt_id, connection_id, config_hash, activation_id,
+            started_at, completed_at, outcome, source_records_seen, facts_seen,
+            facts_added, facts_changed, failure_code
+          )
+          SELECT
+            attempt_order, attempt_id, connection_id, config_hash, activation_id,
+            started_at, completed_at, outcome, source_records_seen, facts_seen,
+            facts_added, facts_changed, failure_code
+          FROM collection_attempts;
+          DROP TABLE collection_attempts;
+          ALTER TABLE collection_attempts_replacement RENAME TO collection_attempts;
+        `);
+        this.#database.exec(CREATE_COLLECTION_ATTEMPTS_LATEST_INDEX);
+        this.#database.exec(CREATE_COLLECTION_ATTEMPT_RETIREMENTS);
+        this.#database.exec(`PRAGMA user_version = ${STORE_SCHEMA_VERSION}`);
+      });
+    } finally {
+      this.#database.exec("PRAGMA foreign_keys = ON");
+    }
   }
 
   #assertActive(connection: ActiveConnection): void {
@@ -1518,6 +1733,46 @@ export class ObservationStore {
       throw new Error("Registered connection configuration is missing");
     }
     return parseStoredConfig(row.config_json, connection.configHash);
+  }
+
+  #collectionAttemptRetirementPlan(
+    attemptId: string,
+    retiredBy: string,
+  ): CollectionAttemptRetirementPlan {
+    const attempt = this.#database
+      .prepare(
+        `SELECT connection_id, config_hash, started_at, outcome
+           FROM collection_attempts
+          WHERE attempt_id = ?`,
+      )
+      .get(attemptId) as
+      | undefined
+      | {
+          config_hash: string;
+          connection_id: string;
+          outcome: "failed" | "retired" | "running" | "skipped" | "success";
+          started_at: string;
+        };
+    if (attempt?.outcome !== "running") {
+      throw new CollectionAttemptNotRunningError(attemptId);
+    }
+    return {
+      attemptId,
+      confirmationToken: `sha256:${sha256(
+        canonicalJson([
+          attemptId,
+          attempt.connection_id,
+          attempt.config_hash,
+          attempt.started_at,
+          attempt.outcome,
+          retiredBy,
+        ]),
+      )}`,
+      connectionId: attempt.connection_id,
+      connectionVersion: attempt.config_hash,
+      retiredBy,
+      startedAt: attempt.started_at,
+    };
   }
 
   #recordIndexModeResolutionPlan(
@@ -1584,7 +1839,7 @@ export class ObservationStore {
       .all(connectionId, connectionVersion) as {
       attempt_id: string;
       attempt_order: number;
-      outcome: "failed" | "running" | "skipped" | "success";
+      outcome: "failed" | "retired" | "running" | "skipped" | "success";
     }[];
     if (attempts.some((attempt) => attempt.outcome === "running")) {
       throw new RecordIndexResolutionCollectionRunningError(connectionId);
@@ -1804,6 +2059,30 @@ export class ObservationStore {
   }
 }
 
+interface CollectionAttemptRow {
+  activation_id: string;
+  attempt_id: string;
+  completed_at: null | string;
+  config_hash: string;
+  connection_id: string;
+  facts_added: number;
+  facts_changed: number;
+  facts_seen: number;
+  failure_code: null | string;
+  outcome: "failed" | "retired" | "running" | "skipped" | "success";
+  source_records_seen: number;
+  started_at: string;
+}
+
+interface CollectionAttemptRetirementRow {
+  attempt_id: string;
+  config_hash: string;
+  connection_id: string;
+  retired_at: string;
+  retired_by: string;
+  retirement_id: string;
+}
+
 interface StoredFactRow {
   collected_at: string;
   config_hash: string;
@@ -1839,6 +2118,23 @@ function correctionSlotKey(connectionId: string, fact: PreparedFact): string {
     fact.sourceRecordId,
     fact.sourceTimeKey,
   ]);
+}
+
+function collectionAttemptFromRow(row: CollectionAttemptRow): CollectionAttempt {
+  return {
+    activationId: row.activation_id,
+    attemptId: row.attempt_id,
+    completedAt: row.completed_at,
+    connectionId: row.connection_id,
+    connectionVersion: row.config_hash,
+    factsAdded: row.facts_added,
+    factsChanged: row.facts_changed,
+    factsSeen: row.facts_seen,
+    failureCode: row.failure_code,
+    outcome: row.outcome,
+    sourceRecordsSeen: row.source_records_seen,
+    startedAt: row.started_at,
+  };
 }
 
 function storedFactFromRow(row: StoredFactRow): StoredFact {
@@ -2008,6 +2304,12 @@ function validateFactAndDeriveSourceTimeKey(
     throw new TypeError("Fact sourceRecordedAt is not a representable UTC instant");
   }
   return sourceTimeKey;
+}
+
+function validateRetirementActor(value: string): void {
+  if (!/^[a-z][a-z0-9_.:-]{0,127}$/.test(value)) {
+    throw new TypeError("A retirement actor must be a stable machine identifier");
+  }
 }
 
 function safeFailureCode(error: unknown): string {

@@ -366,6 +366,110 @@ test("an ambiguous legacy record index can be resolved by a recorded user choice
   }
 });
 
+test("retirement is an explicit, durable CLI recovery for an abandoned attempt", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-cli-retire-"));
+  const xdgDataHome = join(directory, "data");
+  const stateDirectory = join(xdgDataHome, "ecosym");
+  const parsed = parseConnectionConfig({
+    schemaVersion: 1,
+    id: "abandoned-indexed-source",
+    factOwner: "external-owner",
+    reader: { type: "jsonl", path: "/unused.jsonl" },
+    sourceRecord: {
+      identity: [{ scope: "meta", value: "record-index" }],
+      retention: "history",
+      recordedAt: { unavailable: true },
+    },
+    facts: [
+      {
+        epistemicStatus: "observation",
+        kind: "api.value",
+        subject: { scope: "record", path: "subject" },
+        payload: { value: { scope: "record", path: "value" } },
+      },
+    ],
+  });
+  const store = new ObservationStore(stateDirectory);
+  store.register(parsed);
+  const active = store.getConnection(parsed.config.id);
+  const database = new DatabaseSync(store.path);
+  database
+    .prepare("UPDATE connection_versions SET jsonl_record_index_mode = 'unknown' WHERE connection_id = ?")
+    .run(parsed.config.id);
+  database
+    .prepare(
+      `INSERT INTO collection_attempts (
+        attempt_order, attempt_id, connection_id, config_hash, activation_id,
+        started_at, completed_at, outcome, source_records_seen, facts_seen,
+        facts_added, facts_changed, failure_code
+      ) VALUES (1, 'abandoned-attempt', ?, ?, ?, ?, NULL, 'running', 0, 0, 0, 0, NULL)`,
+    )
+    .run(parsed.config.id, parsed.hash, active.activationId, "2026-09-01T10:00:00.000Z");
+  database.close();
+  store.close();
+
+  const blocked = await runCli(
+    ["resolve-record-index", parsed.config.id, parsed.hash, "record-ordinal"],
+    xdgDataHome,
+  );
+  assert.equal(blocked.code, 1);
+  assert.equal(blocked.output.error, "record_index_resolution_collection_running");
+  const listed = await runCli(["status"], xdgDataHome);
+  assert.deepEqual(listed.output.collectionAttempts, [
+    {
+      activationId: active.activationId,
+      attemptId: "abandoned-attempt",
+      completedAt: null,
+      connectionId: parsed.config.id,
+      connectionVersion: parsed.hash,
+      factsAdded: 0,
+      factsChanged: 0,
+      factsSeen: 0,
+      failureCode: null,
+      outcome: "running",
+      sourceRecordsSeen: 0,
+      startedAt: "2026-09-01T10:00:00.000Z",
+    },
+  ]);
+  const preview = await runCli(
+    ["retire-collection-attempt", "abandoned-attempt", "--by", "operator:recovery"],
+    xdgDataHome,
+  );
+  assert.equal(preview.code, 0);
+  assert.equal(preview.output.outcome, "confirmation-required");
+  const retired = await runCli(
+    [
+      "retire-collection-attempt",
+      "abandoned-attempt",
+      "--by",
+      "operator:recovery",
+      "--confirm",
+      preview.output.confirmationToken as string,
+    ],
+    xdgDataHome,
+  );
+  assert.equal(retired.code, 0);
+  assert.equal(retired.output.outcome, "retired");
+  const recovered = await runCli(
+    ["resolve-record-index", parsed.config.id, parsed.hash, "record-ordinal"],
+    xdgDataHome,
+  );
+  assert.equal(recovered.code, 0);
+  assert.equal(recovered.output.outcome, "confirmation-required");
+  const audited = await runCli(["status"], xdgDataHome);
+  assert.equal((audited.output.collectionAttempts as { outcome: string }[])[0]?.outcome, "retired");
+  const retirementAudit = audited.output.collectionAttemptRetirements as {
+    attemptId: string;
+    retiredAt: string;
+    retiredBy: string;
+  }[];
+  assert.deepEqual(
+    retirementAudit.map((retirement) => [retirement.attemptId, retirement.retiredBy]),
+    [["abandoned-attempt", "operator:recovery"]],
+  );
+  assert.match(retirementAudit[0]?.retiredAt as string, /^\d{4}-\d{2}-\d{2}T/);
+});
+
 async function runCli(arguments_: string[], xdgDataHome: string): Promise<CliResult> {
   const child = spawn(process.execPath, [cli, ...arguments_], {
     env: { ...process.env, XDG_DATA_HOME: xdgDataHome },

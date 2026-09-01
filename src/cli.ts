@@ -35,6 +35,7 @@ async function run(arguments_: string[]): Promise<CommandResult> {
           "query",
           "verify",
           "resolve-record-index",
+          "retire-collection-attempt",
         ],
       },
     };
@@ -58,6 +59,8 @@ async function run(arguments_: string[]): Promise<CommandResult> {
         return await verify(store, arguments_.slice(1));
       case "resolve-record-index":
         return resolveRecordIndex(store, arguments_.slice(1));
+      case "retire-collection-attempt":
+        return retireCollectionAttempt(store, arguments_.slice(1));
       default:
         return invalidArguments(command);
     }
@@ -176,6 +179,8 @@ function status(store: ObservationStore, arguments_: string[]): CommandResult {
       command: "status",
       outcome: "success",
       connections: store.statuses(),
+      collectionAttempts: store.collectionAttempts(),
+      collectionAttemptRetirements: store.collectionAttemptRetirements(),
       recordIndexModeResolutions: store.recordIndexModeResolutions(),
     },
   };
@@ -271,6 +276,52 @@ function resolveRecordIndex(
       command: "resolve-record-index",
       outcome: "resolved",
       ...resolution,
+    },
+  };
+}
+
+function retireCollectionAttempt(store: ObservationStore, arguments_: string[]): CommandResult {
+  const attemptId = arguments_[0];
+  const retiredBy = arguments_[2];
+  if (
+    attemptId === undefined ||
+    retiredBy === undefined ||
+    arguments_[1] !== "--by"
+  ) {
+    return invalidArguments("retire-collection-attempt");
+  }
+  if (arguments_.length === 3) {
+    const plan = store.planCollectionAttemptRetirement(attemptId, retiredBy);
+    return {
+      exitCode: 0,
+      output: {
+        schemaVersion: 1,
+        command: "retire-collection-attempt",
+        outcome: "confirmation-required",
+        ...plan,
+        consequence:
+          "This records the named actor's explicit decision that this attempt is abandoned, changes its outcome to retired, and prevents it from committing facts if its process is still alive.",
+        recoverability:
+          "A retired attempt remains retired and auditable; start a new collection attempt to collect facts again.",
+      },
+    };
+  }
+  const confirmationToken = arguments_[4];
+  if (
+    arguments_.length !== 5 ||
+    arguments_[3] !== "--confirm" ||
+    confirmationToken === undefined
+  ) {
+    return invalidArguments("retire-collection-attempt");
+  }
+  const retirement = store.retireCollectionAttempt(attemptId, retiredBy, confirmationToken);
+  return {
+    exitCode: 0,
+    output: {
+      schemaVersion: 1,
+      command: "retire-collection-attempt",
+      outcome: "retired",
+      ...retirement,
     },
   };
 }

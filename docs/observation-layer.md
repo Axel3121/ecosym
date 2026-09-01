@@ -91,9 +91,16 @@ version. Run `resolve-record-index CONNECTION_ID CONNECTION_VERSION MODE` to
 preview a resolution. The preview changes nothing: it enumerates the exact
 affected fact IDs and collection-attempt IDs, states the consequence and
 recoverability, and returns a token bound to that inventory. Repeat the command with
-`--confirm TOKEN` to make the recorded choice. Confirmation fails if the active
-version or inventory changed after the preview, and resolution is refused while
-a collection for that version is running.
+`--confirm TOKEN` to make the recorded choice. A resolution is refused while a collection for that version is running. If an
+operator has established that a marker is abandoned, `status` lists its exact
+`attemptId` under `collectionAttempts`. `retire-collection-attempt` requires a
+stable `ACTOR` identifier and a separate confirmation token. It is never
+automatic and does not use elapsed time. Confirmation changes only that attempt
+to the distinct `retired` outcome and appends a durable retirement record with
+the attempt, actor, time, connection version, and confirmation token. Retirement
+also prevents a process that was merely slow rather than dead from later
+committing facts, so an operator must not retire a genuinely live attempt.
+Other running attempts continue to refuse record-index resolution.
 
 The resolution changes no fact rows. It records the old and selected modes,
 configuration hash, exact inventory, and time as a durable user decision. Choosing
@@ -168,6 +175,8 @@ npm run ecosym -- query claims [same filters]
 npm run ecosym -- verify
 npm run ecosym -- resolve-record-index CONNECTION_ID CONNECTION_VERSION physical-line|record-ordinal
 npm run ecosym -- resolve-record-index CONNECTION_ID CONNECTION_VERSION physical-line|record-ordinal --confirm TOKEN
+npm run ecosym -- retire-collection-attempt ATTEMPT_ID --by ACTOR
+npm run ecosym -- retire-collection-attempt ATTEMPT_ID --by ACTOR --confirm TOKEN
 ```
 
 Registration stores a canonical configuration revision and its hash in one
@@ -191,8 +200,11 @@ the collector may still be alive, or it may have stopped. Two connection
 lifetimes have separate attempts and status even when they use the same revision
 and reader. A store migration that cannot prove continuity starts the active
 lifetime at `never-run`; the next collection establishes its status.
-Status also includes every recorded user resolution under
-`recordIndexModeResolutions`, scoped by connection ID and configuration hash.
+Status also includes every collection attempt under `collectionAttempts` and
+every durable retirement under `collectionAttemptRetirements`, including the
+actor and retirement time. It continues to include every recorded user
+resolution under `recordIndexModeResolutions`, scoped by connection ID and
+configuration hash.
 
 ## Verification result
 
