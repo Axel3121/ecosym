@@ -268,6 +268,14 @@ test("a recorded result outranks the branch it was made on", () => {
     writeFileSync(join(repository, "file.txt"), "one\n");
     git(repository, ["add", "."]);
     commit(repository, "landed work");
+    // A setup step that fails leaves the run OPEN with nothing recorded,
+    // which reads as `unproven` — the same answer some of these
+    // assertions expect. Unchecked setup can pass without testing anything.
+    const record = (a: string[]) => {
+      const r = ledger(a);
+      assert.equal(r.status, 0, `${a.join(" ")}: ${r.stderr}`);
+      return r;
+    };
     const landed = spawnSync("git", ["rev-parse", "HEAD"], {
       cwd: repository,
       encoding: "utf8",
@@ -286,8 +294,8 @@ test("a recorded result outranks the branch it was made on", () => {
     }).stdout.trim();
     git(repository, ["checkout", "main"]);
 
-    ledger(["start", "landed-run", "unit-landed", "--branch", "task/live", "--commit", landed]);
-    ledger([
+    record(["start", "landed-run", "unit-landed", "--branch", "task/live", "--commit", landed]);
+    record([
       "close",
       "unit-landed",
       "--outcome",
@@ -306,8 +314,8 @@ test("a recorded result outranks the branch it was made on", () => {
     // The inverse: a merged-looking branch must not vouch for a result
     // commit that never reached main.
     git(repository, ["branch", "task/merged", "main"]);
-    ledger(["start", "false-run", "unit-false", "--branch", "task/merged", "--commit", landed]);
-    ledger([
+    record(["start", "false-run", "unit-false", "--branch", "task/merged", "--commit", landed]);
+    record([
       "close",
       "unit-false",
       "--outcome",
@@ -327,8 +335,8 @@ test("a recorded result outranks the branch it was made on", () => {
     // neither does a branch nobody committed to. Ambiguous evidence must
     // never be spent contradicting a close-out.
     git(repository, ["branch", "task/kept", "main"]);
-    ledger(["start", "kept-run", "unit-kept", "--branch", "task/kept"]);
-    ledger(["close", "unit-kept", "--outcome", "landed", "--evidence", "merged, see PR"]);
+    record(["start", "kept-run", "unit-kept", "--branch", "task/kept"]);
+    record(["close", "unit-kept", "--outcome", "landed", "--evidence", "merged, see PR"]);
 
     const ambiguous = ledger(["list"]);
     const keptRow = ambiguous.stdout
@@ -347,8 +355,8 @@ test("a recorded result outranks the branch it was made on", () => {
     commit(repository, "work on a living branch");
     git(repository, ["checkout", "main"]);
 
-    ledger(["start", "typo-run", "unit-typo", "--branch", "task/alive"]);
-    ledger([
+    record(["start", "typo-run", "unit-typo", "--branch", "task/alive"]);
+    record([
       "close",
       "unit-typo",
       "--outcome",
@@ -392,7 +400,17 @@ test("a recorded result outranks the branch it was made on", () => {
         });
 
       away(["start", "away-run", "unit-away"]);
-      away(["close", "unit-away", "--outcome", "landed", "--commit", only, "--evidence", "merged"]);
+      const stored = away([
+        "close",
+        "unit-away",
+        "--outcome",
+        "landed",
+        "--commit",
+        only,
+        "--evidence",
+        "merged",
+      ]);
+      assert.equal(stored.status, 0, stored.stderr);
 
       const unanswerable = away(["list"]);
       assert.match(unanswerable.stdout, /unproven/);
