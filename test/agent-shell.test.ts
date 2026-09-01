@@ -133,6 +133,38 @@ test(
   },
 );
 
+test(
+  "an agent shell cannot rewrite the files that define its own sandbox",
+  { skip: !existsSync("/usr/bin/bwrap") },
+  () => {
+    const worktree = mkdtempSync(join(process.cwd(), ".agent-shell-test-"));
+    mkdirSync(join(worktree, ".opencode", "tools"), { recursive: true });
+    mkdirSync(join(worktree, "src"), { recursive: true });
+    const definitions = [
+      join(worktree, ".opencode", "tools", "bash.ts"),
+      join(worktree, "src", "agent-shell.ts"),
+      join(worktree, "src", "sandbox-runtime.ts"),
+      join(worktree, "opencode.json"),
+    ];
+    for (const path of definitions) {
+      writeFileSync(path, "original\n");
+    }
+    try {
+      for (const path of definitions) {
+        const result = runAgentShell("agent", worktree, `printf weakened > ${shellQuote(path)}`);
+        assert.notEqual(result.status, 0, `expected a refusal for ${path}`);
+        assert.equal(
+          readFileSync(path, "utf8"),
+          "original\n",
+          `${path} must survive the shell that it governs`,
+        );
+      }
+    } finally {
+      rmSync(worktree, { force: true, recursive: true });
+    }
+  },
+);
+
 function runAgentShell(
   mode: "agent" | "prober",
   worktree: string,
