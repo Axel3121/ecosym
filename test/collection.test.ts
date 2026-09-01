@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
+import { after, test } from "node:test";
 
 import { collectConnection } from "../src/collect.ts";
 import { parseConnectionConfig, type ConnectionConfig } from "../src/config.ts";
@@ -16,9 +16,22 @@ import {
 import { CollectionFailedError, ObservationStore } from "../src/store.ts";
 import { verifyConnection } from "../src/verify.ts";
 
+const temporaryWorkspaces: string[] = [];
+
+// Each test gets its own directory; a shared cleanup keeps the operating
+// system's temporary directory from filling with state databases and sources
+// as the suite grows.
 function workspace(): string {
-  return mkdtempSync(join(tmpdir(), "ecosym-collection-"));
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-collection-"));
+  temporaryWorkspaces.push(directory);
+  return directory;
 }
+
+after(() => {
+  for (const directory of temporaryWorkspaces.splice(0)) {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
 
 function sqliteConnection(path: string, id = "sqlite-source") {
   return parseConnectionConfig({
