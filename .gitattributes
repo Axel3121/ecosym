@@ -1,0 +1,4 @@
+# The product is TypeScript. The shell scripts are launchers around it, and
+# without this they outweigh it in the language statistics because Linguist
+# counted this repository when it held only documents and scripts.
+*.ts linguist-detectable=true
