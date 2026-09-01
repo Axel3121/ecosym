@@ -28,6 +28,22 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
     <aside id="docket" class="docket panel" aria-label="Council docket"></aside>
     <div id="hover" class="hover panel" hidden></div>
     <section id="sheet" class="sheet panel" hidden aria-live="polite"></section>
+    <section id="focus" class="focus panel" hidden aria-live="polite">
+      <div class="focus-side">
+        <button class="back" id="focus-back">← tilbake til verden</button>
+        <div class="portrait" id="focus-portrait"></div>
+        <h2 id="focus-name"></h2>
+        <p class="kind" id="focus-kind"></p>
+        <div id="focus-facts" class="facts"></div>
+      </div>
+      <div class="focus-main">
+        <div class="thread" id="focus-thread"></div>
+        <form id="focus-form" class="ask">
+          <input id="focus-input" type="text" autocomplete="off" placeholder="skriv til dem…" />
+          <button type="submit">Send</button>
+        </form>
+      </div>
+    </section>
     <p class="hint panel" id="hint">scroll to descend · click a place · drag to pan</p>
   </div>
   <script type="module" src="/src/main.ts"></script>

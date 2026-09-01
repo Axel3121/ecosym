@@ -83,6 +83,7 @@ export interface Inhabitant {
 
 export interface Trace {
   runId: string;
+  label: string;
   buildingId: string;
   /** 1 = just finished, 0 = at the retention edge. */
   freshness: number;
@@ -245,7 +246,7 @@ export function deriveScene(obs: Observations): Scene {
       .map((r) => {
         const age = now - ms(r.endedAt!);
         const freshness = Math.max(0, 1 - age / obs.traceWindowMs);
-        return { runId: r.id, buildingId: `${civ.id}:w:${rootOf(r).id}`, freshness };
+        return { runId: r.id, label: r.label, buildingId: `${civ.id}:w:${rootOf(r).id}`, freshness };
       })
       .filter((t) => t.freshness > 0);
 

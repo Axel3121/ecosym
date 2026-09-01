@@ -16,18 +16,18 @@ export interface Hit {
 }
 
 /** Which plate a civilization is drawn on, and where things stand on it (0..1). */
-const PLATES: Record<string, { img: string; aspect: number; seat: P; well: P; slots: P[] }> = {
+export const PLATES: Record<string, { img: string; aspect: number; seat: P; well: P; slots: P[] }> = {
   harbor:  { img: "/art/harbor.png",  aspect: 1122 / 1402, seat: { x: 0.5, y: 0.2 }, well: { x: 0.5, y: 0.42 }, slots: [{ x: 0.22, y: 0.38 }, { x: 0.78, y: 0.4 }, { x: 0.3, y: 0.66 }, { x: 0.72, y: 0.68 }] },
   hill:    { img: "/art/hill.png",    aspect: 1122 / 1402, seat: { x: 0.5, y: 0.2 }, well: { x: 0.5, y: 0.44 }, slots: [{ x: 0.2, y: 0.4 }, { x: 0.8, y: 0.42 }, { x: 0.28, y: 0.7 }, { x: 0.74, y: 0.68 }] },
   orchard: { img: "/art/orchard.png", aspect: 1122 / 1402, seat: { x: 0.5, y: 0.2 }, well: { x: 0.5, y: 0.44 }, slots: [{ x: 0.2, y: 0.4 }, { x: 0.78, y: 0.4 }, { x: 0.25, y: 0.7 }, { x: 0.75, y: 0.7 }] },
   lake:    { img: "/art/lake.png",    aspect: 1122 / 1402, seat: { x: 0.5, y: 0.2 }, well: { x: 0.5, y: 0.44 }, slots: [{ x: 0.2, y: 0.36 }, { x: 0.8, y: 0.4 }, { x: 0.25, y: 0.68 }, { x: 0.76, y: 0.68 }] },
 };
 type P = { x: number; y: number };
-const PLATE_OF: Record<string, keyof typeof PLATES> = { roma: "harbor", midgard: "hill", edo: "orchard", thule: "lake" };
+export const PLATE_OF: Record<string, keyof typeof PLATES> = { roma: "harbor", midgard: "hill", edo: "orchard", thule: "lake" };
 const CAPITAL = { x: 760, y: 460, r: 230 };
 
 // sprite sheet cells
-const WCOLS = [100, 400, 660, 960], WROWS = [60, 360, 660, 940], WCELL = { w: 200, h: 240 };
+export const WCOLS = [100, 400, 660, 960], WROWS = [60, 360, 660, 940], WCELL = { w: 200, h: 240 };
 
 function plateRect(s: Settlement) {
   const key = PLATE_OF[s.civilizationId] ?? "lake";
