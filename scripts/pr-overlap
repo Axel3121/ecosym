@@ -17,8 +17,13 @@ cd "$(dirname "$0")/.."
 BASE="${1:-origin/main}"
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 
-mapfile -t MINE < <(git diff --name-only "$BASE"...HEAD)
-[ "${#MINE[@]}" -gt 0 ] || { echo "no changes against $BASE"; exit 0; }
+if ! DIFF="$(git diff --name-only "$BASE...HEAD" 2>&1)"; then
+  echo "cannot read this branch's own diff against $BASE: $DIFF" >&2
+  echo "this is unknown, not 'no changes'" >&2
+  exit 2
+fi
+mapfile -t MINE <<< "$DIFF"
+[ -n "${MINE[0]:-}" ] || { echo "no changes against $BASE"; exit 0; }
 
 echo "branch $BRANCH touches ${#MINE[@]} file(s)"
 
@@ -26,9 +31,14 @@ echo "branch $BRANCH touches ${#MINE[@]} file(s)"
 # like "nothing overlaps". That is the failure this check exists to catch, so
 # it must not be the failure this check performs. Ask gh once, explicitly, and
 # stop if it could not answer.
-if ! OPEN="$(gh pr list --state open --json number,headRefName --jq '.[] | "\(.number) \(.headRefName)"' 2>&1)"; then
+LIMIT=200
+if ! OPEN="$(gh pr list --state open --limit "$LIMIT" --json number,headRefName --jq '.[] | "\(.number) \(.headRefName)"' 2>&1)"; then
   echo "cannot ask GitHub what is open: $OPEN" >&2
   echo "this is unknown, not 'no overlap'" >&2
+  exit 2
+fi
+if [ "$(printf '%s\n' "$OPEN" | grep -c .)" -ge "$LIMIT" ]; then
+  echo "more than $LIMIT open pull requests; this check cannot see them all" >&2
   exit 2
 fi
 

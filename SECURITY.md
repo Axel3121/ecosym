@@ -166,7 +166,7 @@ shell could rewrite the sandbox definition that governed it, and an agent
 declaring `write: false` was handed a writable worktree because only one
 hardcoded name was checked. Both were found by running an attack, and neither
 by review of the code alone. A third, where a `--tmpfs` was re-exposed by a
-later bind that overlaid it, was found the same way and is being fixed.
+later bind that overlaid it, was found the same way and fixed.
 
 ## Destructive changes to owned history
 

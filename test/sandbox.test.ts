@@ -77,6 +77,12 @@ test("preparing a sqlite source never writes to the source database", async () =
     prepared?.close();
   }
 
+  // digest() returns undefined for a path that is gone, and undefined equals
+  // undefined — so a sidecar deleted during cleanup would compare equal to a
+  // sidecar that was never there. Assert presence before trusting the compare.
+  for (const path of contentGuardedPaths) {
+    assert.ok(existsSync(path), `${path} disappeared during cleanup`);
+  }
   assert.deepEqual(
     contentGuardedPaths.map(digest),
     before,
