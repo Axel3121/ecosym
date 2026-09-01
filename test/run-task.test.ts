@@ -365,6 +365,42 @@ test("a recorded result outranks the branch it was made on", () => {
     assert.match(typoRow, /no-such-commit/);
     assert.match(typoRow, /!!/);
     assert.equal(typo.status, 1, "an unresolvable result commit must fail the command");
+
+    // Git failing to answer is not the same as Git answering no. Without a
+    // local main, `merge-base --is-ancestor` exits 128, and reading that as
+    // "not an ancestor" would accuse a run that landed.
+    const noMain = mkdtempSync(join(tmpdir(), "ecosym-run-ledger-nomain-"));
+    const elsewhere = join(noMain, "repository");
+    mkdirSync(join(elsewhere, "scripts"), { recursive: true });
+    copyFileSync(runLedger, join(elsewhere, "scripts", "run-ledger"));
+    chmodSync(join(elsewhere, "scripts", "run-ledger"), 0o700);
+    try {
+      git(elsewhere, ["init", "-b", "trunk"]);
+      writeFileSync(join(elsewhere, "file.txt"), "only\n");
+      git(elsewhere, ["add", "."]);
+      commit(elsewhere, "the one commit");
+      const only = spawnSync("git", ["rev-parse", "HEAD"], {
+        cwd: elsewhere,
+        encoding: "utf8",
+      }).stdout.trim();
+
+      const away = (arguments_: string[]) =>
+        spawnSync(join(elsewhere, "scripts", "run-ledger"), arguments_, {
+          cwd: elsewhere,
+          encoding: "utf8",
+          env: { ...process.env, XDG_DATA_HOME: join(noMain, "data") },
+        });
+
+      away(["start", "away-run", "unit-away"]);
+      away(["close", "unit-away", "--outcome", "landed", "--commit", only, "--evidence", "merged"]);
+
+      const unanswerable = away(["list"]);
+      assert.match(unanswerable.stdout, /unproven/);
+      assert.doesNotMatch(unanswerable.stdout, /!!/);
+      assert.equal(unanswerable.status, 0, "Git failing to answer must not dispute a claim");
+    } finally {
+      rmSync(noMain, { recursive: true, force: true });
+    }
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

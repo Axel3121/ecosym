@@ -148,6 +148,11 @@ def in_main(commit: str | None) -> bool | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
+    # 0 is yes and 1 is no; anything else is Git failing to answer at all —
+    # commonly 128 when there is no local main to compare against. Reading
+    # that as "no" would accuse a landed run on the strength of a missing ref.
+    if out.returncode not in (0, 1):
+        return None
     return out.returncode == 0
 
 
