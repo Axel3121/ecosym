@@ -78,6 +78,14 @@ product policy.
   Every review — automated, independent, and empirical — lands here, so the
   decision to merge is made against all of them at once rather than serially
   after the fact.
+
+  A pull request is opened per subject, not per kind of change. A fix, the test
+  that proves it, and the document rule it establishes are one subject and
+  belong together: splitting them puts the evidence somewhere the reviewer of
+  the change cannot see it. Before opening one, check whether an open pull
+  request already owns that subject or touches the same files, and extend it if
+  so. Metered reviewers are spent per pull request and per push, so an
+  unnecessary split costs review capacity as well as attention.
 - Comments own local clarification and evidence, not hidden reusable policy.
 - ADRs preserve earned historical rationale; they do not replace current
   semantic owners.
@@ -122,6 +130,13 @@ outcomes.
 
 Missing verification is reported as unknown, never as success. A passing test
 is evidence only for the property it actually establishes.
+
+Check the signal before trusting what it says. A success signal can come from a
+missing tool, a command that never ran, a model declining out of politeness, or
+an agent reporting on itself — and each reads exactly like the thing working. If
+a result would look identical when the mechanism is absent, it has established
+nothing. Confirm the control case fails before believing the interesting case
+passed.
 
 Repository checks should have one ordinary, agent-independent entry point that
 humans, local agents, and CI can run. Add enforcement only for a valuable

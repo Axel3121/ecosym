@@ -5,6 +5,7 @@ import {
   type ChildProcessWithoutNullStreams,
   type SpawnSyncReturns,
 } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdtempSync,
@@ -24,6 +25,82 @@ import { prepareSandboxSources } from "../src/sandbox.ts";
 import { ObservationStore } from "../src/store.ts";
 
 const sandbox = fileURLToPath(new URL("../scripts/ecosym-sandbox", import.meta.url));
+
+test("preparing a sqlite source never writes to the source database", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-source-readonly-"));
+  const databasePath = join(directory, "state.db");
+
+  const source = new DatabaseSync(databasePath);
+  // WAL mode is what actually produces -wal/-shm sidecars; without it those
+  // paths never exist, the sidecar branch in prepareSandboxSources never
+  // runs, and this test would pass even if that branch started writing.
+  source.exec("PRAGMA journal_mode = WAL;");
+  source.exec(`
+    CREATE TABLE async_delegations (id TEXT, status TEXT);
+    INSERT INTO async_delegations VALUES ('one', 'done');
+  `);
+  // Deliberately do not close `source` yet: SQLite auto-checkpoints and
+  // deletes the WAL/SHM sidecars when the last connection to a WAL database
+  // closes, which would fold this test's own write into the main file and
+  // remove the very sidecars it means to guard. Holding the writer's
+  // connection open keeps the WAL live for the read-only guardian to see.
+
+  const digest = (path: string): string | undefined =>
+    existsSync(path) ? createHash("sha256").update(readFileSync(path)).digest("hex") : undefined;
+  // The -shm sidecar is SQLite's wal-index: any connection that opens the
+  // database for reading — including a strictly read-only one — legitimately
+  // touches its locking/bookkeeping bytes as part of the WAL protocol. That
+  // is not a write to the data being guarded, so only the main file and the
+  // -wal file (which holds the actual pending log) are checked byte-for-byte;
+  // -shm is checked for continued existence instead.
+  const contentGuardedPaths = [databasePath, `${databasePath}-wal`];
+  const shmPath = `${databasePath}-shm`;
+  assert.ok(existsSync(`${databasePath}-wal`), "expected a WAL sidecar to exist before the check");
+  assert.ok(existsSync(shmPath), "expected a SHM sidecar to exist before the check");
+  const before = contentGuardedPaths.map(digest);
+
+  let prepared: Awaited<ReturnType<typeof prepareSandboxSources>> | undefined;
+  try {
+    // A connected source is evidence: collection reads it and must not be able
+    // to alter what it is reading, or a disagreement between store and source
+    // could be resolved by quietly changing the source. Preparation opens the
+    // database to hold it open for the run, and that open must be a read.
+    prepared = await prepareSandboxSources([sqliteConnection(databasePath)], directory);
+    assert.ok(existsSync(`${databasePath}-wal`), "the WAL sidecar disappeared during preparation");
+    assert.ok(existsSync(shmPath), "the SHM sidecar disappeared during preparation");
+    assert.deepEqual(
+      contentGuardedPaths.map(digest),
+      before,
+      "preparing the sandbox altered the source database",
+    );
+  } finally {
+    prepared?.close();
+  }
+
+  // digest() returns undefined for a path that is gone, and undefined equals
+  // undefined — so a sidecar deleted during cleanup would compare equal to a
+  // sidecar that was never there. Assert presence before trusting the compare.
+  for (const path of contentGuardedPaths) {
+    assert.ok(existsSync(path), `${path} disappeared during cleanup`);
+  }
+  assert.deepEqual(
+    contentGuardedPaths.map(digest),
+    before,
+    "closing the sandbox sources altered the source database",
+  );
+
+  source.close();
+  const surviving = new DatabaseSync(databasePath);
+  try {
+    assert.equal(
+      surviving.prepare("SELECT count(*) AS rows FROM async_delegations").get()?.rows,
+      1,
+    );
+  } finally {
+    surviving.close();
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
 
 test("sandbox sources mount exact file paths and current source-glob matches", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-sources-"));

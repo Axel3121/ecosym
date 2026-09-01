@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdtempSync,
   mkdirSync,
@@ -9,13 +10,26 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { executeAgentShellCommand } from "../src/agent-shell.ts";
+import { executeAgentShellCommand, agentShellArguments } from "../src/agent-shell.ts";
 
 const agentShell = fileURLToPath(new URL("../scripts/agent-shell", import.meta.url));
+
+// `grep -cv` alone conflates "ip failed" with "zero interfaces matched" —
+// both print "0" and `grep` itself exits 1 on no match, colliding with
+// `pipefail`. Route `ip`'s own failure to a distinct, reserved exit code
+// instead of trusting stdout or the pipeline's combined status.
+const PROBE_FAILURE_STATUS = 99;
+const NETWORK_INTERFACE_PROBE =
+  `ip -o link show > /tmp/ecosym-probe-links-$$ 2>/tmp/ecosym-probe-err-$$; ` +
+  `status=$?; ` +
+  `if [ "$status" -ne 0 ]; then cat /tmp/ecosym-probe-err-$$ >&2; ` +
+  `rm -f /tmp/ecosym-probe-links-$$ /tmp/ecosym-probe-err-$$; exit ${PROBE_FAILURE_STATUS}; fi; ` +
+  `grep -cv ' lo:' /tmp/ecosym-probe-links-$$; ` +
+  `rm -f /tmp/ecosym-probe-links-$$ /tmp/ecosym-probe-err-$$`;
 
 test(
   "prober shell cannot modify the worktree and can write to scratch",
@@ -209,10 +223,215 @@ test(
   },
 );
 
+test(
+  "a shell cannot read another tool's credentials from the home directory",
+  { skip: !existsSync("/usr/bin/bwrap") },
+  () => {
+    const home = mkdtempSync(join(tmpdir(), "ecosym-home-"));
+    const worktree = mkdtempSync(join(process.cwd(), ".agent-shell-test-"));
+    // Where real tools on a developer machine keep credentials. The list is
+    // deliberately wider than the paths this sandbox knows about: the point is
+    // to fail when a future allowance re-admits one of them, not to confirm
+    // the ones somebody already thought of. A config file earns a place here
+    // because its tool documents storing a secret in it.
+    const secrets = [
+      join(home, ".config", "gh", "hosts.yml"),
+      join(home, ".claude.json"),
+      join(home, ".config", "Hermes", "secure-token-storage.json"),
+      join(home, ".local", "share", "opencode", "auth.json"),
+      join(home, ".local", "state", "opencode", "auth.json"),
+      join(home, ".config", "opencode", "opencode.json"),
+      join(home, ".opencode", "opencode.json"),
+      join(home, ".npmrc"),
+      join(home, ".gitconfig"),
+      join(home, ".config", "git", "credentials"),
+      join(home, ".netrc"),
+      join(home, ".ssh", "id_ed25519"),
+      join(home, ".aws", "credentials"),
+      join(home, ".docker", "config.json"),
+      join(home, ".config", "gcloud", "credentials.db"),
+      join(home, ".kube", "config"),
+    ];
+    for (const path of secrets) {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, "token: must-not-be-readable\n");
+    }
+    try {
+      for (const mode of ["agent", "prober"] as const) {
+        const result = runAgentShell(
+          mode,
+          worktree,
+          secrets.map((path) => `cat ${shellQuote(path)} 2>/dev/null`).join("; ") + "; true",
+          { HOME: home },
+        );
+        assert.equal(result.status, 0, result.stderr);
+        assert.doesNotMatch(
+          result.stdout,
+          /must-not-be-readable/u,
+          `${mode} mode read a credential file out of the home directory`,
+        );
+      }
+    } finally {
+      rmSync(home, { force: true, recursive: true });
+      rmSync(worktree, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "a mount that equals or contains HOME is rejected rather than shadowing the tmpfs",
+  () => {
+    const home = mkdtempSync(join(tmpdir(), "ecosym-home-overlap-"));
+    try {
+      const shared = {
+        childArguments: ["/bin/true"] as string[],
+        emptyDirectory: home,
+        environment: {} as NodeJS.ProcessEnv,
+        home,
+        project: undefined,
+        stateDirectory: join(home, ".local", "share", "ecosym"),
+        workdir: home,
+      };
+      // The worktree equal to HOME shadows the tmpfs that hides credentials.
+      assert.throws(() => {
+        agentShellArguments({ ...shared, mode: "agent", worktree: home });
+      }, /HOME/u);
+      // An ancestor of HOME is worse: it re-exposes HOME plus siblings.
+      assert.throws(() => {
+        agentShellArguments({ ...shared, mode: "agent", worktree: dirname(home) });
+      }, /HOME/u);
+      // The root is the worst value and the one a prefix test misses, because
+      // "/" + "/" is "//" and no absolute path begins with that.
+      for (const name of ["worktree", "project", "stateDirectory"]) {
+        assert.throws(
+          () => {
+            agentShellArguments({
+              ...shared,
+              mode: "agent",
+              worktree: name === "worktree" ? "/" : shared.workdir,
+              ...(name === "project" ? { project: "/" } : {}),
+              ...(name === "stateDirectory" ? { stateDirectory: "/" } : {}),
+            });
+          },
+          /root|HOME/u,
+          `${name} set to the root must be refused`,
+        );
+      }
+      // stateDirectory defaults from HOME too, so the same overlap applies.
+      const worktree = mkdtempSync(join(process.cwd(), ".agent-shell-test-"));
+      try {
+        assert.throws(() => {
+          agentShellArguments({
+            ...shared,
+            mode: "agent",
+            stateDirectory: home,
+            worktree,
+          });
+        }, /HOME/u);
+      } finally {
+        rmSync(worktree, { force: true, recursive: true });
+      }
+    } finally {
+      rmSync(home, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "HOME cannot be given as a traversal that resolves to the filesystem root",
+  () => {
+    assert.throws(() => {
+      agentShellArguments({
+        childArguments: ["/bin/true"],
+        emptyDirectory: "/tmp",
+        environment: {},
+        home: "/tmp/..",
+        mode: "agent",
+        project: undefined,
+        stateDirectory: "/tmp/state",
+        workdir: "/tmp",
+        worktree: "/tmp/worktree",
+      });
+    }, /HOME must name an absolute non-root directory/u);
+  },
+);
+
+test(
+  "a broken network probe is caught by its exit status rather than trusted stdout",
+  { skip: !existsSync("/usr/bin/bwrap") },
+  () => {
+    // `ip` failing still lets `grep -cv` print "0" for zero matched lines —
+    // the same string a genuinely empty interface list produces — and `grep`
+    // itself exits 1 whenever it matches nothing, which collides with
+    // `pipefail` on the legitimate empty case. A fake `ip` that fails
+    // simulates a broken probe; the probe command must surface that failure
+    // through a status distinguishable from "zero interfaces, matched".
+    const worktree = mkdtempSync(join(process.cwd(), ".agent-shell-test-"));
+    const fakeBin = mkdtempSync(join(tmpdir(), "ecosym-fake-ip-"));
+    writeFileSync(
+      join(fakeBin, "ip"),
+      "#!/bin/sh\necho 'ip: RTNETLINK answers: Operation not permitted' >&2\nexit 2\n",
+    );
+    try {
+      chmodSync(join(fakeBin, "ip"), 0o755);
+      const result = runAgentShell(
+        "prober",
+        worktree,
+        NETWORK_INTERFACE_PROBE,
+        { PATH: `${fakeBin}:${process.env.PATH ?? ""}` },
+      );
+      // Stdout alone would read "0" here, indistinguishable from a genuinely
+      // empty interface list — exactly the false pass this guards against.
+      assert.equal(
+        result.status,
+        PROBE_FAILURE_STATUS,
+        "a broken ip invocation must surface as the probe-failure status",
+      );
+    } finally {
+      rmSync(worktree, { force: true, recursive: true });
+      rmSync(fakeBin, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "a read-only shell has no route to the network",
+  { skip: !existsSync("/usr/bin/bwrap") },
+  () => {
+    const worktree = mkdtempSync(join(process.cwd(), ".agent-shell-test-"));
+    try {
+      // A route, not a reachable host: this asserts the network namespace is
+      // unshared, so it holds on a machine that is offline anyway.
+      const denied = runAgentShell("prober", worktree, NETWORK_INTERFACE_PROBE);
+      assert.notEqual(
+        denied.status,
+        PROBE_FAILURE_STATUS,
+        `the network probe itself failed: ${denied.stderr}`,
+      );
+      assert.equal(denied.stdout.trim(), "0", "prober mode kept a network interface");
+
+      const permitted = runAgentShell("agent", worktree, NETWORK_INTERFACE_PROBE);
+      assert.notEqual(
+        permitted.status,
+        PROBE_FAILURE_STATUS,
+        `the network probe itself failed: ${permitted.stderr}`,
+      );
+      assert.notEqual(
+        permitted.stdout.trim(),
+        "0",
+        "the writing agent still needs the network it uses to fetch and push",
+      );
+    } finally {
+      rmSync(worktree, { force: true, recursive: true });
+    }
+  },
+);
+
 function runAgentShell(
   mode: "agent" | "prober",
   worktree: string,
   command: string,
+  overrides: NodeJS.ProcessEnv = {},
 ): SpawnSyncReturns<string> {
   return spawnSync(
     agentShell,
@@ -234,6 +453,7 @@ function runAgentShell(
         ...process.env,
         DATABASE_URL: "postgres://synthetic-secret.invalid/database",
         TEST_SECRET_TOKEN: "must-not-reach-shell",
+        ...overrides,
       },
     },
   );

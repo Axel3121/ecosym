@@ -42,6 +42,32 @@ export function agentShellArguments(input: AgentShellArgumentsInput): string[] {
       throw new Error(`${name} must be absolute`);
     }
   }
+  const home = resolve(input.home);
+  if (home === "/") {
+    throw new Error("HOME must name an absolute non-root directory");
+  }
+  for (const [name, path] of [
+    ["worktree", input.worktree],
+    ["project", input.project],
+    ["state directory", input.stateDirectory],
+  ] as [string, string | undefined][]) {
+    if (path === undefined) {
+      continue;
+    }
+    const resolvedPath = resolve(path);
+    // `--tmpfs home` masks every credential under HOME, but a later mount
+    // whose destination is HOME itself — or an ancestor of it — shadows that
+    // tmpfs and hands the whole home directory back. A path nested under HOME
+    // (the ordinary case: the worktree lives inside it) only re-exposes that
+    // one subtree, which is intended; only equal-to or containing HOME is the
+    // overlap that defeats the tmpfs.
+    // Root needs its own case: `${"/"}/` is `//`, which no absolute path
+    // starts with, so the prefix test below silently accepts the one value
+    // that overlays everything.
+    if (resolvedPath === "/" || resolvedPath === home || `${home}/`.startsWith(`${resolvedPath}/`)) {
+      throw new Error(`${name} must not be the root, HOME, or an ancestor of HOME`);
+    }
+  }
   if (input.mode === "prober") {
     for (const [name, path] of [
       ["worktree", input.worktree],
@@ -64,6 +90,15 @@ export function agentShellArguments(input: AgentShellArgumentsInput): string[] {
     "--unshare-ipc",
     "--unshare-uts",
     "--unshare-cgroup-try",
+  ];
+  // A shell that only reads and reports has no errand on the network. Denying
+  // it a route is what keeps a prompt-injected read-only agent from turning
+  // whatever it can read into something it can send. The writing agent keeps
+  // its network: it fetches dependencies and talks to the forge.
+  if (input.mode === "prober") {
+    arguments_.push("--unshare-net");
+  }
+  arguments_.push(
     "--ro-bind",
     "/",
     "/",
@@ -74,21 +109,38 @@ export function agentShellArguments(input: AgentShellArgumentsInput): string[] {
     "--bind",
     "/tmp",
     "/tmp",
-  ];
+  );
   if (input.mode === "prober" && existsSync("/dev/shm")) {
     arguments_.push("--ro-bind", input.emptyDirectory, "/dev/shm");
   }
+  // `--ro-bind / /` above hands the shell the whole host, and a home directory
+  // is where every other tool on the machine keeps its credentials: a token
+  // for the forge, a session file, another agent's key. Masking them one path
+  // at a time only ever hides the ones somebody remembered. Replace the home
+  // directory with an empty filesystem and mount back the few paths a shell
+  // needs to run, so an unlisted credential file is absent by construction
+  // rather than by recall.
+  arguments_.push("--tmpfs", input.home);
+  for (const path of homeAllowances(input.home)) {
+    if (existsSync(path)) {
+      arguments_.push("--ro-bind", path, path);
+    }
+  }
+  // The checkout usually lives under the home directory the tmpfs just
+  // covered, and every mode has to be able to read the code it works on.
+  // Read-only here is the floor; the writing mode raises it below.
   for (const path of [
-    join(input.home, ".local", "share", "opencode"),
-    join(input.home, ".local", "state", "opencode"),
+    input.worktree,
+    ...(input.project === undefined ? [] : [resolve(input.project)]),
   ]) {
     if (existsSync(path)) {
-      arguments_.push("--ro-bind", input.emptyDirectory, path);
+      arguments_.push("--ro-bind", path, path);
     }
   }
   if (input.mode === "agent") {
     for (const path of [
       input.stateDirectory,
+      join(input.home, ".npm"),
       input.worktree,
       ...(input.project === undefined ? [] : [join(resolve(input.project), ".git")]),
     ]) {
@@ -208,6 +260,28 @@ function declaresNoWrites(
     return /^\s*write:\s*false\s*$/mu.test(frontmatter);
   }
   return false;
+}
+
+function homeAllowances(home: string): string[] {
+  // The toolchain a shell executes, and nothing else. Every entry here is a
+  // program or a content-addressed cache, because this list is the one thing
+  // the tmpfs above does not hide.
+  //
+  // Configuration is deliberately absent, including this project's own. A
+  // config file is where a tool keeps the credential it uses: `.npmrc` holds
+  // `_authToken`, `.gitconfig` carries a token through `url.insteadOf` and
+  // names a credential helper, `.config/git/credentials` is git's own
+  // plaintext store, and `.config/opencode/opencode.json` holds an
+  // `Authorization` header. Allowing a config directory to be read for its
+  // harmless settings admits the secret sitting beside them.
+  //
+  // Nothing needed a config file to work: the repository carries its own git
+  // identity, and agent definitions are read from the worktree.
+  return [
+    join(home, ".cache", "node"),
+    join(home, ".local", "bin"),
+    join(home, ".nvm"),
+  ];
 }
 
 function sandboxDefinitionPaths(worktree: string, project: string | undefined): string[] {
