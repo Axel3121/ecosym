@@ -4,9 +4,6 @@
     "logic",
     "syntax"
   ],
-  "disabledLabels": [
-    "skip-review"
-  ],
   "ignorePatterns": [
     "docs/tasks/**",
     "*.md",
@@ -34,5 +31,8 @@
       "Stored identity, ordering keys and timestamps are evidence. A change to how they are derived must not rewrite what is already stored.",
       "A rule that exists only as prose in a document is not enforced. Prefer a check, a test, or an OS boundary."
     ]
-  }
+  },
+  "labels": [
+    "greptile"
+  ]
 }
