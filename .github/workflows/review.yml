@@ -48,6 +48,16 @@ jobs:
           github_action_config.auto_describe: "false"
           github_action_config.auto_improve: "false"
 
+          # The auto_* flags above cover opened/reopened/ready_for_review only.
+          # A new push to an open pull request arrives as `synchronize`, which
+          # the runner handles on a separate path that is OFF by default and
+          # reads its own command list — without both of these it logs
+          # "Skipping action: synchronize" and the job still passes green.
+          # Re-reviewing every push is the point: the candidate CI verifies is
+          # the current head, not the one that was opened.
+          github_action_config.handle_push_trigger: "true"
+          github_action_config.push_commands: '["/review"]'
+
           # DeepSeek V4 Pro. The older `deepseek-chat` and `deepseek-reasoner`
           # names were retired on 2026-07-24 and now fail outright, so do not
           # "fix" this to the name most tutorials still show. Pro rather than
