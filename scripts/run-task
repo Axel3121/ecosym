@@ -113,6 +113,13 @@ echo "log:  $LOG"
 echo "port: $PORT"
 [ -n "$WORKTREE" ] && echo "tree: $WORKTREE (branch $BRANCH)"
 
+# A run that stops working holds its unit open, so nothing notices. Watch the
+# log rather than the clock: silence is what tells a hung run from a slow one.
+# Started before the run so a launch that never writes at all is covered too.
+systemd-run --user --unit="${UNIT}-watchdog" --collect \
+  "$REPO/scripts/run-watchdog" "$UNIT" "$LOG" "${ECOSYM_IDLE_SECONDS:-900}" \
+  >/dev/null 2>&1 || echo "warning: no watchdog for $UNIT" >&2
+
 systemd-run --user --unit="$UNIT" --collect \
   --working-directory="${WORKTREE:-$REPO}" \
   ${ECOSYM_PROJECT:+--setenv=ECOSYM_PROJECT="$ECOSYM_PROJECT"} \

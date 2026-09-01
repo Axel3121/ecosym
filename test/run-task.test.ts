@@ -36,7 +36,7 @@ test("run-task launches the tracked sandbox with main and linked-worktree author
   writeFileSync(join(tasks, "example.md"), "# Test task\n");
   writeFileSync(
     join(bin, "systemd-run"),
-    '#!/bin/sh\nprintf "%s\\n" "$@" > "$SYSTEMD_CAPTURE"\n',
+    '#!/bin/sh\nprintf "%s\\n" "$@" >> "$SYSTEMD_CAPTURE"\n',
     { mode: 0o700 },
   );
 
@@ -96,6 +96,14 @@ test("run-task launches the tracked sandbox with main and linked-worktree author
     assert.ok(linkedArguments.includes(`--setenv=ECOSYM_PROJECT=${repository}`));
     assert.ok(linkedArguments.includes(`--setenv=ECOSYM_WORKTREE=${linkedWorktree}`));
     assert.ok(linkedArguments.includes(join(linkedWorktree, "scripts", "ecosym-sandbox")));
+
+    // A run that stops working holds its unit open, so nothing notices unless
+    // something is watching. Launching without that watcher is the failure
+    // this asserts against: it is invisible until a run hangs for hours.
+    assert.ok(
+      linkedArguments.includes(join(linkedWorktree, "scripts", "run-watchdog")),
+      "a launch must start a watchdog for its own unit",
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
