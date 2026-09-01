@@ -109,3 +109,16 @@ test("rejects nested selectors that a SQLite reader cannot satisfy", () => {
     message: "SQLite selectors must name top-level columns",
   });
 });
+
+test("rejects a negative zero the store could not persist exactly", () => {
+  // src/store.ts refuses -0 in a fact payload because it cannot be persisted
+  // exactly. Accepting it here only moves the failure to collection time, where
+  // the message no longer names the configuration field that caused it.
+  const config = validConfig() as {
+    facts: [{ payload: Record<string, unknown> }];
+  };
+  config.facts[0].payload = {
+    value: { default: -0, selector: { scope: "record", path: "value" } },
+  };
+  assert.throws(() => parseConnectionConfig(config), ConfigError);
+});

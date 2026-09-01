@@ -319,7 +319,11 @@ function scalarAt(value: unknown, path: string): JsonScalar {
     value !== null &&
     typeof value !== "string" &&
     typeof value !== "boolean" &&
-    !(typeof value === "number" && Number.isFinite(value))
+    !(
+      typeof value === "number" &&
+      Number.isFinite(value) &&
+      !Object.is(value, -0)
+    )
   ) {
     throw new ConfigError(`${path} must be a finite JSON scalar`);
   }

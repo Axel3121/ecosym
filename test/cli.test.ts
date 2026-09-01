@@ -93,6 +93,22 @@ test("the command surface connects, collects, queries, and verifies", async () =
   assert.equal(disagreement.stderr, "");
 });
 
+test("the query limit accepts its own boundaries", async (t) => {
+  // Only rejected values were covered, so tightening the bound to exclude 1 and
+  // 1000 would not have failed a single test.
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-cli-limit-ok-"));
+  const xdgDataHome = join(directory, "data");
+  for (const limit of ["1", "1000"]) {
+    await t.test(limit, async () => {
+      const result = await runCli(
+        ["query", "observations", "--limit", limit],
+        xdgDataHome,
+      );
+      assert.equal(result.code, 0);
+    });
+  }
+});
+
 test("out-of-range query limits are invalid arguments", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-cli-limit-"));
   const xdgDataHome = join(directory, "data");
