@@ -85,7 +85,17 @@ registered and unregistered cases fail, you have proven the mount plan is
 tight, not that it discriminates on registration — and the outside-both case
 would pass under today's defect too.
 
-Report the output of all cases, registered and unregistered.
+One more control, because the existing protection is coarser than the thing it
+protects: `prepareSandboxSources` marks the source's whole containing directory
+read-only (`src/sandbox.ts`, `dirname(destination)`), not the source file. So a
+sibling file next to a registered source — same directory, not itself a source —
+must stay writable. If it does not, an agent has silently lost write access to
+whatever happens to live beside a source, and the requirement above that nothing
+legitimately writable loses it is false while every other case still passes.
+Whether you achieve that by narrowing the granularity or by accepting the
+directory-level boundary is your call; report which you chose and why.
+
+Report the output of all cases: registered, unregistered, and the sibling.
 
 ## Evidence
 

@@ -55,6 +55,13 @@ means two different records can be proven identical.
 This list is what one reviewer found, not a boundary. Run your own mutations
 across the modules in scope and report survivors it missed.
 
+That sweep has no completeness criterion and is not meant to have one — it is
+discovery, and a quota would only invite mutations chosen to die. What must be
+reportable instead is what you actually did: how you selected mutations, how
+many you ran per module, and the surviving count against the run count. A
+reviewer judges the sweep by that record, not by a claim of thoroughness. The
+six named guards above are the part that is pass/fail.
+
 ## The test that decides it
 
 For each guard you keep: remove the guard, run `npm test`, paste the failing
