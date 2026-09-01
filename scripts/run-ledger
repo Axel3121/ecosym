@@ -88,9 +88,17 @@ def read_records() -> list[dict]:
         if not line:
             continue
         try:
-            records.append(json.loads(line))
+            record = json.loads(line)
         except json.JSONDecodeError:
             print(f"warning: {path}:{lineno} is not JSON, skipped", file=sys.stderr)
+            continue
+        # JSON's scalars and arrays parse without error but carry no unit, and
+        # a record that cannot name its run is not a record of one. Skipping it
+        # here keeps a single malformed line from taking every command with it.
+        if not isinstance(record, dict):
+            print(f"warning: {path}:{lineno} is not a record, skipped", file=sys.stderr)
+            continue
+        records.append(record)
     return records
 
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  appendFileSync,
   chmodSync,
   copyFileSync,
   mkdirSync,
@@ -352,6 +353,50 @@ function commit(repository: string, message: string): void {
     message,
   ]);
 }
+
+test("a ledger line that is not a record does not take the whole ledger with it", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-ledger-junk-"));
+  const repository = join(directory, "repository");
+  const scripts = join(repository, "scripts");
+  const dataHome = join(directory, "data");
+  mkdirSync(scripts, { recursive: true });
+  copyFileSync(runLedger, join(scripts, "run-ledger"));
+  chmodSync(join(scripts, "run-ledger"), 0o700);
+
+  const ledger = (arguments_: string[]) =>
+    spawnSync(join(scripts, "run-ledger"), arguments_, {
+      cwd: repository,
+      encoding: "utf8",
+      env: { ...process.env, XDG_DATA_HOME: dataHome },
+    });
+
+  try {
+    git(repository, ["init", "-b", "main"]);
+    writeFileSync(join(repository, "file.txt"), "one\n");
+    git(repository, ["add", "."]);
+    commit(repository, "first");
+    assert.equal(ledger(["start", "demo", "unit-real"]).status, 0);
+
+    // JSON without an object: a truncated write, a stray line, a hand edit.
+    // The ledger is append-only and read by every command, so one such line
+    // must cost its own record and nothing else.
+    const path = join(dataHome, "ecosym", "ledger.jsonl");
+    for (const junk of ["123", '"note"', "[]", "null"]) {
+      appendFileSync(path, `${junk}\n`);
+    }
+
+    const listed = ledger(["list"]);
+    assert.equal(listed.status, 0, listed.stderr);
+    assert.match(listed.stdout, /unit-real/u, listed.stdout);
+    assert.match(listed.stderr, /not a record/u, listed.stderr);
+
+    // The surviving record still accepts a close-out.
+    const closed = ledger(["close", "unit-real", "--outcome", "dropped"]);
+    assert.equal(closed.status, 0, closed.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("a task name that escapes the specification directory is refused", () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-run-task-name-"));
