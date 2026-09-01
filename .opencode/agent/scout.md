@@ -1,7 +1,7 @@
 ---
 description: Gathers facts. Locates files, reads schemas, lists what exists, counts occurrences, traces where something is defined. Answers questions about the current state of a codebase or data source. Not for judgement, design, or writing code.
 mode: subagent
-model: openai/gpt-5.3-codex-spark
+model: openai/gpt-5.6-luna
 temperature: 0
 tools:
   write: false
