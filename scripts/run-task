@@ -29,6 +29,16 @@ done
 
 [ -n "$TASK" ] || { echo "usage: run-task <task-name> [--worktree] [--branch <name>]" >&2; exit 2; }
 
+# A task name selects a specification the agent will follow as instructions.
+# Anything that escapes docs/tasks/ would let an unrelated file be treated as
+# a contract, so the name is a plain identifier or nothing at all.
+case "$TASK" in
+  *[!A-Za-z0-9._-]* | *..* | .* | "")
+    echo "task name must be a plain identifier: $TASK" >&2
+    exit 2
+    ;;
+esac
+
 cd "$(dirname "$0")/.."
 REPO="$PWD"
 SPEC="docs/tasks/${TASK}.md"

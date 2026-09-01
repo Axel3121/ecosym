@@ -163,3 +163,27 @@ function git(repository: string, arguments_: string[]): void {
   });
   assert.equal(result.status, 0, result.stderr);
 }
+
+test("a task name that escapes the specification directory is refused", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-task-name-"));
+  const repository = join(directory, "repository");
+  const scripts = join(repository, "scripts");
+  const tasks = join(repository, "docs", "tasks");
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(tasks, { recursive: true });
+  copyFileSync(runTask, join(scripts, "run-task"));
+  chmodSync(join(scripts, "run-task"), 0o700);
+  // A real specification outside docs/tasks that a traversal could reach.
+  writeFileSync(join(repository, "PRODUCT.md"), "# Not a task contract\n");
+
+  // The agent follows its specification as instructions, so selecting one
+  // outside docs/tasks would turn an unrelated document into a contract.
+  for (const name of ["../../PRODUCT", "../PRODUCT", ".hidden", "a/b"]) {
+    const refused = spawnSync(join(scripts, "run-task"), [name], {
+      encoding: "utf8",
+    });
+    assert.equal(refused.status, 2, `expected ${name} to be refused`);
+    assert.match(refused.stderr, /task name must be a plain identifier/);
+  }
+  rmSync(directory, { force: true, recursive: true });
+});
