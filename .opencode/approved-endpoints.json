@@ -1,0 +1,52 @@
+{
+  "$comment": [
+    "Endpoints this repository is allowed to send requests to.",
+    "SECURITY.md requires each one to be chosen by reading its provider's data",
+    "policy. This file records what was read and when; it cannot verify that the",
+    "policy still says so. A stale entry is a prompt to re-read, not evidence.",
+    "An agent that reads repository contents must not use an endpoint whose",
+    "provider may train on submitted content."
+  ],
+  "endpoints": [
+    {
+      "id": "openai/gpt-5.6-sol",
+      "policyRead": "2026-09-01",
+      "source": "https://opencode.ai/en/docs/zen#privacy",
+      "retention": "Requests retained 30 days, not used for training.",
+      "readsRepositoryContents": true
+    },
+    {
+      "id": "openai/gpt-5.6-luna",
+      "policyRead": "2026-09-01",
+      "source": "https://opencode.ai/en/docs/zen#privacy",
+      "retention": "Requests retained 30 days, not used for training.",
+      "readsRepositoryContents": true
+    }
+  ],
+  "refused": [
+    {
+      "id": "opencode/mimo-v2.5-free",
+      "policyRead": "2026-09-01",
+      "source": "https://opencode.ai/en/docs/zen#privacy",
+      "reason": "Free period: collected data may be used to improve the model."
+    },
+    {
+      "id": "opencode/deepseek-v4-flash-free",
+      "policyRead": "2026-09-01",
+      "source": "https://opencode.ai/en/docs/zen#privacy",
+      "reason": "Free period: collected data may be used to improve the model."
+    },
+    {
+      "id": "opencode/nemotron-3-ultra-free",
+      "policyRead": "2026-09-01",
+      "source": "https://opencode.ai/en/docs/zen#privacy",
+      "reason": "Trial use only; sessions logged to improve NVIDIA products."
+    },
+    {
+      "id": "opencode/north-mini-code-free",
+      "policyRead": "2026-09-01",
+      "source": "https://opencode.ai/en/docs/zen#privacy",
+      "reason": "Free period: data may be retained and used to improve the model."
+    }
+  ]
+}

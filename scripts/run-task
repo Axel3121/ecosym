@@ -1,35 +1,115 @@
 #!/usr/bin/env bash
 # Launch a task specification as a sandboxed OpenCode run.
-# Usage: run-task 001-observation-layer
+#
+#   run-task 001-observation-layer                  # in the main checkout
+#   run-task 004-fix --worktree                     # isolated, branch task/004-fix
+#   run-task 004-fix --worktree --branch other      # isolated, on an existing branch
+#
+# --worktree gives the run its own checkout so concurrent runs cannot overwrite
+# each other's files or test against half-finished work. The repository, its
+# history and its branches stay shared; only the working tree is private.
 #
 # Model, subagents, permissions and canonical reading all come from
 # opencode.json and .opencode/agent/ — not from here.
 set -euo pipefail
 
-TASK="${1:?usage: run-task <task-name>}"
-SPEC="docs/tasks/${TASK}.md"
+TASK=""
+USE_WORKTREE=0
+BRANCH=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --worktree) USE_WORKTREE=1; shift ;;
+    --branch)   BRANCH="${2:?--branch needs a name}"; USE_WORKTREE=1; shift 2 ;;
+    -*)         echo "unknown option: $1" >&2; exit 2 ;;
+    *)          [ -z "$TASK" ] || { echo "one task at a time" >&2; exit 2; }
+                TASK="$1"; shift ;;
+  esac
+done
+
+[ -n "$TASK" ] || { echo "usage: run-task <task-name> [--worktree] [--branch <name>]" >&2; exit 2; }
+
+# A task name selects a specification the agent will follow as instructions.
+# Anything that escapes docs/tasks/ would let an unrelated file be treated as
+# a contract, so the name is a plain identifier or nothing at all.
+case "$TASK" in
+  *[!A-Za-z0-9._-]* | *..* | .* | "")
+    echo "task name must be a plain identifier: $TASK" >&2
+    exit 2
+    ;;
+esac
 
 cd "$(dirname "$0")/.."
+REPO="$PWD"
+SPEC="docs/tasks/${TASK}.md"
 [ -f "$SPEC" ] || { echo "no spec at $SPEC" >&2; exit 1; }
+
+# Every linked worktree needs the main repository's Git directory to commit.
+# Launched from a linked worktree? Then that checkout is where the work belongs.
+# Without this the sandbox silently falls back to the main checkout, where the
+# spec does not exist and any commits would land on the wrong branch.
+if [ -z "${ECOSYM_PROJECT:-}" ]; then
+  COMMON_DIR="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)"
+  export ECOSYM_PROJECT="$(dirname "$COMMON_DIR")"
+fi
+if [ -z "${ECOSYM_WORKTREE:-}" ] && [ -f "$REPO/.git" ]; then
+  export ECOSYM_WORKTREE="$REPO"
+  echo "detected worktree launch: $ECOSYM_WORKTREE (repo $ECOSYM_PROJECT)"
+fi
+
+RUNS="${XDG_DATA_HOME:-$HOME/.local/share}/ecosym/runs"
+mkdir -p "$RUNS"
+
+WORKTREE=""
+if [ "$USE_WORKTREE" = 1 ]; then
+  BRANCH="${BRANCH:-task/${TASK}}"
+  WORKTREE="${XDG_DATA_HOME:-$HOME/.local/share}/ecosym/worktrees/${TASK}"
+
+  if [ -d "$WORKTREE" ]; then
+    if HELD_BRANCH="$(git -C "$WORKTREE" symbolic-ref --quiet --short HEAD 2>/dev/null)"; then
+      if [ "$HELD_BRANCH" != "$BRANCH" ]; then
+        echo "worktree $WORKTREE holds branch $HELD_BRANCH; requested branch $BRANCH" >&2
+        exit 1
+      fi
+    elif HELD_COMMIT="$(git -C "$WORKTREE" rev-parse --short HEAD 2>/dev/null)"; then
+      echo "worktree $WORKTREE is detached at $HELD_COMMIT; requested branch $BRANCH" >&2
+      exit 1
+    else
+      echo "existing worktree path is not a Git worktree: $WORKTREE" >&2
+      exit 1
+    fi
+    echo "reusing worktree: $WORKTREE"
+  elif git show-ref --quiet --verify "refs/heads/${BRANCH}"; then
+    git worktree add "$WORKTREE" "$BRANCH" >&2
+  else
+    git worktree add -b "$BRANCH" "$WORKTREE" >&2
+  fi
+
+  # The spec may be untracked in the main checkout; the run needs it either way.
+  mkdir -p "$WORKTREE/docs/tasks"
+  cp "$SPEC" "$WORKTREE/$SPEC"
+  export ECOSYM_WORKTREE="$WORKTREE"
+fi
 
 # Run under a transient user unit so the work survives a Hermes restart.
 # The sandbox keeps --die-with-parent, but its parent is now systemd, not us.
 UNIT="ecosym-task-${TASK}-$(date +%s)"
-RUNS="${XDG_DATA_HOME:-$HOME/.local/share}/ecosym/runs"
 LOG="$RUNS/${UNIT}.log"
 PORT="${ECOSYM_PORT:-$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")}"
-mkdir -p "$RUNS"
 
 echo "$PORT" > "$RUNS/${UNIT}.port"
 
 echo "unit: $UNIT"
 echo "log:  $LOG"
 echo "port: $PORT"
+[ -n "$WORKTREE" ] && echo "tree: $WORKTREE (branch $BRANCH)"
 
 systemd-run --user --unit="$UNIT" --collect \
-  --working-directory="$PWD" \
+  --working-directory="${WORKTREE:-$REPO}" \
+  ${ECOSYM_PROJECT:+--setenv=ECOSYM_PROJECT="$ECOSYM_PROJECT"} \
+  ${ECOSYM_WORKTREE:+--setenv=ECOSYM_WORKTREE="$ECOSYM_WORKTREE"} \
   --property=StandardOutput="append:$LOG" \
   --property=StandardError="append:$LOG" \
-  "$HOME/bin/ecosym-sandbox" run --variant max --port "$PORT" \
+  "$REPO/scripts/ecosym-sandbox" run --variant max --port "$PORT" \
   "Follow the instructions in the attached files." \
   -f "$SPEC" -f scripts/run-instruction.md

@@ -68,6 +68,17 @@ Provider data-use and retention controls are external facts that must be read
 from their current owner. Ecosym must not equate "not used for training" with
 "never retained or exposed outside the device."
 
+Every model endpoint this repository configures — the main model, the small
+model, and each subagent override — is subject to that rule. A model is chosen
+by reading its provider's current data policy, not by measuring its latency or
+quality alone. An endpoint whose provider may retain or train on submitted
+content is not eligible for any agent that reads repository contents, however
+convenient it is.
+
+Configured model names stay in version control where a review can see them.
+Indirection through an environment variable does not make an unapproved
+endpoint acceptable; it only hides which one is in use.
+
 ## Secrets are capabilities
 
 Secrets and credentials are not ordinary personal memory or model context.

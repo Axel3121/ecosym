@@ -10,10 +10,11 @@ failing is total failure, not a cosmetic bug.
 
 ## Status
 
-Early. Nothing is implemented: the repository holds specifications and one open
-work item. An earlier attempt was built and removed — it worked, but was written
-in the wrong language from specifications that told the implementer what to type
-rather than what to achieve. What it taught is in `docs/tasks/`, not in code.
+Early. The observation layer is implemented: declarative sources can be
+connected, collected into a provenance-preserving store, queried, and verified
+against their sources. Nothing renders, and the institutional layer does not
+exist yet. The observation contract and commands are documented in
+[`docs/observation-layer.md`](docs/observation-layer.md).
 
 An earlier frontend and backend were removed. The frontend invented agents no
 runtime knew about and matched runs to them by keyword — the authority mirage

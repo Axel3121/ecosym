@@ -22,30 +22,41 @@ jobs:
   check:
     name: check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-node@v4
+      # Pinned to a commit: a tag can be moved, and CI is the thing that is
+      # supposed to be harder to lie to than the code it checks.
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
-          node-version: '24'
+          persist-credentials: false
 
-      # The repository holds specifications until the implementation lands.
-      # Report success rather than inventing a verdict about nothing.
-      - name: detect implementation
-        id: detect
-        run: |
-          if [ -f package.json ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "no implementation yet — specifications only"
-          fi
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
 
+      # npm ci fails when package-lock.json disagrees with package.json, so a
+      # lockfile that drifted is caught here rather than at somebody's install.
       - name: install
-        if: steps.detect.outputs.present == 'true'
         run: npm ci
 
+      # No runtime dependencies today. This stays honest if that changes.
+      - name: audit
+        run: npm audit --omit=dev --audit-level=high
+
       - name: check
-        if: steps.detect.outputs.present == 'true'
         run: npm run check
+
+      # The suite is the evidence, so a suite that quietly stops running is a
+      # silent failure. Node reports a count; require it to be non-zero.
+      - name: tests actually ran
+        run: |
+          set -o pipefail
+          node --test --test-reporter=tap test/*.test.ts > tap.txt
+          count=$(grep -c '^ok ' tap.txt || true)
+          echo "passing assertions: $count"
+          if [ "$count" -eq 0 ]; then
+            echo "no tests ran — the check suite proves nothing" >&2
+            exit 1
+          fi
