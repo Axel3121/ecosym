@@ -50,12 +50,22 @@ jobs:
 
       # The suite is the evidence, so a suite that quietly stops running is a
       # silent failure. Node reports a count; require it to be non-zero.
+      #
+      # node --test exits non-zero when tests are skipped as well as when they
+      # fail, and `bash -e` would kill this step before the count is read —
+      # reporting "no tests ran" about a suite that ran and passed. Keep its
+      # status, then judge on what the TAP output actually says.
       - name: tests actually ran
         run: |
           set -o pipefail
-          node --test --test-reporter=tap test/*.test.ts > tap.txt
+          node --test --test-reporter=tap test/*.test.ts > tap.txt || true
           count=$(awk '/^# pass [0-9]+$/ { p=$3 } END { print p + 0 }' tap.txt)
-          echo "passing assertions: $count"
+          failed=$(awk '/^# fail [0-9]+$/ { f=$3 } END { print f + 0 }' tap.txt)
+          echo "passing assertions: $count, failing: $failed"
+          if [ "$failed" -ne 0 ]; then
+            echo "$failed test(s) failed" >&2
+            exit 1
+          fi
           if [ "$count" -eq 0 ]; then
             echo "no tests ran — the check suite proves nothing" >&2
             exit 1

@@ -300,6 +300,23 @@ test(
       assert.throws(() => {
         agentShellArguments({ ...shared, mode: "agent", worktree: dirname(home) });
       }, /HOME/u);
+      // The root is the worst value and the one a prefix test misses, because
+      // "/" + "/" is "//" and no absolute path begins with that.
+      for (const name of ["worktree", "project", "stateDirectory"]) {
+        assert.throws(
+          () => {
+            agentShellArguments({
+              ...shared,
+              mode: "agent",
+              worktree: name === "worktree" ? "/" : shared.workdir,
+              ...(name === "project" ? { project: "/" } : {}),
+              ...(name === "stateDirectory" ? { stateDirectory: "/" } : {}),
+            });
+          },
+          /root|HOME/u,
+          `${name} set to the root must be refused`,
+        );
+      }
       // stateDirectory defaults from HOME too, so the same overlap applies.
       const worktree = mkdtempSync(join(process.cwd(), ".agent-shell-test-"));
       try {

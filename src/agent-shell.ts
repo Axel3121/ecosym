@@ -61,8 +61,11 @@ export function agentShellArguments(input: AgentShellArgumentsInput): string[] {
     // (the ordinary case: the worktree lives inside it) only re-exposes that
     // one subtree, which is intended; only equal-to or containing HOME is the
     // overlap that defeats the tmpfs.
-    if (resolvedPath === home || `${home}/`.startsWith(`${resolvedPath}/`)) {
-      throw new Error(`${name} must not be HOME or an ancestor of HOME`);
+    // Root needs its own case: `${"/"}/` is `//`, which no absolute path
+    // starts with, so the prefix test below silently accepts the one value
+    // that overlays everything.
+    if (resolvedPath === "/" || resolvedPath === home || `${home}/`.startsWith(`${resolvedPath}/`)) {
+      throw new Error(`${name} must not be the root, HOME, or an ancestor of HOME`);
     }
   }
   if (input.mode === "prober") {
