@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""The record of what autonomous runs actually did.
+"""What autonomous runs came to, as far as anyone recorded it.
 
 A run leaves behind a log, a branch and a commit. None of those say whether the
-run *landed*. This ledger does, and it is the only place that claims to.
+run *landed*. This ledger is where that is written down.
 
     run-ledger list                     what every run is doing or did
     run-ledger start  <task> <unit> ..  append a started record (run-task does this)
@@ -11,9 +11,15 @@ run *landed*. This ledger does, and it is the only place that claims to.
     run-ledger show   <unit>            one run's records
 
 The file is append-only JSONL. A correction is a new record, never an edit;
-the current state of a run is its last record. Nothing here is derived from
-the ledger alone: `list` reads Git for branch and merge state every time, so a
-stale or missing close-out shows up as a disagreement rather than as a lie.
+the current state of a run is its last record.
+
+What this tool does NOT do, because it cannot: it does not know an outcome. A
+close-out is a human claim, and a human who never runs `close` leaves a run
+`OPEN` forever. What the tool does instead is refuse to let a claim pass
+unexamined — it reads Git on every `list`, marks any `landed` that Git will
+not place in main with `!!`, exits non-zero when one exists, and lists runs
+that have a log but no record at all. Treat an `OPEN` row as an unanswered
+question, not as a finished run.
 """
 
 from __future__ import annotations
@@ -115,13 +121,57 @@ def known_branches() -> set[str]:
     return {b.strip().removeprefix("origin/") for b in out.splitlines() if b.strip()}
 
 
-def git_state(branch: str | None, all_branches: set[str], merged: set[str]) -> str:
-    """What Git says about this run's branch, independent of any close-out."""
-    if not branch:
-        return "-"
-    if branch not in all_branches:
-        return "gone"
-    return "merged" if branch in merged else "open"
+def in_main(commit: str | None) -> bool | None:
+    """Is this commit reachable from main? None when the question cannot be put."""
+    if not commit:
+        return None
+    if not git("rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"):
+        return None
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root()), "merge-base", "--is-ancestor", commit, "main"],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.returncode == 0
+
+
+def branch_is_empty(branch: str) -> bool:
+    """True only when Git positively says the branch carries nothing of its own."""
+    out = git("rev-list", "--count", f"main..{branch}")
+    return out.isdigit() and int(out) == 0
+
+
+def git_state(
+    branch: str | None,
+    commit: str | None,
+    all_branches: set[str],
+    merged: set[str],
+) -> str:
+    """What Git can prove about this run, in words that do not overstate it.
+
+    A branch name alone cannot tell landed-and-cleaned-up from abandoned, and
+    `--merged` calls any branch that carries no commits of its own merged. The
+    recorded commit is the more durable fact: reachability from main survives
+    the branch being deleted, renamed, or never created at all.
+
+    'unproven' is deliberate. It is the honest answer whenever Git was not
+    given enough to decide, and it must not be read as 'nothing happened'.
+    """
+    if branch and branch in all_branches:
+        if branch_is_empty(branch):
+            return "empty"
+        return "merged" if branch in merged else "open"
+
+    # No live branch to inspect. The recorded commit is all that is left.
+    reachable = in_main(commit)
+    if reachable is True:
+        return "in-main"
+    if reachable is False:
+        return "unmerged"
+    return "unproven"
 
 
 def log_mtime(unit: str) -> int | None:
@@ -192,7 +242,10 @@ def cmd_close(args: argparse.Namespace) -> int:
             "branch": args.branch or last.get("branch"),
             "outcome": args.outcome,
             "evidence": args.evidence,
-            "commit": args.commit or last.get("commit"),
+            # The commit a run STARTED from is its base, and proves nothing
+            # about the work. Only a commit named at close-out is a result.
+            "base_commit": last.get("base_commit") or last.get("commit"),
+            "result_commit": args.commit,
         }
     )
     print(f"{unit}: {args.outcome}")
@@ -238,7 +291,9 @@ def cmd_show(args: argparse.Namespace) -> int:
 
 def cmd_list(args: argparse.Namespace) -> int:
     grouped = by_unit(read_records())
-    if not grouped:
+    logs = {p.stem for p in runs_dir().glob("*.log")}
+
+    if not grouped and not logs:
         print("ledger is empty — run `run-ledger backfill` to import existing logs")
         return 0
 
@@ -252,6 +307,9 @@ def cmd_list(args: argparse.Namespace) -> int:
         branch = last.get("branch") or (
             f"task/{task}" if f"task/{task}" in all_branches else None
         )
+        # A guessed branch is not this run's branch. Say so rather than
+        # borrowing a same-named branch's merge state as if it were evidence.
+        guessed = not last.get("branch") and branch is not None
 
         if unit_active(unit):
             state = "RUNNING"
@@ -260,30 +318,72 @@ def cmd_list(args: argparse.Namespace) -> int:
         else:
             state = "OPEN"
 
+        git_says = git_state(branch, last.get("result_commit"), all_branches, merged)
+        if guessed:
+            git_says = f"~{git_says}"
+
         rows.append(
             {
                 "task": task,
                 "unit": unit,
                 "state": state,
-                "git": git_state(branch, all_branches, merged),
+                "git": git_says,
                 "when": epoch or last.get("ts") or 0,
                 "evidence": last.get("evidence") or "",
+                # A close-out is a claim. Git either backs it or it does not.
+                "disputed": (
+                    state == "landed"
+                    and git_says.lstrip("~") in ("open", "unmerged", "empty")
+                ),
+            }
+        )
+
+    # A run with a log but no ledger record is the failure this tool exists to
+    # catch. It must not be quietly absent from the tool's own inventory.
+    for unit in sorted(logs - set(grouped)):
+        project, task, epoch = parse_unit(unit)
+        rows.append(
+            {
+                "task": task,
+                "unit": unit,
+                "state": "UNRECORDED",
+                "git": "-",
+                "when": epoch or log_mtime(unit) or 0,
+                "evidence": "log on disk, never registered — run `run-ledger backfill`",
+                "disputed": False,
             }
         )
 
     rows.sort(key=lambda r: r["when"])
     if args.open_only:
-        rows = [r for r in rows if r["state"] in ("OPEN", "RUNNING")]
+        rows = [
+            r for r in rows if r["state"] in ("OPEN", "RUNNING", "UNRECORDED") or r["disputed"]
+        ]
 
     task_w = max((len(r["task"]) for r in rows), default=4)
     task_w = min(max(task_w, 4), 46)
 
-    print(f"{'TASK'.ljust(task_w)}  {'STATE':9}  {'GIT':6}  WHEN")
+    print(f"{'TASK'.ljust(task_w)}  {'STATE':10}  {'GIT':9}  WHEN")
     for r in rows:
         when = time.strftime("%m-%d %H:%M", time.localtime(r["when"])) if r["when"] else "?"
-        print(f"{r['task'][:task_w].ljust(task_w)}  {r['state']:9}  {r['git']:6}  {when}")
+        mark = " !!" if r["disputed"] else ""
+        print(f"{r['task'][:task_w].ljust(task_w)}  {r['state']:10}  {r['git']:9}  {when}{mark}")
+        if args.verbose or r["disputed"]:
+            print(f"{' ' * task_w}  · {r['unit']}")
         if r["evidence"]:
             print(f"{' ' * task_w}  └ {r['evidence']}")
+
+    disputed = [r for r in rows if r["disputed"]]
+    if disputed:
+        print(
+            f"\n!! {len(disputed)} run(s) recorded as landed that Git does not "
+            f"place in main. The close-out is wrong, or main is stale — "
+            f"`git fetch` and look again."
+        )
+
+    unrecorded = [r for r in rows if r["state"] == "UNRECORDED"]
+    if unrecorded:
+        print(f"\n{len(unrecorded)} run(s) have a log but no ledger record.")
 
     open_runs = [r for r in rows if r["state"] == "OPEN"]
     if open_runs and not args.open_only:
@@ -292,7 +392,14 @@ def cmd_list(args: argparse.Namespace) -> int:
     head = git("rev-parse", "--abbrev-ref", "HEAD")
     if head and head != "main":
         print(f"\nnote: main checkout is on '{head}', not main.")
-    return 0
+
+    stale = git("rev-list", "--count", "main..origin/main")
+    if stale.isdigit() and int(stale) > 0:
+        print(
+            f"note: local main is {stale} commit(s) behind origin/main; "
+            f"merge state above may be stale."
+        )
+    return 1 if disputed else 0
 
 
 def main() -> int:
@@ -300,7 +407,8 @@ def main() -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("list", help="what every run is doing or did")
-    s.add_argument("--open-only", action="store_true", help="only unfinished runs")
+    s.add_argument("--open-only", action="store_true", help="only unfinished or disputed runs")
+    s.add_argument("-v", "--verbose", action="store_true", help="show unit names")
     s.set_defaults(fn=cmd_list)
 
     s = sub.add_parser("start", help="record a run starting")

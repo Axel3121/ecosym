@@ -94,6 +94,11 @@ fi
 # Run under a transient user unit so the work survives a Hermes restart.
 # The sandbox keeps --die-with-parent, but its parent is now systemd, not us.
 UNIT="ecosym-task-${TASK}-$(date +%s)"
+# Two launches inside one second would otherwise share a unit name, and the
+# ledger would show one run where two exist.
+while [ -e "$RUNS/${UNIT}.log" ]; do
+  UNIT="${UNIT}b"
+done
 LOG="$RUNS/${UNIT}.log"
 PORT="${ECOSYM_PORT:-$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")}"
 
