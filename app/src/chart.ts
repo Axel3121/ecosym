@@ -131,7 +131,7 @@ export class Chart {
       // the seat: the quarter's largest building
       const sp = this.toScreen(q.seat.x, q.seat.y);
       this.hits.push({ kind: "seat", settlementId: s.civilizationId, label: s.seatName, sub: `${s.name} · ${s.openMatters} åpne for rådet`, x: sp.x, y: sp.y, r: Math.max(18, 34 * z) });
-      if (this.showLabels && labelAlpha > 0) this.label(sp.x, sp.y - 30 * z, s.name, labelAlpha);
+      if (this.showLabels && labelAlpha > 0) this.label(sp.x, sp.y + 34 * z, s.name, labelAlpha);
     }
 
     // the town hall: matters waiting stand at the door, one body per matter. The queue IS the count.
@@ -145,7 +145,7 @@ export class Chart {
         this.walker(p, z, 0, -1, 1, 0); // standing, facing the door
         this.hits.push({ kind: "letter", petitionId: m.id, label: m.summary, sub: "venter på svar", x: p.x, y: p.y - 8, r: Math.max(12, 10 * z) });
       });
-      if (this.showLabels && labelAlpha > 0) this.label(d.x, d.y + 46 * z, "Rådhuset", labelAlpha);
+      if (this.showLabels && labelAlpha > 0) this.label(d.x, d.y + 44 * z, "Rådhuset", labelAlpha);
     }
 
     // petitions on their way: a messenger walks from the quarter's gate to the hall door
@@ -161,26 +161,27 @@ export class Chart {
     void selected;
   }
 
-  private fogBox(q: Quarter, now: number, text?: string) {
-    const fog = this.im("/art/fog.png"); if (!fog) return;
-    const z = this.camera.zoom;
-    const w = q.box.x2 - q.box.x1, h = q.box.y2 - q.box.y1;
-    const drift = Math.sin(now * 0.3 + q.box.x1) * 6;
-    const a = this.toScreen(q.box.x1 + w * 0.02 + drift, q.box.y1 + h * 0.05);
-    const b = this.toScreen(q.box.x1 + w * 0.1 - drift, q.box.y1 + h * 0.3);
-    this.ctx.globalAlpha = 0.82; this.ctx.drawImage(fog, a.x, a.y, w * 0.96 * z, h * 0.8 * z);
-    this.ctx.globalAlpha = 0.6; this.ctx.drawImage(fog, b.x, b.y, w * 0.8 * z, h * 0.6 * z);
-    this.ctx.globalAlpha = 1;
-    if (text && this.showLabels) { const c = this.toScreen(q.box.x1 + w / 2, q.box.y1 + h / 2); this.label(c.x, c.y, text, 1); }
-  }
-
   private label(x: number, y: number, text: string, alpha: number) {
     const { ctx } = this;
-    ctx.save(); ctx.globalAlpha = alpha; ctx.font = `500 12px "Plex Mono", monospace`; ctx.textAlign = "center";
-    const w = ctx.measureText(text).width + 18;
-    ctx.fillStyle = "rgba(29,26,21,0.9)"; ctx.fillRect(x - w / 2, y - 12, w, 20);
-    ctx.strokeStyle = "#5a5040"; ctx.lineWidth = 1; ctx.strokeRect(x - w / 2 + 0.5, y - 11.5, w - 1, 19);
-    ctx.fillStyle = "#e6dcc3"; ctx.fillText(text, x, y + 3); ctx.restore();
+    ctx.save(); ctx.globalAlpha = alpha; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.font = `500 11px "Plex Mono", monospace`;
+    ctx.lineJoin = "round"; ctx.lineWidth = 4; ctx.strokeStyle = "rgba(22,18,12,0.75)"; ctx.strokeText(text.toUpperCase(), x, y);
+    ctx.fillStyle = "#f1e8d6"; ctx.fillText(text.toUpperCase(), x, y);
+    ctx.restore();
+  }
+
+  private fogBox(q: Quarter, now: number, text?: string) {
+    const { ctx } = this;
+    const a = this.toScreen(q.box.x1, q.box.y1), b = this.toScreen(q.box.x2, q.box.y2);
+    const w = b.x - a.x, h = b.y - a.y, cx = a.x + w / 2, cy = a.y + h / 2;
+    const breathe = 0.9 + Math.sin(now * 0.4 + q.box.x1) * 0.04;
+    // a soft dusk over the quarter: darkening, slightly cool, feathered — not a white blob
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(w, h) * 0.62 * breathe);
+    g.addColorStop(0, "rgba(38,44,58,0.72)");
+    g.addColorStop(0.7, "rgba(38,44,58,0.55)");
+    g.addColorStop(1, "rgba(38,44,58,0)");
+    ctx.fillStyle = g; ctx.fillRect(a.x - w * 0.3, a.y - h * 0.3, w * 1.6, h * 1.6);
+    if (text && this.showLabels) this.label(cx, cy, text, 0.9);
   }
 
   private smoke(p: P, z: number, t: number) {
