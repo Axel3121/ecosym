@@ -36,6 +36,25 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
+      # The sandbox tests are the only ones that exercise real enforcement --
+      # that an agent shell cannot write outside its worktree, cannot read
+      # another tool's credentials, and has no route to the network. They skip
+      # themselves when bwrap is absent, which on a bare runner means the
+      # security properties this project is built around are never checked in
+      # CI. Measured on PR #24: 11 tests skipped, and the job reported a pass.
+      #
+      # They also need a node the sandbox can reach. bwrap binds /usr
+      # read-only, and setup-node installs into /opt/hostedtoolcache, so the
+      # runner's node is invisible inside the sandbox. Link the pinned node
+      # into /usr/bin so the child runs the same version the suite does.
+      - name: install the sandbox runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo ln -sf "$(command -v node)" /usr/bin/node
+          bwrap --version
+          /usr/bin/node --version
+
       # npm ci fails when package-lock.json disagrees with package.json, so a
       # lockfile that drifted is caught here rather than at somebody's install.
       - name: install

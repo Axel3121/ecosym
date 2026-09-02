@@ -132,6 +132,24 @@ test("the CI no-tests guard reports the TAP pass total when tests actually pass"
   assert.equal(runAwk(expression, passingTap), "1");
 });
 
+test("CI installs the sandbox runtime so enforcement is actually exercised", () => {
+  // The sandbox tests skip themselves when bwrap is missing. That is correct
+  // locally and catastrophic in CI: the only tests that prove an agent shell
+  // cannot escape its worktree quietly do not run, and the job goes green.
+  // Measured on PR #24 — 11 skipped, reported as a pass.
+  const workflow = readFileSync(workflowPath, "utf8");
+
+  assert.match(
+    workflow, /apt-get install[^\n]*bubblewrap/u,
+    "CI does not install bwrap, so every sandbox enforcement test skips",
+  );
+  assert.match(
+    workflow, /ln -sf[^\n]*\/usr\/bin\/node/u,
+    "the sandbox binds /usr read-only and setup-node installs elsewhere, so " +
+      "without this link the sandbox child has no node to run",
+  );
+});
+
 test("the CI audit examines the non-empty development dependency set", () => {
   const result = runAuditScript({ metadata: { dependencies: { total: 3 } } }, 0);
 
