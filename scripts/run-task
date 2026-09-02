@@ -84,6 +84,20 @@ if [ -d "$WORKTREE" ]; then
     echo "existing worktree path is not a Git worktree: $WORKTREE" >&2
     exit 1
   fi
+  CANDIDATE_COMMIT="$(git -C "$WORKTREE" rev-parse HEAD)"
+elif git show-ref --quiet --verify "refs/heads/${BRANCH}"; then
+  CANDIDATE_COMMIT="$(git rev-parse "$BRANCH")"
+else
+  CANDIDATE_COMMIT="$(git rev-parse main)"
+fi
+
+# The second launcher in a race waits on the lock and asks after the first run
+# is registered. Check before creating or writing a worktree, using the exact
+# commit it would receive. This call is intentionally one line: the regression
+# test removes it to prove the refusal comes from here.
+"$REPO/scripts/run-ledger" can-start "$TASK" --declaration "$DECLARATION_JSON" --commit "$CANDIDATE_COMMIT"
+
+if [ -d "$WORKTREE" ]; then
   if [ -n "$(git -C "$WORKTREE" status --porcelain --untracked-files=all)" ]; then
     echo "worktree $WORKTREE has changes from an earlier run; refusing to reuse it" >&2
     exit 1
@@ -95,6 +109,12 @@ else
   git worktree add -b "$BRANCH" "$WORKTREE" main >&2
 fi
 
+ACTUAL_COMMIT="$(git -C "$WORKTREE" rev-parse HEAD)"
+if [ "$ACTUAL_COMMIT" != "$CANDIDATE_COMMIT" ]; then
+  echo "worktree $WORKTREE moved from checked commit $CANDIDATE_COMMIT to $ACTUAL_COMMIT" >&2
+  exit 1
+fi
+
 # This copy is the declaration the run starts with. run-ledger snapshots its
 # parsed needs and touches below, so edits made during the run cannot shrink the
 # territory it holds and the shared branch is never consulted for a live run.
@@ -103,12 +123,6 @@ cp "$SPEC_SNAPSHOT" "$WORKTREE/$SPEC"
 rm -f "$SPEC_SNAPSHOT"
 trap - EXIT
 export ECOSYM_WORKTREE="$WORKTREE"
-
-# The second launcher in a race waits on the lock and asks after the first run
-# is registered. Check the exact commit the managed worktree will run, not a
-# stale named branch or the invoking checkout. This call is intentionally one
-# line: the regression test removes it to prove the refusal comes from here.
-"$REPO/scripts/run-ledger" can-start "$TASK" --declaration "$DECLARATION_JSON" --commit "$(git -C "$WORKTREE" rev-parse HEAD)"
 
 # Run under a transient user unit so the work survives a Hermes restart.
 # The sandbox keeps --die-with-parent, but its parent is now systemd, not us.

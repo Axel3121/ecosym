@@ -4,6 +4,7 @@ import {
   appendFileSync,
   chmodSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -1103,6 +1104,20 @@ test("run-task refuses contested ground in a worktree, and starts if that check 
     assert.match(launched, new RegExp(`--working-directory=${escapeRegExp(managedWorktree)}`));
     assert.doesNotMatch(launched, new RegExp(`--working-directory=${escapeRegExp(repository)}(?:\\n|$)`));
 
+    const heldSpec = readFileSync(join(managedWorktree, "docs", "tasks", "first.md"), "utf8");
+    const sameTask = spawnSync(join(scripts, "run-task"), ["first"], {
+      cwd: repository,
+      encoding: "utf8",
+      env: { ...environment, ECOSYM_PORT: "3221" },
+    });
+    assert.equal(sameTask.status, 1);
+    assert.match(sameTask.stderr, /running task first/u);
+    assert.equal(
+      readFileSync(join(managedWorktree, "docs", "tasks", "first.md"), "utf8"),
+      heldSpec,
+      "a refused relaunch must not rewrite the active run's worktree",
+    );
+
     copyFileSync(join(scripts, "run-ledger"), join(scripts, "run-ledger-real"));
     writeFileSync(
       join(scripts, "run-ledger"),
@@ -1137,6 +1152,11 @@ test("run-task refuses contested ground in a worktree, and starts if that check 
     assert.match(refused.stderr, /first/u);
     assert.match(refused.stderr, /src\/shared/u);
     assert.equal(readFileSync(capture, "utf8"), beforeRefusal, "a refused run never reaches systemd");
+    assert.equal(
+      existsSync(join(dataHome, "ecosym", "worktrees", "second")),
+      false,
+      "eligibility refusal happens before creating a worktree",
+    );
 
     const source = readFileSync(join(scripts, "run-task"), "utf8");
     const mutant = source.replace(
