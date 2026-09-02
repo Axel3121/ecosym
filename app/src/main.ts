@@ -24,12 +24,13 @@ if (scene.synthetic) $("synthetic").hidden = false;
 const desk: DeskState = { decisions: {}, selectedCiv: null };
 function renderDocket() { $("desk-body").innerHTML = renderDesk(scene, desk); }
 $("desk-body").addEventListener("click", (e) => {
-  const t = (e.target as HTMLElement).closest<HTMLElement>("[data-decide],[data-undo],[data-civ],[data-go],[data-talk-civ]");
+  const t = (e.target as HTMLElement).closest<HTMLElement>("[data-decide],[data-undo],[data-civ],[data-go],[data-talk-civ],[data-talk-council]");
   if (!t) return;
   if (t.dataset.decide) { desk.decisions[t.dataset.id!] = { decision: t.dataset.decide as Decision, at: Date.now() }; renderDocket(); return; }
   if (t.dataset.undo) { delete desk.decisions[t.dataset.undo]; renderDocket(); return; }
   if (t.dataset.go) { const s = scene.settlements.find((x) => x.civilizationId === t.dataset.go)!; select({ kind: "settlement", settlementId: s.civilizationId, label: s.name }); return; }
   if (t.dataset.talkCiv) { const s = scene.settlements.find((x) => x.civilizationId === t.dataset.talkCiv)!; focus({ kind: "seat", settlement: s }); return; }
+  if (t.dataset.talkCouncil) { focus({ kind: "council" }); return; }
   if (t.dataset.civ === "__capital") { select({ kind: "capital", label: "Capital" }); return; }
   if (t.dataset.civ) { const s = scene.settlements.find((x) => x.civilizationId === t.dataset.civ)!; desk.selectedCiv = s.civilizationId; renderDocket(); flyTo(s.ground.x, s.ground.y, Math.max(chart.camera.zoom, 1.2)); }
 });
@@ -95,67 +96,35 @@ window.addEventListener("keydown", (e) => { if (e.key === "Escape") select(null)
 let selected: Hit | null = null;
 
 function select(h: Hit | null) {
-  if (h?.kind === "settlement" && h.settlementId) { desk.selectedCiv = h.settlementId; renderDocket(); }
+  // The map is the place: a click goes there or starts a conversation.
+  // Facts live on the desk; there is no card on top of the painting.
   selected = h;
-  const sheet = $("sheet");
-  if (!h) { sheet.hidden = true; return; }
-  const s = h.settlementId ? scene.settlements.find((x) => x.civilizationId === h.settlementId) : undefined;
-  if (h.kind === "settlement" && s) {
-    if (s.epistemic === "observed") flyTo(s.ground.x, s.ground.y - 30, Math.max(chart.camera.zoom, 2.4));
-    else flyTo(s.ground.x, s.ground.y, Math.max(chart.camera.zoom, 1.2));
-  }
-  if (h.kind === "capital") flyTo(770, 410, Math.max(chart.camera.zoom, 1.7));
-  sheet.hidden = false;
-  sheet.innerHTML = sheetFor(h);
-  sheet.querySelector<HTMLButtonElement>(".close")?.addEventListener("click", () => select(null));
-  sheet.querySelectorAll<HTMLElement>("[data-go]").forEach((el) => el.addEventListener("click", () => {
-    const t = scene.settlements.find((x) => x.civilizationId === el.dataset.go)!;
-    select({ kind: "settlement", settlementId: t.civilizationId, label: t.name });
-  }));
-  sheet.querySelectorAll<HTMLElement>("[data-talk]").forEach((el) => el.addEventListener("click", () => {
-    const kind = el.dataset.talk;
-    if (kind === "council") return focus({ kind: "council" });
-    if (!s) return;
-    if (kind === "seat") return focus({ kind: "seat", settlement: s });
-    const agent = s.inhabitants.find((i) => i.runId === el.dataset.run);
-    if (agent) focus({ kind: "agent", settlement: s, agent });
-  }));
-}
-
-function sheetFor(h: Hit): string {
-  const close = `<button class="close" aria-label="close">✕</button>`;
-  const syn = ""; // the synthetic flag lives once, in the desk header
+  if (!h) return;
   const s = h.settlementId ? scene.settlements.find((x) => x.civilizationId === h.settlementId) : undefined;
   switch (h.kind) {
-    case "capital": {
-      const halls = scene.capital.halls.map((x) => `<li data-go="${x.civilizationId}"><span>${x.name} <span class="seatname">${x.seatName}</span></span><span>${x.epistemic === "observed" ? `${x.live ? "i arbeid" : "stille"} · <span class="seal">${x.openMatters}</span>` : `<span class="bare">aldri observert</span>`}</span></li>`).join("");
-      return `${close}<p class="kind">verdens hovedkvarter</p><h2>Capital</h2><h3>Haller</h3><ul class="halls">${halls}</ul><h3>For rådet</h3><ul>${scene.capital.matters.map((m) => `<li>${m.summary} <span class="muted">${ago(m.raisedAt)}</span></li>`).join("")}</ul><p class="muted">Detaljene bor der arbeidet bor. Klikk en hall for å dra dit.</p><button class="talk" data-talk="council">Gå inn i rådskammeret</button>${syn}`;
-    }
-    case "settlement": {
-      if (!s) return close;
-      if (s.epistemic !== "observed") return `${close}<p class="kind">sivilisasjon</p><h2>${s.name}</h2><p class="muted">Aldri observert. Ecosym har ikke sett dette stedet; ingenting tegnes fordi ingenting er kjent.</p>${syn}`;
-      return `${close}<p class="kind">sivilisasjon · ${s.domain}</p><h2>${s.name}</h2><p>sist sett <span class="muted">${ago(s.lastSeen!)}</span> · ${s.inhabitants.length} i arbeid · ${s.traces.length} spor</p><p class="muted">Arbeidet står på bordet til venstre. Klikk en person eller ${s.seatName} for detaljer.</p><button class="talk" data-talk="seat">Snakk med ${s.seatName}</button>${syn}`;
-    }
-    case "seat": {
-      if (!s) return close;
-      const matters = scene.capital.matters.filter((m) => m.raisedBy === s.civilizationId);
-      const letters = scene.letters.filter((l) => l.toCivilizationId === s.civilizationId);
-      return `${close}<p class="kind">setet i ${s.name}</p><h2>${s.seatName}</h2><h3>Kan alene</h3><ul>${s.mandate.alone.map((m) => `<li>${m}</li>`).join("")}</ul><h3>Må til rådet</h3><ul>${s.mandate.council.map((m) => `<li>${m}</li>`).join("")}</ul><h3>Reist for rådet</h3><ul>${matters.map((m) => `<li><span class="seal">●</span> ${m.summary}</li>`).join("") || '<li class="muted">ingenting åpent</li>'}</ul><h3>Petisjoner hit</h3><ul>${letters.map((l) => `<li>${l.text} <span class="muted">— ${l.state}</span></li>`).join("") || '<li class="muted">ingen</li>'}</ul><button class="talk" data-talk="seat">Snakk med ${s.seatName}</button>${syn}`;
-    }
+    case "settlement":
+      if (!s) return;
+      desk.selectedCiv = s.civilizationId; renderDocket();
+      if (s.epistemic === "observed") flyTo(s.ground.x, s.ground.y - 30, Math.max(chart.camera.zoom, 2.4));
+      else flyTo(s.ground.x, s.ground.y, Math.max(chart.camera.zoom, 1.2));
+      return;
+    case "capital":
+      desk.selectedCiv = "__capital"; renderDocket();
+      flyTo(770, 410, Math.max(chart.camera.zoom, 1.7));
+      return;
+    case "seat":
+      if (s) focus({ kind: "seat", settlement: s });
+      return;
     case "inhabitant": {
-      if (!s) return close;
-      const inh = s.inhabitants.find((i) => i.runId === h.runId);
-      const tr = s.traces.find((t) => t.runId === h.runId);
-      if (inh) {
-        const children = s.inhabitants.filter((c) => c.parentRunId === inh.runId);
-        return `${close}<p class="kind">forbipasserende arbeid · kjører nå</p><h2>${inh.label}</h2><ul><li>verktøy: ${inh.tool ?? "—"}</li><li>dybde: ${inh.depth}${inh.parentRunId ? ` (under ${s.inhabitants.find((p) => p.runId === inh.parentRunId)?.label ?? inh.parentRunId})` : ""}</li></ul>${children.length ? `<h3>Har delegert</h3><ul>${children.map((c) => `<li>${c.label}</li>`).join("")}</ul>` : ""}<p class="muted">Forsvinner når arbeidet gjør det. Intet fast embete.</p><button class="talk" data-talk="agent" data-run="${inh.runId}">Snakk med den</button>${syn}`;
-      }
-      return `${close}<p class="kind">spor</p><h2>${h.label}</h2><p class="muted">Ferdig arbeid. Blekner over oppbevaringsvinduet${tr ? ` (${Math.round(tr.freshness * 100)}% igjen)` : ""}.</p>${syn}`;
+      if (!s) return;
+      const agent = s.inhabitants.find((i) => i.runId === h.runId);
+      if (agent) focus({ kind: "agent", settlement: s, agent });
+      else { desk.selectedCiv = s.civilizationId; renderDocket(); }
+      return;
     }
-    case "letter": {
-      const l = scene.letters.find((x) => x.petitionId === h.petitionId)!;
-      return `${close}<p class="kind">petisjon · ${l.state}</p><h2>${l.text}</h2><p>sendt ${ago(l.sentAt)} til ${s?.seatName ?? l.toCivilizationId}</p><p class="muted">Noe som ble bedt om. Vises aldri som noe som skjedde.</p>${syn}`;
-    }
+    case "letter":
+      desk.selectedCiv = "__capital"; renderDocket();
+      return;
   }
 }
 
@@ -229,7 +198,7 @@ function frame(now: number) {
     chart.camera.y = Math.min(Math.max(chart.camera.y, Math.min(hh, 512)), Math.max(1024 - hh, 512)); }
   stepWalkers(walkers, dt, reduced);
   chart.draw(scene, walkers, selected);
-  $("hint").textContent = chart.camera.zoom >= SETTLEMENT_ZOOM ? "scroll ut til kartet · klikk en person eller setet · Esc lukker" : "scroll for å gå ned · klikk et sted · dra for å panorere";
+  $("hint").textContent = chart.camera.zoom >= SETTLEMENT_ZOOM ? "scroll ut til kartet · klikk en person eller setet for å snakke" : "scroll for å gå ned · klikk et sted · dra for å panorere";
   requestAnimationFrame(frame);
 }
 renderDocket();

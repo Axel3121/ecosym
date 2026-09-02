@@ -89,6 +89,7 @@ export interface Trace {
   buildingId: string;
   /** 1 = just finished, 0 = at the retention edge. */
   freshness: number;
+  endedAt: Instant;
 }
 
 export interface Settlement {
@@ -249,7 +250,7 @@ export function deriveScene(obs: Observations): Scene {
       .map((r) => {
         const age = now - ms(r.endedAt!);
         const freshness = Math.max(0, 1 - age / obs.traceWindowMs);
-        return { runId: r.id, label: r.label, buildingId: `${civ.id}:w:${rootOf(r).id}`, freshness };
+        return { runId: r.id, label: r.label, buildingId: `${civ.id}:w:${rootOf(r).id}`, freshness, endedAt: r.endedAt! };
       })
       .filter((t) => t.freshness > 0);
 

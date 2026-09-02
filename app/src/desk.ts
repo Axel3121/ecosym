@@ -40,7 +40,7 @@ function queue(scene: Scene, state: DeskState) {
     const s = scene.settlements.find((x) => x.civilizationId === m.raisedBy);
     const d = state.decisions[m.id];
     const [what, crosses] = m.summary.split(" (crosses: ");
-    const body = `<span class="q-who">${esc(s?.name ?? m.raisedBy)}</span> <span class="q-when">${ago(scene, m.raisedAt)}</span><br><span class="q-what">${esc(what ?? m.summary)}</span>${crosses ? `<br><span class="q-cross">krysser: ${esc(crosses.replace(/\)$/, ""))}</span>` : ""}`;
+    const body = `<span class="q-who">${esc(s?.name ?? m.raisedBy)} <span class="q-when">${ago(scene, m.raisedAt)}</span></span><span class="q-what">${esc((what ?? m.summary).replace(/^\w+ asks to /, ""))}</span>${crosses ? `<span class="q-cross">${esc(crosses.replace(/\)$/, ""))}</span>` : ""}`;
     const act = d
       ? `<span class="q-done ${d.decision}">${d.decision === "ja" ? "✓ ja" : d.decision === "nei" ? "✗ nei" : "? spurt tilbake"} <button data-undo="${m.id}" title="angre">↶</button></span>`
       : `<span class="q-act"><button data-decide="ja" data-id="${m.id}">ja</button><button data-decide="nei" data-id="${m.id}">nei</button><button data-decide="spør" data-id="${m.id}">spør</button></span>`;
@@ -58,10 +58,27 @@ function roster(scene: Scene, state: DeskState) {
     const open = s.openMatters ? `<span class="seal">${s.openMatters}</span>` : "";
     return `<li class="civ ${sel}" data-civ="${esc(s.civilizationId)}"><kbd>${i + 1}</kbd><b>${esc(s.name)}</b>${st}${open}</li>`;
   }).join("");
-  return `<section class="desk-sec"><h3>Sivilisasjoner</h3><ul class="roster">${rows}<li class="civ" data-civ="__capital"><kbd>C</kbd><b>Capital</b><span class="muted">${scene.capital.matters.length} saker</span></li></ul></section>`;
+  return `<section class="desk-sec"><h3>Sivilisasjoner</h3><ul class="roster">${rows}<li class="civ ${state.selectedCiv === "__capital" ? "sel" : ""}" data-civ="__capital"><kbd>C</kbd><b>Capital</b><span class="muted">${scene.capital.matters.length} saker</span></li></ul></section>`;
+}
+
+function capital(scene: Scene) {
+  const halls = scene.capital.halls.map((h) => `<li class="hall" data-civ="${esc(h.civilizationId)}"><b>${esc(h.name)}</b> <span class="muted">${esc(h.seatName)}</span><span class="r">${h.epistemic === "observed" ? (h.live ? `<span class="live">● i arbeid</span>` : `<span class="muted">stille</span>`) : `<span class="dim">aldri sett</span>`}${h.openMatters ? ` <span class="seal">${h.openMatters}</span>` : ""}</span></li>`).join("");
+  return `<section class="desk-sec"><h3><span>Capital</span><span class="muted">verdens hovedkvarter</span></h3><ul class="halls">${halls}</ul><p class="muted">Rådet ser hver sivilisasjon i sammendrag. Detaljene bor der arbeidet bor.</p><div class="desk-actions"><button data-talk-council="1" class="primary">gå inn i rådskammeret</button></div></section>`;
+}
+
+function log(scene: Scene) {
+  type Ev = { at: string; text: string; cls: string };
+  const ev: Ev[] = [];
+  for (const m of scene.capital.matters) { const s = scene.settlements.find((x) => x.civilizationId === m.raisedBy); ev.push({ at: m.raisedAt, text: `${s?.name ?? m.raisedBy} reiste sak for rådet`, cls: "seal" }); }
+  for (const l of scene.letters) { const s = scene.settlements.find((x) => x.civilizationId === l.toCivilizationId); ev.push({ at: l.sentAt, text: `petisjon til ${s?.seatName ?? l.toCivilizationId}: «${l.text}» — ${l.state}`, cls: "muted" }); }
+  for (const s of scene.settlements) { if (s.lastSeen) ev.push({ at: s.lastSeen, text: `${s.name} sist observert`, cls: "muted" }); for (const t of s.traces) ev.push({ at: t.endedAt, text: `${s.name}: «${t.label}» ferdig`, cls: "" }); }
+  ev.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  const rows = ev.slice(0, 8).map((e) => `<li><span class="when">${ago(scene, e.at)}</span><span class="${e.cls}">${esc(e.text)}</span></li>`).join("");
+  return `<section class="desk-sec"><h3><span>Siste observert</span></h3><ul class="log">${rows}</ul></section>`;
 }
 
 function work(scene: Scene, state: DeskState) {
+  if (state.selectedCiv === "__capital") return capital(scene);
   const s = scene.settlements.find((x) => x.civilizationId === state.selectedCiv);
   if (!s) return "";
   if (s.epistemic !== "observed") return `<section class="desk-sec"><h3>${esc(s.name)}</h3><p class="muted">Aldri observert. Koble en kilde for å se noe her.</p></section>`;
@@ -79,7 +96,7 @@ function work(scene: Scene, state: DeskState) {
 }
 
 export function renderDesk(scene: Scene, state: DeskState): string {
-  return attention(scene, state) + work(scene, state) + queue(scene, state) + roster(scene, state);
+  return attention(scene, state) + roster(scene, state) + work(scene, state) + queue(scene, state) + log(scene);
 }
 
 export function civByIndex(scene: Scene, n: number): Settlement | undefined { return scene.settlements[n - 1]; }

@@ -11,7 +11,7 @@ await page.goto(base); await page.waitForTimeout(1500);
 // open Roma sheet, click "Snakk med Curia"
 await page.evaluate(() => window.__ecosym.select({ kind: "settlement", settlementId: "roma", label: "Roma" }));
 await page.waitForTimeout(400);
-await page.click("#sheet [data-talk=seat]");
+await page.click("[data-talk-civ=roma]");
 await page.waitForTimeout(1200);
 const ask = async (t) => { await page.fill("#focus-input", t); await page.press("#focus-input", "Enter"); await page.waitForTimeout(600); };
 await ask("hva driver dere med?");
