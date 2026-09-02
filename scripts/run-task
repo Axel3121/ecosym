@@ -68,11 +68,6 @@ trap 'rm -f "$SPEC_SNAPSHOT"' EXIT
 cp "$SPEC" "$SPEC_SNAPSHOT"
 DECLARATION_JSON="$("$REPO/scripts/run-ledger" declaration "$SPEC_SNAPSHOT")"
 
-# The second launcher in a race waits above and then asks again here, after the
-# first run has been registered. This call is intentionally one line: the
-# regression test removes it to prove the refusal comes from this check.
-"$REPO/scripts/run-ledger" can-start "$TASK" --declaration "$DECLARATION_JSON"
-
 BRANCH="${BRANCH:-task/${TASK}}"
 WORKTREE="$STATE/worktrees/${TASK}"
 
@@ -97,7 +92,7 @@ if [ -d "$WORKTREE" ]; then
 elif git show-ref --quiet --verify "refs/heads/${BRANCH}"; then
   git worktree add "$WORKTREE" "$BRANCH" >&2
 else
-  git worktree add -b "$BRANCH" "$WORKTREE" >&2
+  git worktree add -b "$BRANCH" "$WORKTREE" main >&2
 fi
 
 # This copy is the declaration the run starts with. run-ledger snapshots its
@@ -108,6 +103,12 @@ cp "$SPEC_SNAPSHOT" "$WORKTREE/$SPEC"
 rm -f "$SPEC_SNAPSHOT"
 trap - EXIT
 export ECOSYM_WORKTREE="$WORKTREE"
+
+# The second launcher in a race waits on the lock and asks after the first run
+# is registered. Check the exact commit the managed worktree will run, not a
+# stale named branch or the invoking checkout. This call is intentionally one
+# line: the regression test removes it to prove the refusal comes from here.
+"$REPO/scripts/run-ledger" can-start "$TASK" --declaration "$DECLARATION_JSON" --commit "$(git -C "$WORKTREE" rev-parse HEAD)"
 
 # Run under a transient user unit so the work survives a Hermes restart.
 # The sandbox keeps --die-with-parent, but its parent is now systemd, not us.

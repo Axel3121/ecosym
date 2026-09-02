@@ -11,6 +11,7 @@ touches:
   - test/collection.test.ts
   - test/config.test.ts
   - test/csv-cli.test.ts
+  - test/guards.test.ts
   - test/store.test.ts
   - test/verify.test.ts
 ---

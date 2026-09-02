@@ -412,9 +412,9 @@ def current_lifecycle_record(records: list[dict]) -> dict | None:
     )
 
 
-def git_backed_landed_tasks(records: list[dict]) -> set[str]:
+def git_backed_landed_results(records: list[dict]) -> dict[str, set[str]]:
     """Human landed claims with a non-empty declared diff that Git corroborates."""
-    landed: set[str] = set()
+    landed: dict[str, set[str]] = {}
     for unit_records in by_unit(records).values():
         record = current_lifecycle_record(unit_records) or {}
         started = started_record(unit_records)
@@ -451,7 +451,7 @@ def git_backed_landed_tasks(records: list[dict]) -> set[str]:
             and is_ancestor(base_commit, result_commit) is True
             and in_main(result_commit) is True
         ):
-            landed.add(task)
+            landed.setdefault(task, set()).add(result_commit)
     return landed
 
 
@@ -498,13 +498,18 @@ def running_runs(records: list[dict]) -> tuple[list[dict], list[str]]:
 def scheduling_snapshot(records: list[dict]) -> dict:
     running, unknown = running_runs(records)
     return {
-        "landed": git_backed_landed_tasks(records),
+        "landed": git_backed_landed_results(records),
         "running": running,
         "unknown": unknown,
     }
 
 
-def start_reasons(task: str, declaration: dict, snapshot: dict) -> list[str]:
+def start_reasons(
+    task: str,
+    declaration: dict,
+    snapshot: dict,
+    candidate_commit: str | None,
+) -> list[str]:
     reasons: list[str] = []
     if declaration["autonomous"] is False:
         reasons.append("requires a supervised or human run; ordinary run-task is not permitted")
@@ -514,6 +519,19 @@ def start_reasons(task: str, declaration: dict, snapshot: dict) -> list[str]:
     unmet = [need for need in declaration["needs"] if need not in landed]
     if unmet:
         reasons.append(f"needs not landed: {', '.join(unmet)}")
+    elif candidate_commit is None and declaration["needs"]:
+        reasons.append("cannot determine which commit the task would start from")
+    elif candidate_commit:
+        absent = [
+            need
+            for need in declaration["needs"]
+            if not any(
+                is_ancestor(result_commit, candidate_commit) is True
+                for result_commit in landed[need]
+            )
+        ]
+        if absent:
+            reasons.append(f"candidate commit does not contain landed needs: {', '.join(absent)}")
 
     reasons.extend(snapshot["unknown"])
     for run in snapshot["running"]:
@@ -842,6 +860,19 @@ def declaration_for_task(task: str, spec: str | None = None) -> tuple[dict | Non
         return None, f"{path}: {error}"
 
 
+def candidate_commit_for_task(
+    task: str,
+    commit: str | None = None,
+    branch: str | None = None,
+) -> str | None:
+    if commit:
+        return git_value(repo_root(), "rev-parse", f"{commit}^{{commit}}")
+    candidate_branch = branch or f"task/{task}"
+    if git_value(repo_root(), "rev-parse", f"{candidate_branch}^{{commit}}") is None:
+        candidate_branch = "main"
+    return git_value(repo_root(), "rev-parse", f"{candidate_branch}^{{commit}}")
+
+
 def cmd_can_start(args: argparse.Namespace) -> int:
     if args.declaration:
         try:
@@ -856,7 +887,13 @@ def cmd_can_start(args: argparse.Namespace) -> int:
         print(f"cannot start {args.task}: {error}", file=sys.stderr)
         return 1
     assert declaration is not None
-    reasons = start_reasons(args.task, declaration, scheduling_snapshot(read_records()))
+    candidate_commit = candidate_commit_for_task(args.task, args.commit, args.branch)
+    reasons = start_reasons(
+        args.task,
+        declaration,
+        scheduling_snapshot(read_records()),
+        candidate_commit,
+    )
     if reasons:
         for reason in reasons:
             print(f"cannot start {args.task}: {reason}", file=sys.stderr)
@@ -875,7 +912,8 @@ def cmd_ready(args: argparse.Namespace) -> int:
         except DeclarationError as error:
             print(f"{task} is not startable: {error}", file=sys.stderr)
             continue
-        if not start_reasons(task, declaration, snapshot):
+        candidate_commit = candidate_commit_for_task(task)
+        if not start_reasons(task, declaration, snapshot, candidate_commit):
             print(task)
     return 0
 
@@ -1059,6 +1097,8 @@ def main() -> int:
     s.add_argument("task")
     s.add_argument("--spec", help="candidate specification (defaults to docs/tasks/<task>.md)")
     s.add_argument("--declaration", help="frozen declaration JSON to check")
+    s.add_argument("--commit", help="exact candidate commit to check for landed needs")
+    s.add_argument("--branch", help="candidate branch when no exact commit is supplied")
     s.set_defaults(fn=cmd_can_start)
 
     s = sub.add_parser("ready", help="list declared tasks that may begin now")

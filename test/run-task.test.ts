@@ -55,9 +55,19 @@ test("run-task launches the tracked sandbox only from its managed worktree", () 
       "-m",
       "fixture",
     ]);
-
-    const result = spawnSync(join(scripts, "run-task"), ["example"], {
+    const mainHead = spawnSync("git", ["rev-parse", "main"], {
       cwd: repository,
+      encoding: "utf8",
+    }).stdout.trim();
+    const callerWorktree = join(directory, "caller-worktree");
+    git(repository, ["branch", "task/caller"]);
+    git(repository, ["worktree", "add", callerWorktree, "task/caller"]);
+    writeFileSync(join(callerWorktree, "caller-only.txt"), "not a task base\n");
+    git(callerWorktree, ["add", "."]);
+    commit(callerWorktree, "caller-only work");
+
+    const result = spawnSync(join(callerWorktree, "scripts", "run-task"), ["example"], {
+      cwd: callerWorktree,
       encoding: "utf8",
       env: {
         ...process.env,
@@ -75,15 +85,24 @@ test("run-task launches the tracked sandbox only from its managed worktree", () 
     const managedWorktree = join(dataHome, "ecosym", "worktrees", "example");
     assert.ok(arguments_.includes(`--working-directory=${managedWorktree}`));
     assert.ok(!arguments_.includes(`--working-directory=${repository}`));
+    assert.ok(!arguments_.includes(`--working-directory=${callerWorktree}`));
     assert.ok(arguments_.includes(`--setenv=ECOSYM_PROJECT=${repository}`));
     assert.ok(arguments_.includes(`--setenv=ECOSYM_WORKTREE=${managedWorktree}`));
-    assert.ok(arguments_.includes(join(repository, "scripts", "ecosym-sandbox")));
+    assert.ok(arguments_.includes(join(callerWorktree, "scripts", "ecosym-sandbox")));
+    assert.equal(
+      spawnSync("git", ["rev-parse", "HEAD"], {
+        cwd: managedWorktree,
+        encoding: "utf8",
+      }).stdout.trim(),
+      mainHead,
+      "a new task branch starts from main, not from the invoking task worktree",
+    );
 
     // A run that stops working holds its unit open, so nothing notices unless
     // something is watching. Launching without that watcher is the failure
     // this asserts against: it is invisible until a run hangs for hours.
     assert.ok(
-      arguments_.includes(join(repository, "scripts", "run-watchdog")),
+      arguments_.includes(join(callerWorktree, "scripts", "run-watchdog")),
       "a launch must start a watchdog for its own unit",
     );
   } finally {
@@ -171,6 +190,7 @@ test("a launch is registered with its territory, and registration failure stops 
   const tasks = join(repository, "docs", "tasks");
   const dataHome = join(directory, "data");
   const bin = join(directory, "bin");
+  const systemctlCapture = join(directory, "systemctl-arguments");
   mkdirSync(scripts, { recursive: true });
   mkdirSync(tasks, { recursive: true });
   mkdirSync(bin);
@@ -184,7 +204,7 @@ test("a launch is registered with its territory, and registration failure stops 
   writeFileSync(join(bin, "systemd-run"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   writeFileSync(
     join(bin, "systemctl"),
-    '#!/bin/sh\nif [ "$2" = "is-active" ]; then echo "${SYSTEMCTL_STATE:-inactive}"; [ "${SYSTEMCTL_STATE:-inactive}" != active ]; exit; fi\nif [ "$2" = "stop" ] && [ "${SYSTEMCTL_STATE:-inactive}" = active ]; then exit 1; fi\nexit 0\n',
+    '#!/bin/sh\nprintf "%s\\n" "$@" >> "$SYSTEMCTL_CAPTURE"\nif [ "$2" = "is-active" ]; then echo "${SYSTEMCTL_STATE:-inactive}"; [ "${SYSTEMCTL_STATE:-inactive}" != active ]; exit; fi\nif [ "$2" = "stop" ] && [ "${SYSTEMCTL_STATE:-inactive}" = active ]; then exit 1; fi\nexit 0\n',
     { mode: 0o700 },
   );
 
@@ -194,6 +214,7 @@ test("a launch is registered with its territory, and registration failure stops 
     ECOSYM_PROJECT: "",
     ECOSYM_WORKTREE: "",
     PATH: `${bin}:${process.env.PATH ?? ""}`,
+    SYSTEMCTL_CAPTURE: systemctlCapture,
     XDG_DATA_HOME: dataHome,
   };
 
@@ -253,6 +274,7 @@ test("a launch is registered with its territory, and registration failure stops 
     });
     assert.equal(unrecorded.status, 1);
     assert.match(unrecorded.stderr, /run stopped because the ledger did not record its territory/);
+    assert.match(readFileSync(systemctlCapture, "utf8"), /^stop$/mu);
     assert.equal(
       readFileSync(ledger, "utf8")
         .split("\n")
@@ -882,6 +904,7 @@ test("ready derives landed needs and conflicts from frozen run declarations", ()
   chmodSync(join(scripts, "run-ledger"), 0o700);
   writeFileSync(join(tasks, "base.md"), taskSpec(["src/base.ts"]));
   writeFileSync(join(tasks, "dependent.md"), taskSpec(["src/dependent.ts"], ["base"]));
+  writeFileSync(join(tasks, "stale.md"), taskSpec(["src/stale.ts"], ["base"]));
   writeFileSync(join(tasks, "free.md"), taskSpec(["src/free.ts"]));
   writeFileSync(join(tasks, "contested.md"), taskSpec(["src/shared/child.ts"]));
   writeFileSync(join(tasks, "running.md"), taskSpec(["src/not-shared.ts"]));
@@ -912,6 +935,7 @@ test("ready derives landed needs and conflicts from frozen run declarations", ()
       cwd: repository,
       encoding: "utf8",
     }).stdout.trim();
+    git(repository, ["branch", "task/stale", head]);
 
     assert.equal(
       ledger([
@@ -953,6 +977,9 @@ test("ready derives landed needs and conflicts from frozen run declarations", ()
       ]).status,
       0,
     );
+    const staleBranch = ledger(["can-start", "stale", "--branch", "task/stale"]);
+    assert.equal(staleBranch.status, 1);
+    assert.match(staleBranch.stderr, /does not contain landed needs: base/u);
     assert.equal(
       ledger([
         "start",
