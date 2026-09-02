@@ -22,9 +22,82 @@ import { fileURLToPath } from "node:url";
 
 import { parseConnectionConfig, type ConnectionConfig } from "../src/config.ts";
 import { prepareSandboxSources } from "../src/sandbox.ts";
+import { sandboxArguments } from "../src/sandbox-runtime.ts";
 import { ObservationStore } from "../src/store.ts";
 
 const sandbox = fileURLToPath(new URL("../scripts/ecosym-sandbox", import.meta.url));
+
+function argumentsWithResolver(resolver: string): string[] {
+  const home = mkdtempSync(join(tmpdir(), "ecosym-resolver-home-"));
+  const state = join(home, "state");
+  const worktree = join(home, "worktree");
+  mkdirSync(state, { recursive: true });
+  mkdirSync(worktree, { recursive: true });
+  try {
+    return sandboxArguments({
+      childArguments: [],
+      executable: "/bin/true",
+      home,
+      project: undefined,
+      readonlySourceDirectories: [],
+      resolver,
+      sourceDirectories: [],
+      sourceMounts: [],
+      stateDirectory: state,
+      stateMounts: [],
+      worktree,
+    });
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+}
+
+test("an absent resolver is neither bound nor given a directory to mount into", () => {
+  // bwrap is handed `--dir <parent>` for the resolver's directory and then
+  // `--ro-bind <resolver>` into it. When the resolver does not exist — which
+  // is the case *inside* the sandbox, so for every nested run — binding is
+  // skipped. Creating the directory anyway leaves bwrap an empty directory it
+  // cannot mount, and the run cannot verify itself where it executes.
+  const absent = join(tmpdir(), "ecosym-no-such-resolver", "stub-resolv.conf");
+  assert.equal(existsSync(absent), false, "the fixture path must not exist");
+
+  const arguments_ = argumentsWithResolver(absent);
+  const rendered = arguments_.join(" ");
+
+  assert.doesNotMatch(
+    rendered, /ecosym-no-such-resolver/u,
+    "an absent resolver reached the sandbox arguments, as a bind or as a directory",
+  );
+});
+
+test("a present resolver is bound, and its directory is created for it", () => {
+  // The other half of the same decision: when the resolver does exist, both
+  // the directory and the bind must be there. A fix that simply stopped
+  // creating the directory would pass the test above and break DNS.
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-resolver-"));
+  const resolver = join(directory, "stub-resolv.conf");
+  writeFileSync(resolver, "nameserver 127.0.0.53\n");
+
+  try {
+    const arguments_ = argumentsWithResolver(resolver);
+
+    const bind = arguments_.findIndex(
+      (value, index) =>
+        value === "--ro-bind" &&
+        arguments_[index + 1] === resolver &&
+        arguments_[index + 2] === resolver,
+    );
+    assert.notEqual(bind, -1, "a present resolver was not bound into the sandbox");
+
+    const made = arguments_.findIndex(
+      (value, index) => value === "--dir" && arguments_[index + 1] === directory,
+    );
+    assert.notEqual(made, -1, "the resolver was bound into a directory that is never created");
+    assert.ok(made < bind, "the resolver is bound before the directory holding it exists");
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
 
 test("preparing a sqlite source never writes to the source database", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-source-readonly-"));
