@@ -30,11 +30,13 @@ export interface Settings {
   language: "nb" | "en";   // shell language; source text is never translated
 }
 export const DEFAULT_SETTINGS: Settings = { labels: true, smoke: true, logLimit: 30, deskWidth: 340, language: "nb" };
+export type DeskMode = "collapsed" | "side" | "full";
 export interface DeskState {
   decisions: Record<string, { decision: Decision; at: number }>;
   selectedCiv: string | null;
   tab: Tab;
-  collapsed: boolean;
+  /** collapsed = 44px glyph strip · side = beside the map · full = whole screen, map hidden */
+  mode: DeskMode;
   threads: Record<string, Thread>;
   settings: Settings;
 }
@@ -242,7 +244,7 @@ function tabInnstillinger(state: DeskState, scene: Scene) {
   <section class="desk-sec"><h3>Tastatur</h3><ul class="keys">
     <li><kbd>1</kbd>–<kbd>4</kbd> sivilisasjon · <kbd>C</kbd> Capital</li>
     <li>${TABS.map((t) => `<kbd>${t.key}</kbd> ${t.label}`).join(" · ")}</li>
-    <li><kbd>⌥B</kbd> skjul bordet · <kbd>Esc</kbd> tilbake</li>
+    <li><kbd>⌥B</kbd> skjul / vis bordet · <kbd>⌥F</kbd> fullskjerm · <kbd>Esc</kbd> tilbake</li>
   </ul></section>`;
 }
 

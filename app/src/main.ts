@@ -4,7 +4,7 @@ import { fixture } from "./fixture.ts";
 import { Chart, makeWalkers, stepWalkers, ZOOM_MIN, ZOOM_MAX, SETTLEMENT_ZOOM, coverZoom } from "./chart.ts";
 import type { Hit } from "./chart.ts";
 import { renderDesk, renderTabs, civByIndex, TABS, DEFAULT_SETTINGS } from "./desk.ts";
-import type { DeskState, Decision, Tab, Settings, Thread } from "./desk.ts";
+import type { DeskState, Decision, Tab, Settings, Thread, DeskMode } from "./desk.ts";
 import { PLATES, PLATE_OF } from "./chart.ts";
 import { opening, reply } from "./dialogue.ts";
 import type { Target, Line } from "./dialogue.ts";
@@ -25,12 +25,13 @@ if (scene.synthetic) $("synthetic").hidden = false;
 const app = $("app");
 const SETTINGS_KEY = "ecosym.settings";
 function loadSettings(): Settings { try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") }; } catch { return { ...DEFAULT_SETTINGS }; } }
-const desk: DeskState = { decisions: {}, selectedCiv: null, tab: "oversikt", collapsed: false, threads: {}, settings: loadSettings() };
+const desk: DeskState = { decisions: {}, selectedCiv: null, tab: "oversikt", mode: "side", threads: {}, settings: loadSettings() };
 function applySettings() {
   const s = desk.settings;
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
   document.documentElement.style.setProperty("--desk-w", `${s.deskWidth}px`);
   app.classList.toggle("wide-desk", s.deskWidth >= 400);
+  // unchanged when collapsed: the settings pane cannot be seen there
   chart.showLabels = s.labels;
   motionOff = !s.smoke;
   requestAnimationFrame(() => chart.resize()); setTimeout(() => chart.resize(), 200);
@@ -54,14 +55,20 @@ function renderDocket() {
   }));
   $("desk-body").querySelectorAll<HTMLElement>("[data-resume]").forEach((el) => el.addEventListener("click", () => resumeThread(el.dataset.resume!)));
 }
-function setTab(t: Tab) { desk.tab = t; if (desk.collapsed) setCollapsed(false); renderDocket(); }
-function setCollapsed(c: boolean) {
-  desk.collapsed = c; app.classList.toggle("collapsed", c);
-  $("desk-toggle").textContent = c ? "»" : "«";
-  requestAnimationFrame(() => chart.resize()); setTimeout(() => chart.resize(), 200);
+let lastOpenMode: DeskMode = "side";
+function setTab(t: Tab) { desk.tab = t; if (desk.mode === "collapsed") setMode(lastOpenMode); renderDocket(); }
+function setMode(mode: DeskMode) {
+  desk.mode = mode; if (mode !== "collapsed") lastOpenMode = mode;
+  app.classList.toggle("collapsed", mode === "collapsed");
+  app.classList.toggle("full", mode === "full");
+  app.querySelectorAll<HTMLElement>("[data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
+  if (mode !== "full") { requestAnimationFrame(() => chart.resize()); setTimeout(() => chart.resize(), 200); }
 }
 $("desk-tabs").addEventListener("click", (e) => { const t = (e.target as HTMLElement).closest<HTMLElement>("[data-tab]"); if (t) setTab(t.dataset.tab as Tab); });
-$("desk-toggle").addEventListener("click", () => setCollapsed(!desk.collapsed));
+app.querySelectorAll<HTMLElement>("[data-mode]").forEach((b) => b.addEventListener("click", () => {
+  const m = b.dataset.mode as DeskMode;
+  setMode(desk.mode === m && m === "collapsed" ? lastOpenMode : m);
+}));
 $("desk-body").addEventListener("click", (e) => {
   const t = (e.target as HTMLElement).closest<HTMLElement>("[data-decide],[data-undo],[data-civ],[data-go],[data-talk-civ],[data-talk-council]");
   if (!t) return;
@@ -75,7 +82,8 @@ $("desk-body").addEventListener("click", (e) => {
 });
 window.addEventListener("keydown", (e) => {
   if ((e.target as HTMLElement).tagName === "INPUT") return;
-  if (e.altKey && (e.key === "b" || e.key === "∫")) { setCollapsed(!desk.collapsed); return; }
+  if (e.altKey && (e.key === "b" || e.key === "∫")) { setMode(desk.mode === "collapsed" ? lastOpenMode : "collapsed"); return; }
+  if (e.altKey && (e.key === "f" || e.key === "ƒ")) { setMode(desk.mode === "full" ? "side" : "full"); return; }
   if (!e.altKey && !e.metaKey && !e.ctrlKey) { const tab = TABS.find((t) => t.key.toLowerCase() === e.key.toLowerCase()); if (tab) { setTab(tab.id); return; } }
   const n = Number(e.key);
   if (n >= 1 && n <= 4) { const s = civByIndex(scene, n); if (s) select({ kind: "settlement", settlementId: s.civilizationId, label: s.name }); }
@@ -91,6 +99,7 @@ let target = { ...chart.camera };
 let flying = false;
 
 function flyTo(x: number, y: number, zoom: number) {
+  if (desk.mode === "full") setMode("side");
   target = { x, y, zoom: Math.min(ZOOM_MAX, Math.max(minZoom(), zoom)) };
   flying = true;
   if (reduced) { chart.camera = { ...target }; flying = false; }
@@ -202,6 +211,7 @@ function push(lines: Line[], record = true) {
 }
 
 function focus(t: Target) {
+  if (desk.mode === "full") setMode("side");
   current = t;
   select(null);
   app.classList.add("focused"); focusEl.hidden = false; thread.innerHTML = "";
@@ -259,7 +269,7 @@ function frame(now: number) {
     chart.camera.x = Math.min(Math.max(chart.camera.x, Math.min(hw, 768)), Math.max(1536 - hw, 768));
     chart.camera.y = Math.min(Math.max(chart.camera.y, Math.min(hh, 512)), Math.max(1024 - hh, 512)); }
   stepWalkers(walkers, dt, reduced || motionOff);
-  chart.draw(scene, walkers, selected);
+  if (canvas.clientWidth > 0) chart.draw(scene, walkers, selected);
   $("hint").textContent = chart.camera.zoom >= SETTLEMENT_ZOOM ? "scroll ut til kartet · klikk en person eller setet for å snakke" : "scroll for å gå ned · klikk et sted · dra for å panorere";
   requestAnimationFrame(frame);
 }

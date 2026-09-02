@@ -17,7 +17,7 @@ out.badge = await p.evaluate(() => document.querySelector('[data-tab="raadet"] .
 await p.keyboard.press("Alt+b"); await p.waitForTimeout(400);
 out.collapsed = await p.evaluate(() => ({ cls: document.getElementById("app").className, deskW: document.getElementById("desk").getBoundingClientRect().width, canvasW: document.getElementById("chart").clientWidth, cw: document.getElementById("chart").width }));
 await p.screenshot({ path: "shots/tab-collapsed.png" });
-await p.click("#desk-toggle"); await p.waitForTimeout(400);
+await p.click("[data-mode=collapsed]"); await p.waitForTimeout(400);
 out.expanded = await p.evaluate(() => document.getElementById("desk").getBoundingClientRect().width);
 console.log(JSON.stringify({ errs, ...out }, null, 1));
 await b.close();

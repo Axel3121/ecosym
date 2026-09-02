@@ -15,7 +15,25 @@ h1, h2, h3, h4 { margin: 0; font-weight: 500; }
 :root { --desk-w: 340px; }
 #app { display: grid; grid-template-columns: var(--desk-w) 1fr; width: 100vw; height: 100vh; transition: grid-template-columns 180ms ease; }
 #app.collapsed { grid-template-columns: 44px 1fr; }
+#app.full { grid-template-columns: 1fr 0px; }
+#app.full #stage { visibility: hidden; }
+#app.full .desk { border-right: 0; }
+#app.full .desk-head, #app.full .tabs { max-width: 1240px; margin: 0 auto; width: 100%; }
+#app.full .tab .lbl { display: inline; }
+#app.full #desk-body { max-width: 1240px; margin: 0 auto; width: 100%; display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 0 40px; align-content: start; }
+#app.full #desk-body > p, #app.full #desk-body > .desk-note, #app.full #desk-body > .counters, #app.full #desk-body > .attn { grid-column: 1 / -1; }
+#app.full .q.big, #app.full .thr { padding: 14px 0; }
+/* lists that are direct grid children spread their items over the columns */
+#app.full #desk-body > section.desk-sec:has(> ol.queue > .q.big) { grid-column: 1 / -1; }
+#app.full #desk-body > section.desk-sec:has(> ol.queue > .q.big) > ol.queue { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 0 40px; }
+.modes .toggle.on { background: var(--fg); color: var(--bg); }
+.modes { display: inline-flex; border: 1px solid var(--line-2); }
+.modes .toggle { border: 0; border-right: 1px solid var(--line-2); padding: 1px 8px; }
+.modes .toggle:last-child { border-right: 0; }
+#app.collapsed .modes .toggle:not([data-mode="collapsed"]) { display: none; }
+#app.collapsed .modes { border: 0; }
 #app.collapsed .desk-head .sub, #app.collapsed .desk-head .synthetic, #app.collapsed .desk-head h1, #app.collapsed #desk-body, #app.collapsed .tab .lbl { display: none; }
+#app.collapsed .modes .toggle[data-mode="collapsed"]::before { content: "»"; } #app.collapsed .modes .toggle[data-mode="collapsed"] { font-size: 0; } #app.collapsed .modes .toggle[data-mode="collapsed"]::before { font-size: 13px; }
 #app.collapsed .desk-title { justify-content: center; }
 #app.collapsed .tabs { flex-direction: column; }
 #app.collapsed .tab { justify-content: center; padding: 10px 0; }
