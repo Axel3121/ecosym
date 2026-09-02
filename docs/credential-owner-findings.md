@@ -872,7 +872,13 @@ encoded_id = envelope["petitionId"][9:]
 require(envelope["petitionId"].startswith("petition:"))
 require("=" not in encoded_id)
 require(re.fullmatch(r"[A-Za-z0-9_-]{43}", encoded_id))
-require(len(base64.urlsafe_b64decode(encoded_id + "=")) == 32)
+decoded_id = base64.urlsafe_b64decode(encoded_id + "=")
+require(len(decoded_id) == 32)
+# The trailing character of a 43-char unpadded encoding carries only two
+# significant bits, so four distinct strings decode to the same 32 bytes.
+# Length and decoded size alone would admit all four as different IDs for
+# one petition. Requiring the canonical re-encoding leaves exactly one.
+require(base64.urlsafe_b64encode(decoded_id).decode().rstrip("=") == encoded_id)
 
 instant = re.compile(
     r"\d{4}-\d{2}-\d{2}T"
