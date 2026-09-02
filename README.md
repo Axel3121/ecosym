@@ -37,8 +37,7 @@ persisted, and the case resumed correctly after a restart.
 | What is Ecosym for? | [`PRODUCT.md`](PRODUCT.md) |
 | What stable boundaries must the system preserve? | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | What must Ecosym protect? | [`SECURITY.md`](SECURITY.md) |
-| How is work developed, evidenced, reviewed, and merged? | [`DEVELOPMENT.md`](DEVELOPMENT.md) |
-| How should a fresh coding agent orient itself? | [`AGENTS.md`](AGENTS.md) |
+| How can a contributor build and verify it? | [`DEVELOPMENT.md`](DEVELOPMENT.md) |
 
 This README is navigation and current orientation. It is not a competing owner
 of product, architecture, security, or development policy.
