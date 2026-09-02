@@ -149,7 +149,10 @@ export const DELETE_GIT_BRANCH_REQUEST_DEFINITION = deepFreeze({
         branchReference: { from: "/resources/branchReference" },
         expectedObjectId: { from: "/parameters/expectedObjectId" },
         preservedReference: { from: "/parameters/preservedReference" },
-        recoverabilityEvidence: { from: "/consequence/recoverability/evidence" },
+        recoverabilityEvidence: {
+          digest: { from: "/consequence/recoverability/evidence/digest" },
+          scope: { from: "/consequence/recoverability/evidence/scope" },
+        },
       },
       limits: {
         maximumReferencesDeleted: { from: "/limits/maximumReferencesDeleted" },
@@ -267,11 +270,7 @@ export const DELETE_GIT_BRANCH_REQUEST_DEFINITION = deepFreeze({
         expectedObjectId: VECTOR_OBJECT_ID,
         preservedReference: "refs/tags/topic_recovery",
         recoverabilityEvidence: {
-          owner: "git.example",
-          sourceRecordId: "git-ref-state:alpha-topic",
           digest: VECTOR_EVIDENCE_DIGEST,
-          observedAt: "2026-09-02T12:00:00.000Z",
-          currentness: "current",
           scope: {
             repositoryId: "repo:alpha",
             branchReference: "refs/heads/topic",
@@ -340,8 +339,20 @@ export const DELETE_GIT_BRANCH_REQUEST_DEFINITION = deepFreeze({
   },
 } as const);
 
+// The digest identifies only the normative record (petitionBoundary and
+// institutionOwner). conformanceVectors holds test fixtures and descriptive
+// prose, not authority-bearing rules: correcting a typo in a mutation
+// description, or adding another refusal vector, must not change the digest
+// every already-issued request.type.definitionDigest has to keep matching.
+export const DELETE_GIT_BRANCH_REQUEST_NORMATIVE_RECORD = {
+  schemaVersion: DELETE_GIT_BRANCH_REQUEST_DEFINITION.schemaVersion,
+  id: DELETE_GIT_BRANCH_REQUEST_DEFINITION.id,
+  revision: DELETE_GIT_BRANCH_REQUEST_DEFINITION.revision,
+  petitionBoundary: DELETE_GIT_BRANCH_REQUEST_DEFINITION.petitionBoundary,
+  institutionOwner: DELETE_GIT_BRANCH_REQUEST_DEFINITION.institutionOwner,
+};
 export const DELETE_GIT_BRANCH_REQUEST_DEFINITION_CANONICAL = canonicalJson(
-  DELETE_GIT_BRANCH_REQUEST_DEFINITION as unknown as JsonValue,
+  DELETE_GIT_BRANCH_REQUEST_NORMATIVE_RECORD as unknown as JsonValue,
 );
 export const DELETE_GIT_BRANCH_REQUEST_DEFINITION_DIGEST =
   `sha256:${sha256(`${REQUEST_DEFINITION_DOMAIN}${DELETE_GIT_BRANCH_REQUEST_DEFINITION_CANONICAL}`)}`;
@@ -406,6 +417,16 @@ export interface DeleteGitBranchRequest {
   };
 }
 
+// Only the evidence fields that actually decide authority are projected:
+// the digest that anchors the record and the scope it claims to describe.
+// owner is already covered by resources.sourceOwner (evidence_mismatch
+// enforces they match); sourceRecordId, observedAt, and currentness are
+// audit metadata that must not be able to move authority equality.
+export interface DeleteGitBranchAuthorityBearingEvidence {
+  digest: string;
+  scope: DeleteGitBranchRecoverabilityEvidence["scope"];
+}
+
 export interface DeleteGitBranchAuthorityProjection {
   operation: typeof DELETE_GIT_BRANCH_OPERATION;
   resources: {
@@ -414,7 +435,7 @@ export interface DeleteGitBranchAuthorityProjection {
     branchReference: string;
     expectedObjectId: string;
     preservedReference: string;
-    recoverabilityEvidence: DeleteGitBranchRecoverabilityEvidence;
+    recoverabilityEvidence: DeleteGitBranchAuthorityBearingEvidence;
   };
   limits: {
     maximumReferencesDeleted: 1;
@@ -816,7 +837,7 @@ function project(request: DeleteGitBranchRequest): DeleteGitBranchAuthorityProje
       branchReference: request.resources.branchReference,
       expectedObjectId: request.parameters.expectedObjectId,
       preservedReference: request.parameters.preservedReference,
-      recoverabilityEvidence: copyEvidence(request.consequence.recoverability.evidence),
+      recoverabilityEvidence: authorityBearingEvidence(request.consequence.recoverability.evidence),
     },
     limits: { maximumReferencesDeleted: request.limits.maximumReferencesDeleted },
     consequenceClassification: request.consequence.classification,
@@ -832,6 +853,15 @@ function copyEvidence(
     digest: evidence.digest,
     observedAt: evidence.observedAt,
     currentness: "current",
+    scope: { ...evidence.scope },
+  };
+}
+
+function authorityBearingEvidence(
+  evidence: DeleteGitBranchRecoverabilityEvidence,
+): DeleteGitBranchAuthorityBearingEvidence {
+  return {
+    digest: evidence.digest,
     scope: { ...evidence.scope },
   };
 }
@@ -910,9 +940,12 @@ function exactKeys(
   missingRule: PetitionRequestRefusalRule = "schema_value",
 ): void {
   const allowedSet = new Set(allowed);
-  for (const key of Object.keys(object)) {
-    assertRule(allowedSet.has(key), unknownRule, `${path}.${key} is not allowed`);
-  }
+  const unknownCount = Object.keys(object).filter((key) => !allowedSet.has(key)).length;
+  assertRule(
+    unknownCount === 0,
+    unknownRule,
+    `${path} contains ${unknownCount} field(s) outside the closed schema`,
+  );
   for (const key of allowed) {
     assertRule(Object.hasOwn(object, key), missingRule, `${path}.${key} is required`);
   }

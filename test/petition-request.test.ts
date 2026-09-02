@@ -132,7 +132,7 @@ test("content-addresses the closed definition with the specified domain and its 
   );
   assert.equal(
     DELETE_GIT_BRANCH_REQUEST_DEFINITION_DIGEST,
-    "sha256:7cb2ac78547b1037e88ac8e2f6fb0c541951c87f304a95bc21d6ff685ebb87db",
+    "sha256:260e6fad249ab81f271ff0511e89688b1cf8e0bb1a0506b62708d0417c50d2e5",
   );
   assert.equal(DELETE_GIT_BRANCH_REQUEST_DEFINITION.id, DELETE_GIT_BRANCH_REQUEST_ID);
   assert.equal(
@@ -143,6 +143,37 @@ test("content-addresses the closed definition with the specified domain and its 
     DELETE_GIT_BRANCH_REQUEST_DEFINITION_DIGEST,
     `sha256:${sha256(DELETE_GIT_BRANCH_REQUEST_DEFINITION_CANONICAL)}`,
   );
+});
+
+test("the definition digest is unaffected by non-normative conformanceVectors edits", () => {
+  // The digest identifies petitionBoundary and institutionOwner only.
+  // conformanceVectors are test fixtures and prose: editing a mutation
+  // description or adding another refusal vector must not change the
+  // digest every already-issued request.type.definitionDigest has to
+  // keep matching, per DEVELOPMENT.md's definition-identity boundary.
+  const normativeRecord = {
+    schemaVersion: DELETE_GIT_BRANCH_REQUEST_DEFINITION.schemaVersion,
+    id: DELETE_GIT_BRANCH_REQUEST_DEFINITION.id,
+    revision: DELETE_GIT_BRANCH_REQUEST_DEFINITION.revision,
+    petitionBoundary: DELETE_GIT_BRANCH_REQUEST_DEFINITION.petitionBoundary,
+    institutionOwner: DELETE_GIT_BRANCH_REQUEST_DEFINITION.institutionOwner,
+  };
+  const digestOverNormativeOnly = `sha256:${sha256(
+    `ecosym.petition-request-definition.v1\0${canonicalJson(normativeRecord as unknown as JsonValue)}`,
+  )}`;
+  const digestOverFullRecordIncludingVectors = `sha256:${sha256(
+    `ecosym.petition-request-definition.v1\0${canonicalJson(
+      DELETE_GIT_BRANCH_REQUEST_DEFINITION as unknown as JsonValue,
+    )}`,
+  )}`;
+
+  // The exported digest matches hashing only the normative record...
+  assert.equal(digestOverNormativeOnly, DELETE_GIT_BRANCH_REQUEST_DEFINITION_DIGEST);
+  // ...and differs from hashing the full record (the two disagree only
+  // because conformanceVectors is non-empty), proving conformanceVectors
+  // is excluded from the identity boundary rather than included by
+  // coincidence of equal content.
+  assert.notEqual(digestOverFullRecordIncludingVectors, DELETE_GIT_BRANCH_REQUEST_DEFINITION_DIGEST);
 });
 
 test("canonicalJson agrees with RFC 8785 primitive serialization and property sorting", () => {
@@ -421,5 +452,58 @@ test("subset comparison cannot use free text as authority", () => {
 
   expectRefusal("user_text_outside_projection", () =>
     assertPetitionRequestAuthoritySubset(candidate, validRequest()),
+  );
+});
+
+test("an unknown field name is never echoed into the refusal message", () => {
+  // request.resources is user-reachable input. A field named after personal
+  // content (an email address here) must not leak into the thrown message:
+  // PetitionRequestRefusal messages are returned to callers and are the
+  // natural thing to log, per the repository's no-personal-content-in-logs
+  // rule.
+  const leakyFieldName = "attacker@example.com";
+  const request = validRequest();
+  setAt(request, ["resources", leakyFieldName], true);
+
+  assert.throws(
+    () => validatePetitionRequest(request),
+    (error: unknown) => {
+      assert.ok(error instanceof PetitionRequestRefusal);
+      assert.equal(error.rule, "closed_schema");
+      assert.ok(!error.message.includes(leakyFieldName));
+      return true;
+    },
+  );
+});
+
+test("evidence metadata outside digest and scope cannot move authority equality", () => {
+  // The repository rule against storing a named container's nested contents
+  // wholesale means only the evidence fields that decide authority
+  // (digest, scope) belong in the projection. sourceRecordId and
+  // observedAt are audit metadata: a request differing only in those
+  // fields must still be an equal authority subset of the ceiling, and
+  // the projection itself must not expose them.
+  const request = validRequest();
+  const metadataChanged = structuredClone(request);
+  setAt(
+    metadataChanged,
+    ["consequence", "recoverability", "evidence", "sourceRecordId"],
+    "git-ref-state:alpha-topic-renamed",
+  );
+  setAt(
+    metadataChanged,
+    ["consequence", "recoverability", "evidence", "observedAt"],
+    "2026-09-02T13:00:00.000Z",
+  );
+
+  assert.deepEqual(
+    assertPetitionRequestAuthoritySubset(metadataChanged, request),
+    authorityProjection(request),
+  );
+
+  const projection = authorityProjection(request);
+  assert.deepEqual(
+    Object.keys(projection.resources.recoverabilityEvidence).sort(),
+    ["digest", "scope"],
   );
 });
