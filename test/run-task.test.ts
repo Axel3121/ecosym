@@ -2066,6 +2066,36 @@ async function waitForFile(path: string): Promise<void> {
   assert.fail(`timed out waiting for ${path}`);
 }
 
+test("a task name that escapes the specification directory is refused at registration", () => {
+  // run-task screens the name, but run-ledger is a separate entry point and
+  // the ledger is what every later answer derives from. A traversal written
+  // there once is a lie in the record forever, so the refusal has to live
+  // here too rather than in the caller that happens to be careful.
+  const dataHome = mkdtempSync(join(tmpdir(), "ecosym-ledger-name-"));
+  try {
+    for (const name of ["../../evil", "../escape", "..", "with/slash"]) {
+      const started = spawnSync(runLedger, ["start", name, "unit-for-bad-name"], {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        encoding: "utf8",
+        env: { ...process.env, XDG_DATA_HOME: dataHome },
+      });
+      assert.notEqual(started.status, 0, `${name} must be refused`);
+      assert.match(started.stderr, /invalid task name/u);
+    }
+
+    // The control: a well-formed name still registers, so the guard refuses
+    // traversals rather than refusing everything.
+    const good = spawnSync(runLedger, ["start", "018-well-formed", "unit-for-good-name"], {
+      cwd: fileURLToPath(new URL("..", import.meta.url)),
+      encoding: "utf8",
+      env: { ...process.env, XDG_DATA_HOME: dataHome },
+    });
+    assert.equal(good.status, 0, good.stderr);
+  } finally {
+    rmSync(dataHome, { recursive: true, force: true });
+  }
+});
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }

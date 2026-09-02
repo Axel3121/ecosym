@@ -583,6 +583,13 @@ def start_reasons(
 
 
 def cmd_start(args: argparse.Namespace) -> int:
+    # A task name reaches the ledger, the worktree path and the unit name. It
+    # is validated below only when a declaration accompanies it, so without
+    # this a bare `start ../../evil` writes a traversal straight into the
+    # record every later answer is derived from. Refuse it at the door.
+    if not TASK_RE.fullmatch(args.task) or ".." in args.task:
+        print(f"invalid task name: {args.task!r}", file=sys.stderr)
+        return 2
     record = {
         "event": "started",
         "unit": args.unit,
