@@ -1920,3 +1920,101 @@ test("version-three reversions migrate without claiming a current attempt status
     inspected.close();
   }
 });
+
+test("every query filter narrows the result rather than widening it", async () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+    await store.collect(active, (sink) => {
+      sink.recordSourceRecord(() => [
+        fact({ kind: "example.value", subject: "subject-a", payload: { value: 1 } }),
+        fact({ kind: "example.value", subject: "subject-b", payload: { value: 2 } }),
+        fact({
+          epistemicStatus: "claim",
+          kind: "example.completion-report",
+          payload: { state: "completed" },
+          subject: "subject-a",
+        }),
+      ]);
+    });
+
+    // Each filter is a further restriction, so asking for observations about
+    // one subject must not also return the claim about it, nor the other
+    // subject's observation. Combining the conditions with OR instead of AND
+    // returns all three: the epistemic-status condition is one of the terms.
+    const narrowed = store.queryObservations({ subject: "subject-a" });
+    assert.deepEqual(
+      narrowed.map((record) => [record.epistemicStatus, record.subject, record.payload]),
+      [["observation", "subject-a", { value: 1 }]],
+    );
+
+    // The same, one filter deeper: a kind that no claim shares still must not
+    // admit a fact that fails the subject condition.
+    assert.deepEqual(
+      store
+        .queryObservations({ kind: "example.value", subject: "subject-b" })
+        .map((record) => record.payload),
+      [{ value: 2 }],
+    );
+
+    // And a filter that matches nothing returns nothing rather than everything
+    // that satisfies some other term.
+    assert.deepEqual(store.queryObservations({ subject: "absent" }), []);
+    assert.deepEqual(store.queryClaims({ subject: "subject-b" }), []);
+
+    // The unfiltered queries still see all three facts, so the assertions above
+    // are narrowing rather than an empty store.
+    assert.equal(store.queryObservations().length, 2);
+    assert.equal(store.queryClaims().length, 1);
+  } finally {
+    store.close();
+  }
+});
+
+test("stored configuration that no longer matches its identity is refused", async () => {
+  const { directory, store } = temporaryStore();
+  const parsed = connection();
+  const path = store.path;
+  try {
+    store.register(parsed);
+    // A fact collected under the honest configuration, so the tampering below
+    // is the only thing that changes between the reads.
+    const active = store.getConnection(parsed.config.id);
+    await store.collect(active, (sink) => {
+      sink.recordSourceRecord(() => [fact()]);
+    });
+    assert.equal(store.getConnection(parsed.config.id).config.factOwner, "owner-a");
+  } finally {
+    store.close();
+  }
+
+  // Rewrite the stored configuration in place, leaving its identity hash
+  // untouched. This is what an edited state file looks like: the row still
+  // claims to be the configuration whose hash is recorded beside it.
+  const tampered = JSON.parse(parsed.canonical) as { factOwner: string };
+  tampered.factOwner = "attacker-owner";
+  const database = new DatabaseSync(path);
+  try {
+    database
+      .prepare("UPDATE connection_versions SET config_json = ? WHERE config_hash = ?")
+      .run(JSON.stringify(tampered), parsed.hash);
+  } finally {
+    database.close();
+  }
+
+  const reopened = new ObservationStore(directory);
+  try {
+    // Reading it back must fail rather than hand out an authority the recorded
+    // identity never covered. Both read paths derive the configuration from the
+    // same stored row, so both must refuse it.
+    assert.throws(
+      () => reopened.getConnection(parsed.config.id),
+      /does not match its identity/,
+    );
+    assert.throws(() => reopened.listConnections(), /does not match its identity/);
+  } finally {
+    reopened.close();
+  }
+});
