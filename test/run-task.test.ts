@@ -1830,56 +1830,39 @@ test("a landed close is refused when its launch declaration is unavailable", () 
   }
 });
 
-test("every repository task specification has a valid scheduling declaration", () => {
-  const repository = fileURLToPath(new URL("..", import.meta.url));
-  const dataHome = mkdtempSync(join(tmpdir(), "ecosym-run-validate-"));
-  const tasks = join(repository, "docs", "tasks");
-  const specifications = readdirSync(tasks)
-    .filter((name) => name.endsWith(".md"))
-    .map((name) => join(tasks, name));
-  const validated = spawnSync(runLedger, ["validate", ...specifications], {
-    cwd: repository,
-    encoding: "utf8",
-  });
-  assert.equal(validated.status, 0, validated.stderr);
-
-  const declaration = (task: string) => {
-    const result = spawnSync(runLedger, ["declaration", join(tasks, `${task}.md`)], {
-      cwd: repository,
-      encoding: "utf8",
-    });
-    assert.equal(result.status, 0, result.stderr);
-    return JSON.parse(result.stdout) as { touches: string[] };
-  };
-  assert.ok(declaration("002-close-review-findings").touches.includes("test/fifth-source.test.ts"));
-  assert.deepEqual(declaration("016-dependency-audit").touches, [
-    ".github/dependabot.yml",
-    ".github/workflows/check.yml",
-    "docs/tasks/016-dependency-audit.md",
-    "package.json",
-    "test/check-workflow.test.ts",
-  ]);
-  assert.doesNotMatch(
-    readFileSync(join(tasks, "009-equivalence-decided-on-stored-identity.md"), "utf8"),
-    /Note on `needs`/u,
-  );
-  const schedulerTask = readFileSync(
-    join(tasks, "017-runs-scheduled-by-need-and-territory.md"),
-    "utf8",
-  );
-  assert.doesNotMatch(schedulerTask, /## The question this task must decide/u);
-  assert.match(schedulerTask, /DEVELOPMENT\.md#writer-ownership-and-concurrency/u);
+test("validate and declaration answer for specifications outside the repository", () => {
+  // Specifications are our workflow and live outside the tree (DEVELOPMENT.md,
+  // "Repository artifacts"), so this cannot assert on the contents of specific
+  // task files — there are none to read. What must keep working is the
+  // mechanism: `validate` accepts a well-formed declaration and refuses a
+  // malformed one, and `declaration` reports what a spec claims, wherever the
+  // file happens to live.
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-validate-"));
+  const outside = join(directory, "tasks");
+  mkdirSync(outside, { recursive: true });
 
   try {
-    const supervised = spawnSync(runLedger, ["can-start", "014-agent-shell-source-boundary"], {
-      cwd: repository,
-      encoding: "utf8",
-      env: { ...process.env, XDG_DATA_HOME: dataHome },
-    });
-    assert.equal(supervised.status, 1);
-    assert.match(supervised.stderr, /supervised or human run/u);
+    const good = join(outside, "good.md");
+    writeFileSync(good, taskSpec("good", ["src/good.ts"], ["earlier"]));
+    const validated = spawnSync(runLedger, ["validate", good], { encoding: "utf8" });
+    assert.equal(validated.status, 0, validated.stderr);
+
+    const reported = spawnSync(runLedger, ["declaration", good], { encoding: "utf8" });
+    assert.equal(reported.status, 0, reported.stderr);
+    const parsed = JSON.parse(reported.stdout) as { touches: string[]; needs: string[] };
+    assert.deepEqual(parsed.needs, ["earlier"]);
+    assert.ok(parsed.touches.includes("src/good.ts"));
+
+    // The control: a specification with no declaration is refused, so the
+    // acceptance above is validate deciding rather than validate passing
+    // everything it is handed.
+    const bad = join(outside, "bad.md");
+    writeFileSync(bad, "# No declaration at all\n");
+    const refused = spawnSync(runLedger, ["validate", bad], { encoding: "utf8" });
+    assert.notEqual(refused.status, 0, "a specification without a declaration must be refused");
+    assert.match(refused.stderr, /missing scheduling declaration/u);
   } finally {
-    rmSync(dataHome, { recursive: true, force: true });
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -2283,6 +2266,112 @@ test("a stale local main does not make landed work startable again", () => {
       landed,
     ], { cwd: repository, encoding: "utf8", env: environment });
     assert.equal(notLanded.status, 0, notLanded.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a stale local main does not hide a merged branch as open", () => {
+  // `in_main` was fixed to prefer origin/main over a stale local main
+  // (2026-09-02), but `merged_branches` and `branch_carries_nothing` —
+  // the two functions `list` uses to judge a *branch* when no result
+  // commit was recorded — still compared only against local `main`. A
+  // checkout behind origin therefore read a branch that had genuinely
+  // merged upstream as merely "open", the same false picture the
+  // commit-based fix was written to prevent.
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-branch-stale-"));
+  const upstream = join(directory, "upstream");
+  const repository = join(directory, "repository");
+  const dataHome = join(directory, "data");
+  mkdirSync(upstream, { recursive: true });
+
+  try {
+    git(upstream, ["init", "-b", "main"]);
+    writeFileSync(join(upstream, "file.txt"), "one\n");
+    git(upstream, ["add", "."]);
+    commit(upstream, "first");
+    const stale = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: upstream,
+      encoding: "utf8",
+    }).stdout.trim();
+
+    // A feature branch, merged into upstream main after the clone's local
+    // main last pulled.
+    git(upstream, ["checkout", "-q", "-b", "task/feature"]);
+    writeFileSync(join(upstream, "feature.txt"), "the work\n");
+    git(upstream, ["add", "."]);
+    commit(upstream, "feature work");
+    git(upstream, ["checkout", "-q", "main"]);
+    git(upstream, [
+      "-c",
+      "user.name=Ecosym Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "merge",
+      "-q",
+      "--no-ff",
+      "task/feature",
+      "-m",
+      "merge feature",
+    ]);
+
+    // A clone whose local main sits at the older commit — behind, not
+    // broken — mirroring the stale-checkout shape measured for in_main.
+    // A real local branch (not just the remote-tracking ref) is required:
+    // `merged_branches`/`branch_carries_nothing` compare against a plain
+    // local branch name, and a remote-only ref never reaches that path.
+    spawnSync("git", ["clone", "-q", upstream, repository], { encoding: "utf8" });
+    git(repository, ["checkout", "-q", "-b", "work"]);
+    git(repository, ["branch", "-f", "main", stale]);
+    git(repository, ["branch", "task/feature", "refs/remotes/origin/task/feature"]);
+
+    const scripts = join(repository, "scripts");
+    mkdirSync(scripts, { recursive: true });
+    copyFileSync(runLedger, join(scripts, "run-ledger"));
+    chmodSync(join(scripts, "run-ledger"), 0o700);
+
+    const ledgerDirectory = join(dataHome, "ecosym");
+    mkdirSync(ledgerDirectory, { recursive: true });
+    // No result_commit recorded, so `list` must fall back to judging the
+    // branch itself — the code path this test targets.
+    writeFileSync(
+      join(ledgerDirectory, "ledger.jsonl"),
+      [
+        JSON.stringify({
+          event: "started",
+          unit: "ecosym-task-feature-100000000",
+          task: "feature",
+          branch: "task/feature",
+          base_commit: null,
+          ts: 1,
+        }),
+        JSON.stringify({
+          event: "closed",
+          unit: "ecosym-task-feature-100000000",
+          task: "feature",
+          branch: "task/feature",
+          outcome: "landed",
+          evidence: "merged upstream",
+          ts: 2,
+        }),
+      ].join("\n") + "\n",
+    );
+
+    const listed = spawnSync(join(repository, "scripts", "run-ledger"), ["list"], {
+      cwd: repository,
+      encoding: "utf8",
+      env: { ...process.env, XDG_DATA_HOME: dataHome },
+    });
+    assert.match(
+      listed.stdout,
+      /merged/u,
+      `a branch merged upstream must read as merged even with a stale local main: ${listed.stdout}`,
+    );
+    assert.doesNotMatch(
+      listed.stdout,
+      /\bopen\b/u,
+      `a stale local main must not make a merged branch look open: ${listed.stdout}`,
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
