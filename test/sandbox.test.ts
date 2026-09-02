@@ -225,9 +225,31 @@ test("sandbox sources mount exact file paths and current source-glob matches", a
   }
 });
 
+// These tests need bwrap, and they need a node the sandbox can reach. The
+// sandbox binds /usr read-only, so the child runs /usr/bin/node — which is not
+// necessarily the node running this suite. On a bare CI runner neither exists.
+//
+// The skip is honest about that. What it must not do is hide it: a suite that
+// silently skips its only real enforcement tests reports success for a property
+// it never checked. Measured on PR #24: CI ran with 11 of these skipped and
+// reported a pass. Name the reason on stderr so a reader of the log knows
+// enforcement was not exercised.
+const SANDBOX_BINARY = "/usr/bin/bwrap";
+const SANDBOX_NODE = "/usr/bin/node";
+
+function sandboxEnforcementUnavailable(): string | false {
+  const missing = [SANDBOX_BINARY, SANDBOX_NODE].filter((path) => !existsSync(path));
+  if (missing.length === 0) {
+    return false;
+  }
+  const reason = `sandbox enforcement not exercised: missing ${missing.join(", ")}`;
+  process.stderr.write(`# ${reason}\n`);
+  return reason;
+}
+
 test(
   "sandbox runtime denies undeclared source paths and source writes",
-  { skip: !existsSync("/usr/bin/bwrap") || !existsSync("/usr/bin/node") },
+  { skip: sandboxEnforcementUnavailable() },
   () => {
     const directory = mkdtempSync(join(tmpdir(), "ecosym-sandbox-runtime-"));
     const home = join(directory, "home");
@@ -330,7 +352,7 @@ test(
 
 test(
   "sandbox sees source WAL commits made during a run",
-  { skip: !existsSync("/usr/bin/bwrap") || !existsSync("/usr/bin/node") },
+  { skip: sandboxEnforcementUnavailable() },
   async () => {
     const directory = mkdtempSync(join(tmpdir(), "ecosym-sandbox-live-source-"));
     const home = join(directory, "home");
