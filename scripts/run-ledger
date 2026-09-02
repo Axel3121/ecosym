@@ -496,11 +496,15 @@ def running_runs(records: list[dict]) -> tuple[list[dict], list[str]]:
         if activity is None:
             unknown.append(f"cannot determine whether unrecorded run {unit} is active")
         elif activity:
-            declaration = frozen_declaration(runs_dir() / f"{unit}.declaration.json")
+            task = parse_unit(unit)[1]
+            declaration = frozen_declaration(
+                runs_dir() / f"{unit}.declaration.json",
+                task,
+            )
             running.append(
                 {
                     "unit": unit,
-                    "task": parse_unit(unit)[1],
+                    "task": task,
                     "touches": declaration["touches"] if declaration else None,
                 }
             )
@@ -615,9 +619,9 @@ def parse_declaration_json(value: str) -> dict:
     )
 
 
-def frozen_declaration(path: Path) -> dict | None:
+def frozen_declaration(path: Path, task: object) -> dict | None:
     try:
-        return parse_declaration_json(path.read_text())
+        return require_task_spec_touch(task, parse_declaration_json(path.read_text()))
     except (OSError, json.JSONDecodeError, DeclarationError):
         return None
 

@@ -1152,6 +1152,63 @@ test("a historical declaration that omits its task specification remains unknown
   }
 });
 
+test("an unrecorded live declaration that omits its task specification remains unknown", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-unrecorded-territory-"));
+  const repository = join(directory, "repository");
+  const scripts = join(repository, "scripts");
+  const tasks = join(repository, "docs", "tasks");
+  const dataHome = join(directory, "data");
+  const runs = join(dataHome, "ecosym", "runs");
+  const bin = join(directory, "bin");
+  const unit = "ecosym-task-old-123";
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(tasks, { recursive: true });
+  mkdirSync(runs, { recursive: true });
+  mkdirSync(bin);
+  copyFileSync(runLedger, join(scripts, "run-ledger"));
+  chmodSync(join(scripts, "run-ledger"), 0o700);
+  writeFileSync(join(tasks, "candidate.md"), taskSpec("candidate", ["docs/tasks/old.md"]));
+  writeFileSync(join(runs, `${unit}.log`), "");
+  writeFileSync(
+    join(runs, `${unit}.declaration.json`),
+    JSON.stringify({ autonomous: true, needs: [], touches: ["src/old.ts"] }),
+  );
+  writeFileSync(
+    join(bin, "systemctl"),
+    `#!/bin/sh\nif [ "$3" = ${unit}.service ]; then echo active; else echo inactive; fi\n`,
+    { mode: 0o700 },
+  );
+
+  const ledger = (arguments_: string[]) =>
+    spawnSync(join(scripts, "run-ledger"), arguments_, {
+      cwd: repository,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        XDG_DATA_HOME: dataHome,
+      },
+    });
+
+  try {
+    git(repository, ["init", "-b", "main"]);
+    git(repository, ["add", "."]);
+    commit(repository, "fixture");
+
+    const beforeBackfill = ledger(["can-start", "candidate"]);
+    assert.equal(beforeBackfill.status, 1);
+    assert.match(beforeBackfill.stderr, /running task old.*no launch-time territory declaration/u);
+
+    const backfill = ledger(["backfill"]);
+    assert.equal(backfill.status, 0, backfill.stderr);
+    const afterBackfill = ledger(["can-start", "candidate"]);
+    assert.equal(afterBackfill.status, 1);
+    assert.match(afterBackfill.stderr, /running task old.*no launch-time territory declaration/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("ready derives landed needs and conflicts from frozen run declarations", () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-run-ready-"));
   const repository = join(directory, "repository");
