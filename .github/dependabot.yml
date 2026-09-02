@@ -1,0 +1,21 @@
+# CI now audits development dependencies too, and refuses to pass when it
+# examined nothing. That catches a vulnerability already published against a
+# version this project pins; it cannot tell anyone when a fixed version
+# appears. Dependabot is what moves the pins forward, and the actions running
+# in CI are the thing with the most authority in this repository.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Workflow actions are pinned to commit SHAs, which is what keeps a moved
+  # tag from changing what CI runs. A pin is only safe while somebody moves
+  # it forward on purpose; this is what does the moving.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

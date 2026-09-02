@@ -32,6 +32,22 @@ app/dist/
 .DS_Store
 Thumbs.db
 
+# Our workflow, not the product
+#
+# This repository is the product and the evidence it works — see
+# DEVELOPMENT.md, "Repository artifacts". Instructions written to the agents
+# that build it have an audience of us, not of a reader arriving at the
+# project, so the tree refuses them rather than relying on anyone remembering.
+#
+# Not ignored, deliberately: scripts/ and .opencode/ are retained tooling —
+# they implement the sandbox but are not themselves the security boundary;
+# SECURITY.md ("External content and effects") owns what actually enforces
+# isolation and requires a refused-crossing test to prove it, not a path or a
+# test count. Findings under docs/ are evidence a reader can re-run. Both are
+# product.
+docs/tasks/
+.impeccable/
+
 # Skill tooling, not product
 .agents/
 .claude/

@@ -41,9 +41,26 @@ jobs:
       - name: install
         run: npm ci
 
-      # No runtime dependencies today. This stays honest if that changes.
-      - name: audit
-        run: npm audit --omit=dev --audit-level=high
+      # All dependencies today are development dependencies. Audit the set that
+      # exists instead of an empty runtime-only set.
+      - name: audit all dependencies
+        run: |
+          # Exercised as a complete shell block by check-workflow.test.ts.
+          report=$(mktemp)
+          trap 'rm -f "$report"' EXIT
+          npm audit --include=dev --audit-level=high --json > "$report" && status=0 || status=$?
+          cat "$report"
+          node --input-type=module - "$report" <<'NODE'
+          import { readFileSync } from "node:fs";
+
+          const report = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const count = report.metadata?.dependencies?.total;
+          if (!Number.isInteger(count) || count < 1) {
+            throw new Error("npm audit examined no dependency packages");
+          }
+          console.log(`npm audit examined ${count} dependency packages (including development dependencies)`);
+          NODE
+          exit "$status"
 
       - name: check
         run: npm run check
