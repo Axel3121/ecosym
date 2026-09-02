@@ -3,8 +3,8 @@ import type { Scene } from "./scene.ts";
 import { fixture } from "./fixture.ts";
 import { Chart, makeWalkers, stepWalkers, ZOOM_MIN, ZOOM_MAX, SETTLEMENT_ZOOM, coverZoom } from "./chart.ts";
 import type { Hit } from "./chart.ts";
-import { renderDesk, renderTabs, civByIndex, TABS } from "./desk.ts";
-import type { DeskState, Decision, Tab } from "./desk.ts";
+import { renderDesk, renderTabs, civByIndex, TABS, DEFAULT_SETTINGS } from "./desk.ts";
+import type { DeskState, Decision, Tab, Settings, Thread } from "./desk.ts";
 import { PLATES, PLATE_OF } from "./chart.ts";
 import { opening, reply } from "./dialogue.ts";
 import type { Target, Line } from "./dialogue.ts";
@@ -15,6 +15,7 @@ const chart = new Chart(canvas);
 function minZoom() { return Math.max(ZOOM_MIN, coverZoom(canvas.clientWidth, canvas.clientHeight)); }
 const walkers = makeWalkers(scene);
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+let motionOff = false;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 $("observed-at").textContent = new Date(scene.observedAt).toLocaleString("nb-NO", { dateStyle: "long", timeStyle: "short" });
@@ -22,13 +23,36 @@ if (scene.synthetic) $("synthetic").hidden = false;
 
 // ---- desk -------------------------------------------------------------------
 const app = $("app");
-const desk: DeskState = { decisions: {}, selectedCiv: null, tab: "oversikt", collapsed: false };
+const SETTINGS_KEY = "ecosym.settings";
+function loadSettings(): Settings { try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") }; } catch { return { ...DEFAULT_SETTINGS }; } }
+const desk: DeskState = { decisions: {}, selectedCiv: null, tab: "oversikt", collapsed: false, threads: {}, settings: loadSettings() };
+function applySettings() {
+  const s = desk.settings;
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+  document.documentElement.style.setProperty("--desk-w", `${s.deskWidth}px`);
+  app.classList.toggle("wide-desk", s.deskWidth >= 400);
+  chart.showLabels = s.labels;
+  motionOff = !s.smoke;
+  requestAnimationFrame(() => chart.resize()); setTimeout(() => chart.resize(), 200);
+}
 function renderDocket() {
   $("desk-tabs").innerHTML = renderTabs(desk);
   $("desk-body").innerHTML = renderDesk(scene, desk);
   const open = scene.capital.matters.filter((m) => !desk.decisions[m.id]).length;
   const rt = $("desk-tabs").querySelector<HTMLElement>('[data-tab="raadet"] .lbl');
   if (rt && open) rt.insertAdjacentHTML("afterend", `<span class="count">${open}</span>`);
+  const nThreads = Object.keys(desk.threads).length;
+  const st = $("desk-tabs").querySelector<HTMLElement>('[data-tab="samtaler"] .lbl');
+  if (st && nThreads) st.insertAdjacentHTML("afterend", `<span class="count dim">${nThreads}</span>`);
+  // settings + thread resume live inside the body; wire after render
+  $("desk-body").querySelectorAll<HTMLInputElement>("[data-set]").forEach((el) => el.addEventListener("change", () => {
+    (desk.settings as unknown as Record<string, unknown>)[el.dataset.set!] = el.checked; applySettings();
+  }));
+  $("desk-body").querySelectorAll<HTMLElement>("[data-seg]").forEach((el) => el.addEventListener("click", () => {
+    const k = el.dataset.seg!, v = el.dataset.val!;
+    (desk.settings as unknown as Record<string, unknown>)[k] = k === "language" ? v : Number(v); applySettings(); renderDocket();
+  }));
+  $("desk-body").querySelectorAll<HTMLElement>("[data-resume]").forEach((el) => el.addEventListener("click", () => resumeThread(el.dataset.resume!)));
 }
 function setTab(t: Tab) { desk.tab = t; if (desk.collapsed) setCollapsed(false); renderDocket(); }
 function setCollapsed(c: boolean) {
@@ -151,7 +175,26 @@ let current: Target | null = null;
 const focusEl = $("focus"), thread = $("focus-thread");
 const input = $<HTMLInputElement>("focus-input");
 
-function push(lines: Line[]) {
+let currentThreadId: string | null = null;
+function threadIdOf(t: Target): string { return t.kind === "council" ? "council" : t.kind === "seat" ? `seat:${t.settlement.civilizationId}` : `agent:${t.agent.runId}`; }
+function threadFor(t: Target): Thread {
+  const id = threadIdOf(t);
+  return desk.threads[id] ??= {
+    id,
+    title: t.kind === "council" ? "Rådet" : t.kind === "seat" ? t.settlement.seatName : t.agent.label,
+    where: t.kind === "council" ? "Capital" : t.settlement.name,
+    lines: [], lastAt: Date.now(),
+  };
+}
+function resumeThread(id: string) {
+  const t = desk.threads[id]; if (!t) return;
+  const [kind, key] = id.split(":");
+  if (kind === "council") return focus({ kind: "council" });
+  if (kind === "seat") { const s = scene.settlements.find((x) => x.civilizationId === key); if (s) focus({ kind: "seat", settlement: s }); return; }
+  for (const s of scene.settlements) { const a = s.inhabitants.find((i) => i.runId === key); if (a) return focus({ kind: "agent", settlement: s, agent: a }); }
+}
+function push(lines: Line[], record = true) {
+  if (record && currentThreadId) { const th = desk.threads[currentThreadId]; if (th) { th.lines.push(...lines.map((l) => ({ ...l, at: Date.now() }))); th.lastAt = Date.now(); } }
   for (const l of lines) {
     const d = document.createElement("div");
     d.className = `msg ${l.who}`; d.textContent = l.text; thread.appendChild(d);
@@ -183,10 +226,12 @@ function focus(t: Target) {
     }
     flyTo(s.ground.x, s.ground.y - 30, 2.4);
   }
-  push(opening(scene, t));
+  const th = threadFor(t); currentThreadId = th.id;
+  if (th.lines.length) { push(th.lines, false); push([{ who: "note", text: "— fortsetter samtalen —" }], false); }
+  else push(opening(scene, t));
   setTimeout(() => input.focus(), 50);
 }
-function unfocus() { current = null; app.classList.remove("focused"); focusEl.hidden = true; }
+function unfocus() { current = null; currentThreadId = null; app.classList.remove("focused"); focusEl.hidden = true; if (desk.tab === "samtaler") renderDocket(); }
 $("focus-back").addEventListener("click", unfocus);
 $("focus-form").addEventListener("submit", (e) => {
   e.preventDefault();
@@ -214,11 +259,12 @@ function frame(now: number) {
   { const hw = chart_w() / 2 / chart.camera.zoom, hh = chart_h() / 2 / chart.camera.zoom;
     chart.camera.x = Math.min(Math.max(chart.camera.x, Math.min(hw, 768)), Math.max(1536 - hw, 768));
     chart.camera.y = Math.min(Math.max(chart.camera.y, Math.min(hh, 512)), Math.max(1024 - hh, 512)); }
-  stepWalkers(walkers, dt, reduced);
+  stepWalkers(walkers, dt, reduced || motionOff);
   chart.draw(scene, walkers, selected);
   $("hint").textContent = chart.camera.zoom >= SETTLEMENT_ZOOM ? "scroll ut til kartet · klikk en person eller setet for å snakke" : "scroll for å gå ned · klikk et sted · dra for å panorere";
   requestAnimationFrame(frame);
 }
+applySettings();
 renderDocket();
 requestAnimationFrame(frame);
 

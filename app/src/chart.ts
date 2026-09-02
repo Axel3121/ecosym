@@ -73,6 +73,7 @@ export function stepWalkers(ws: Walker[], dtMs: number, reduced: boolean) {
 
 // ---- chart ---------------------------------------------------------------------
 export class Chart {
+  public showLabels = true;
   private ctx: CanvasRenderingContext2D;
   private w = 0; private h = 0; private dpr = 1;
   private hits: Array<Hit & { x: number; y: number; r: number }> = [];
@@ -163,7 +164,7 @@ export class Chart {
       this.hits.push({ kind: "seat", settlementId: s.civilizationId, label: s.seatName, sub: `${s.name} · ${s.openMatters} åpne for rådet`, x: sp.x, y: sp.y + 10 * z, r: Math.max(18, r.w * 0.12 * z) });
 
       // name at world level
-      if (plateAlpha < 1) this.label(c.x, c.y + R * 0.8, s.name, 1 - plateAlpha);
+      if (plateAlpha < 1 && this.showLabels) this.label(c.x, c.y + R * 0.8, s.name, 1 - plateAlpha);
     }
 
     // capital
@@ -171,7 +172,7 @@ export class Chart {
       const c = this.toScreen(CAPITAL.x, CAPITAL.y);
       this.hits.push({ kind: "capital", label: "Capital", sub: `${scene.capital.matters.length} saker for rådet`, x: c.x, y: c.y, r: CAPITAL.r * 0.7 * z });
       if (scene.capital.matters.length > 0) this.pennants({ x: c.x, y: c.y - CAPITAL.r * 0.45 * z }, z, scene.capital.matters.length);
-      if (plateAlpha < 1) this.label(c.x, c.y - CAPITAL.r * 0.75 * z, "Capital", 1 - plateAlpha);
+      if (plateAlpha < 1 && this.showLabels) this.label(c.x, c.y - CAPITAL.r * 0.75 * z, "Capital", 1 - plateAlpha);
     }
 
     // letters on the way from the capital
