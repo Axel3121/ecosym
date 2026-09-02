@@ -44,6 +44,47 @@ test("the test script preloads the git environment sanitizer", () => {
   );
 });
 
+test("the preload actually removes the leaked variables from a child process", () => {
+  // The two tests around this one check the wiring and the git behaviour.
+  // Neither checks the sanitizer itself: measured 2026-09-02, neutralising
+  // every `delete` in env-sanitize.ts left both of them green. A guard whose
+  // subject can be deleted without a failure is not a guard.
+  //
+  // Run a real child with the variables set and the sanitizer preloaded,
+  // exactly as `npm test` does, and ask the child what survived.
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-git-env-preload-"));
+  const sanitizer = fileURLToPath(new URL("./env-sanitize.ts", import.meta.url));
+  const leaked = [
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY", "GIT_PREFIX", "GIT_CONFIG_PARAMETERS",
+  ];
+  try {
+    const environment: Record<string, string> = { ...process.env } as Record<string, string>;
+    for (const name of leaked) {
+      environment[name] = join(directory, "should-not-survive");
+    }
+
+    const child = spawnSync(
+      process.execPath,
+      ["--import", sanitizer, "-e",
+       `process.stdout.write(JSON.stringify(${JSON.stringify(leaked)}` +
+       `.filter((n) => process.env[n] !== undefined)))`],
+      { encoding: "utf8", env: environment },
+    );
+
+    assert.equal(child.status, 0, child.stderr);
+    assert.deepEqual(
+      JSON.parse(child.stdout) as string[],
+      [],
+      "the preloaded sanitizer left leaked git variables in the child's " +
+        "environment; every fixture repository the suite creates can be " +
+        "redirected into the real repository",
+    );
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
 test("a leaked GIT_DIR is what actually redirects git — the mechanism this guards against is real", () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-git-env-leak-"));
   const decoy = join(directory, "decoy-real-repo");
@@ -51,7 +92,7 @@ test("a leaked GIT_DIR is what actually redirects git — the mechanism this gua
   try {
     for (const repo of [decoy, fixture]) {
       run("git", ["init", "-q", "-b", "main", repo]);
-      run("git", ["-C", repo, "config", "user.email", "a@b.c"]);
+      run("git", ["-C", repo, "config", "user.email", "test@example.invalid"]);
       run("git", ["-C", repo, "config", "user.name", "test"]);
     }
     writeFileSync(join(decoy, "real.txt"), "decoy pre-existing work\n");
