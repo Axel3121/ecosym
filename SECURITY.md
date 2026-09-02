@@ -66,18 +66,9 @@ unnecessary copy of sensitive content.
 
 Provider data-use and retention controls are external facts that must be read
 from their current owner. Ecosym must not equate "not used for training" with
-"never retained or exposed outside the device."
-
-Every model endpoint this repository configures — the main model, the small
-model, and each subagent override — is subject to that rule. A model is chosen
-by reading its provider's current data policy, not by measuring its latency or
-quality alone. An endpoint whose provider may retain or train on submitted
-content is not eligible for any agent that reads repository contents, however
-convenient it is.
-
-Configured model names stay in version control where a review can see them.
-Indirection through an environment variable does not make an unapproved
-endpoint acceptable; it only hides which one is in use.
+"never retained or exposed outside the device." A connected runtime remains
+responsible for selecting an eligible endpoint before it sends Ecosym-owned
+context outside the device.
 
 ## Secrets are capabilities
 
@@ -160,13 +151,6 @@ A boundary is proven by an attempt to cross it, not by reading the code that
 draws it. Until something has tried and been refused, what exists is a boundary
 in the diff and an assumption in the world. The attempt belongs in the suite, so
 the refusal keeps being true.
-
-Two boundaries in this repository were written correctly and did not hold: a
-shell could rewrite the sandbox definition that governed it, and an agent
-declaring `write: false` was handed a writable worktree because only one
-hardcoded name was checked. Both were found by running an attack, and neither
-by review of the code alone. A third, where a `--tmpfs` was re-exposed by a
-later bind that overlaid it, was found the same way and fixed.
 
 ## Destructive changes to owned history
 

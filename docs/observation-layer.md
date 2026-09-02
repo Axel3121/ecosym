@@ -75,10 +75,6 @@ Reader objects have these exact forms:
 | `json` | `pathPattern`, `recordsPath` | The pattern must match at least one JSON file. `recordsPath` is a dot-separated path to an array; `root` is the document and `record` is an array member. |
 | `csv` | `path`, one-character `delimiter` | The first row supplies unique headers. Every selected field is a string. |
 
-At sandbox setup, a JSON `pathPattern` exposes only the files it currently
-matches. Files added later, or paths replaced with new inodes, become visible to
-a new run rather than widening the current run's source boundary.
-
 For new JSONL connection versions, `record-index` is the ordinal among nonblank
 records. Schema-six stores did not record whether they used that rule or a
 physical line number. On the first collection or verification of an affected
