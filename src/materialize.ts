@@ -188,7 +188,9 @@ function exactMilliseconds(
       ? millisecondsFromBinary(value, millisecondScalePower)
       : millisecondsFromDecimal(numericLexeme, millisecondScalePower);
   const result = Number(milliseconds);
-  if (!Number.isSafeInteger(result) || BigInt(result) !== milliseconds) {
+  // A bigint within the safe-integer range converts exactly, and one outside it
+  // cannot land on a safe integer, so the range check is the whole test.
+  if (!Number.isSafeInteger(result)) {
     throw new SourceMappingError();
   }
   return result;
