@@ -2,7 +2,7 @@
 @font-face { font-family: "Plex Mono"; src: url("/fonts/IBMPlexMono-Medium.ttf") format("truetype"); font-weight: 500; font-display: block; }
 :root {
   --bg: #1d1a15; --bg-2: #2a251d; --line: #3a342a; --line-2: #5a5040;
-  --fg: #e6dcc3; --fg-dim: #9a8f78; --fg-faint: #6a6252; --bg-3: #332d24;
+  --fg: #e6dcc3; --fg-dim: #9a8f78; --fg-faint: #8f846c; --bg-3: #332d24;
   --seal: #e8735c; --seal-dim: #c4553f; --live: #a7d98a; --live-dim: #7fb35a;
   --mono: "Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -36,7 +36,8 @@ h1, h2, h3, h4 { margin: 0; font-weight: 500; }
 #app.collapsed .modes .toggle[data-mode="collapsed"]::before { content: "»"; } #app.collapsed .modes .toggle[data-mode="collapsed"] { font-size: 0; } #app.collapsed .modes .toggle[data-mode="collapsed"]::before { font-size: 13px; }
 #app.collapsed .desk-title { justify-content: center; }
 #app.collapsed .tabs { flex-direction: column; }
-#app.collapsed .tab { justify-content: center; padding: 10px 0; }
+#app.collapsed .tab { flex-direction: column; justify-content: center; gap: 2px; padding: 8px 0; }
+#app.collapsed .tab .key { display: block; font-size: 10px; color: var(--fg-faint); letter-spacing: 0; }
 #app.collapsed .tab .count { position: absolute; top: 4px; right: 6px; }
 .desk-title { display: flex; justify-content: space-between; align-items: center; }
 .toggle { background: transparent; color: var(--fg-dim); border: 1px solid var(--line-2); padding: 1px 7px; cursor: pointer; font-size: 13px; }
@@ -61,7 +62,7 @@ h1, h2, h3, h4 { margin: 0; font-weight: 500; }
 .set input:checked + .sw::after { left: 16px; background: var(--live); }
 .set input:focus-visible + .sw { outline: 1px solid var(--fg); }
 .set-l { display: flex; flex-direction: column; font-size: 13px; }
-.set-l small { color: var(--fg-faint); font-size: 11px; }
+.set-l small { color: var(--fg-faint); font-size: 12px; }
 .seg { display: inline-flex; border: 1px solid var(--line-2); }
 .seg button { background: transparent; color: var(--fg-dim); border: 0; border-right: 1px solid var(--line-2); padding: 3px 9px; cursor: pointer; font-size: 12px; }
 .seg button:last-child { border-right: 0; }
@@ -90,7 +91,7 @@ h1, h2, h3, h4 { margin: 0; font-weight: 500; }
 #stage { position: relative; min-width: 0; }
 
 /* ---- desk --------------------------------------------------------------- */
-.desk { background: var(--bg); border-right: 1px solid var(--line-2); display: flex; flex-direction: column; overflow: hidden; }
+.desk { background: var(--bg); border-right: 1px solid var(--line-2); display: flex; flex-direction: column; overflow: hidden; container: desk / inline-size; }
 .desk-head { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
 .desk-head h1 { font-size: 15px; letter-spacing: 0.12em; text-transform: uppercase; }
 .desk-head .sub { margin: 3px 0 0; font-size: 12px; color: var(--fg-dim); }
@@ -101,7 +102,7 @@ h1, h2, h3, h4 { margin: 0; font-weight: 500; }
 .desk-attn { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 4px; }
 .attn { border: 1px solid var(--line); padding: 8px 4px; text-align: center; }
 .attn b { display: block; font-size: 22px; line-height: 1; font-weight: 500; }
-.attn span { display: block; font-size: 11px; color: var(--fg-dim); margin-top: 3px; }
+.attn span { display: block; font-size: 12px; color: var(--fg-dim); margin-top: 3px; }
 .attn.urgent { border-color: var(--seal-dim); } .attn.urgent b { color: var(--seal); }
 .attn.dim { opacity: 0.5; }
 .desk-warn { margin: 8px 0 0; padding: 6px 8px; font-size: 12px; color: var(--seal); border-left: 2px solid var(--seal-dim); }
@@ -119,8 +120,8 @@ h1, h2, h3, h4 { margin: 0; font-weight: 500; }
 .queue { list-style: none; margin: 0; padding: 0; }
 .queue .q { display: grid; grid-template-columns: 1fr auto; gap: 1px 10px; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--line); }
 .queue .q.decided { opacity: 0.5; }
-.q-who { font-size: 11px; color: var(--fg-dim); }
-.q-when { font-size: 11px; color: var(--fg-faint); }
+.q-who { font-size: 12px; color: var(--fg-dim); }
+.q-when { font-size: 12px; color: var(--fg-faint); }
 .q-what { display: block; grid-column: 1; }
 .q-cross { display: block; grid-column: 1; font-size: 12px; color: var(--fg-dim); }
 .q-cross::before { content: "⚑ "; color: var(--seal); }
@@ -132,7 +133,7 @@ h1, h2, h3, h4 { margin: 0; font-weight: 500; }
 .q-done { font-size: 12px; }
 .q-done.ja { color: var(--live); } .q-done.nei { color: var(--seal); } .q-done.spør { color: var(--fg-dim); }
 .q-done button { border: none; background: none; cursor: pointer; color: var(--fg-dim); padding: 0 4px; }
-.desk-note { font-size: 11px; color: var(--fg-faint); margin: 6px 0 0; }
+.desk-note { font-size: 12px; color: var(--fg-faint); margin: 6px 0 0; }
 
 .roster { list-style: none; margin: 0; padding: 0; }
 .roster .civ { display: flex; gap: 8px; align-items: baseline; padding: 3px 6px; cursor: pointer; border-left: 2px solid transparent; }
@@ -212,7 +213,7 @@ h1, h2, h3, h4 { margin: 0; font-weight: 500; }
 .ask input:focus-visible { outline: none; border-color: var(--fg-dim); }
 .ask button { border-color: var(--live-dim); color: var(--live); }
 
-.hint { z-index: 1; position: absolute; left: 50%; transform: translateX(-50%); bottom: 14px; margin: 0; padding: 5px 12px; font-size: 11px; color: var(--fg-dim); pointer-events: none; }
+.hint { z-index: 1; position: absolute; left: 50%; transform: translateX(-50%); bottom: 14px; margin: 0; padding: 5px 12px; font-size: 12px; color: var(--fg-dim); pointer-events: none; }
 
 .halls { list-style: none; margin: 0; padding: 0; }
 .halls li { display: flex; gap: 6px; align-items: baseline; padding: 6px 6px; cursor: pointer; border-left: 2px solid transparent; }
@@ -222,3 +223,12 @@ h1, h2, h3, h4 { margin: 0; font-weight: 500; }
 .log { list-style: none; margin: 0; padding: 0; font-size: 12px; }
 .log li { display: grid; grid-template-columns: 52px 1fr; gap: 8px; padding: 3px 0; border-bottom: 1px dotted var(--line); }
 .log .when { color: var(--fg-faint); text-align: right; }
+
+/* round 3: keyboard focus is visible everywhere, not just on inputs */
+.tab:focus-visible, .toggle:focus-visible, .q-act button:focus-visible, .desk-actions button:focus-visible, .thr button:focus-visible, .seg button:focus-visible, .show-map:focus-visible { outline: 2px solid var(--live); outline-offset: 2px; }
+.tab .key { display: none; }
+/* full mode: a labelled way back to the map */
+.show-map { display: none; margin-left: 8px; padding: 4px 10px; font-size: 12px; background: transparent; color: var(--fg); border: 1px solid var(--line-2); cursor: pointer; }
+#app.full .show-map { display: inline-block; }
+/* tab bar never overflows: drop labels once the desk is under 420px */
+@container desk (max-width: 420px) { .tab .lbl { display: none; } }

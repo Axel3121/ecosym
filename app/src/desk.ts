@@ -249,7 +249,7 @@ function tabInnstillinger(state: DeskState, scene: Scene) {
 }
 
 export function renderTabs(state: DeskState): string {
-  return TABS.map((t) => `<button class="tab ${state.tab === t.id ? "on" : ""}" data-tab="${t.id}" title="${t.label} (${t.key})"><span class="glyph">${t.glyph}</span><span class="lbl">${t.label}</span></button>`).join("");
+  return TABS.map((t) => `<button class="tab ${state.tab === t.id ? "on" : ""}" data-tab="${t.id}" title="${t.label} (${t.key})"><span class="glyph">${t.glyph}</span><span class="lbl">${t.label}</span><span class="key">${t.key}</span></button>`).join("");
 }
 
 export function renderDesk(scene: Scene, state: DeskState): string {

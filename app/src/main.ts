@@ -155,12 +155,18 @@ function select(h: Hit | null) {
   switch (h.kind) {
     case "settlement":
       if (!s) return;
-      desk.selectedCiv = s.civilizationId; renderDocket();
+      desk.selectedCiv = s.civilizationId;
+      // P0 (two blind reviewers hit it): choosing a place must never land you on a tab
+      // where the place has no actions. Facts and "snakk med" live on Oversikt.
+      if (desk.tab === "innstillinger" || desk.tab === "petisjoner") desk.tab = "oversikt";
+      renderDocket();
       if (s.epistemic === "observed") flyTo(s.ground.x, s.ground.y - 30, Math.max(chart.camera.zoom, 2.4));
       else flyTo(s.ground.x, s.ground.y, Math.max(chart.camera.zoom, 1.2));
       return;
     case "capital":
-      desk.selectedCiv = "__capital"; renderDocket();
+      desk.selectedCiv = "__capital";
+      if (desk.tab === "innstillinger" || desk.tab === "petisjoner") desk.tab = "oversikt";
+      renderDocket();
       flyTo(770, 410, Math.max(chart.camera.zoom, 1.7));
       return;
     case "seat":
