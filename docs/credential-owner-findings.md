@@ -190,9 +190,14 @@ demonstrate any proof property.
 
 ### Local processing and retention
 
-The synthetic SSH and GPG cryptographic operations completed inside
-`bwrap --unshare-net`, so those exact runs made no network flow. Their scratch
-directories and private material were removed. This proves only the synthetic
+The synthetic SSH and GPG cryptographic operations ran with the signing client
+under `bwrap --unshare-net`. For GPG that covers the signing process itself.
+For SSH it does not: the disposable `ssh-agent` and the Unix-socket proxy were
+started before the `bwrap` command (Appendix A, `ssh-agent -D` and
+`python3 proxy.py`), so the process actually holding the key ran outside the
+network namespace. What was measured is that the requesting client had no
+route, not that the agent had none. Their scratch directories and private
+material were removed. This proves only the synthetic
 paths: no real FIDO, TPM, card, desktop keychain, or existing agent operation
 ran, and no real owner's logs, caches, crash handling, restart behavior, or
 bounded content retention was measured.
@@ -600,7 +605,7 @@ envelope_structure_and_canonicalization=pass
 request_semantic_validation=unavailable-no-consequential-request-type
 confirmed_key_loaded=yes
 private_key_file_deleted_before_sign=yes
-signing_network_isolation=bwrap-unshare-net
+signing_network_isolation=bwrap-unshare-net  # client only; the agent holding the key ran outside it
 askpass_prompt_sanitized=Allow use of key <SYNTHETIC_KEY_IDENTIFIER>?
 askpass_prompt_line_count=2
 request_marker_in_askpass_prompt=no
@@ -644,21 +649,25 @@ sandbox_rc=0 cleanup=namespace-destroyed
 
 The complete command is in [Appendix B](#appendix-b-gpg-lifecycle-probe).
 
-### The revocation result generalises beyond GPG
+### GPG's exit code cannot see revocation
 
-`default_current_verify_rc=0` is the number that matters here, and it is not a
-GPG quirk. Reproduced independently on 2026-09-02 with a disposable ed25519
-key: after importing the key's own revocation certificate, `gpg --list-keys`
-reports validity `r`, and `gpg --verify` still prints `Good signature` and
-exits **0**. The revocation is visible only as human-readable warning text on
-stderr; the machine-readable answer requires `--status-fd`, where `REVKEYSIG`
-and `KEYREVOKED` appear.
+`default_current_verify_rc=0` is the number that matters here, and it holds
+across key algorithms. Reproduced independently on 2026-09-02 with a disposable
+ed25519 key — a different algorithm, the same verifier: after importing the
+key's own revocation certificate, `gpg --list-keys` reports validity `r`, and
+`gpg --verify` still prints `Good signature` and exits **0**. The revocation
+is visible only as human-readable warning text on stderr; the machine-readable
+answer requires `--status-fd`, where `REVKEYSIG` and `KEYREVOKED` appear.
 
-The general rule this measurement establishes: a verifier that decides on an
-exit code cannot see revocation at all. Success and revoked-success are the
-same signal, so any petition verifier built here must read structured status
-and treat `REVKEYSIG` as failure. Checking that a signature verified is not
-checking that the credential was still valid.
+This is measured for GnuPG only. Both the original probe and the reproduction
+used it, so nothing here establishes how any other verifier behaves.
+
+The warning it earns is nevertheless general, because the failure shape is:
+success and revoked-success were the same signal, and only a channel nobody
+was reading told them apart. A petition verifier built on GnuPG must read
+structured status and treat `REVKEYSIG` as failure. A verifier built on
+anything else must be measured the same way before it is trusted — checking
+that a signature verified is not checking that the credential was still valid.
 
 ## Recommendation
 
