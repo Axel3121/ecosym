@@ -112,10 +112,11 @@ export class Chart {
     const world = this.im("/art/world.png");
     const o = this.toScreen(0, 0);
     if (world) ctx.drawImage(world, o.x, o.y, WORLD_W * z, WORLD_H * z);
+    // the landscape is painted empty; every founded place is drawn on it at every zoom.
+    // plateAlpha only governs what fades with distance (labels), never the villages themselves.
     const plateAlpha = Math.max(0, Math.min(1, (z - 1.5) / (SETTLEMENT_ZOOM - 1.5)));
     const now = (performance.now() - this.t0) / 1000;
-    if (plateAlpha > 0) {
-      ctx.globalAlpha = plateAlpha;
+    {
       const cap = this.im("/art/capital.png");
       if (cap) { const w = CAPITAL.r * 2.3; const a = this.toScreen(CAPITAL.x - w / 2, CAPITAL.y - w / 2); ctx.drawImage(cap, a.x, a.y, w * z, w * z); }
       for (const s of scene.settlements) {
@@ -123,7 +124,6 @@ export class Chart {
         const r = plateRect(s); const im = this.im(r.p.img); if (!im) continue;
         const a = this.toScreen(r.x, r.y); ctx.drawImage(im, a.x, a.y, r.w * z, r.h * z);
       }
-      ctx.globalAlpha = 1;
     }
 
     // truth layer per settlement
