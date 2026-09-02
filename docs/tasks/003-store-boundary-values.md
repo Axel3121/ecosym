@@ -2,6 +2,7 @@
 needs:
   - 002-close-review-findings
 touches:
+  - docs/tasks/003-store-boundary-values.md
   - src/collect.ts
   - src/materialize.ts
   - src/store.ts

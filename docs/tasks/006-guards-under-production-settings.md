@@ -2,6 +2,7 @@
 needs:
   - 005-close-automated-review
 touches:
+  - docs/tasks/006-guards-under-production-settings.md
   - scripts/run-task
   - src/cli.ts
   - src/materialize.ts

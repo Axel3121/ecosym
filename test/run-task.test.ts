@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   appendFileSync,
   chmodSync,
@@ -15,6 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 const runTask = fileURLToPath(new URL("../scripts/run-task", import.meta.url));
@@ -37,7 +38,7 @@ test("run-task launches the tracked sandbox only from its managed worktree", () 
   chmodSync(join(scripts, "run-ledger"), 0o700);
   writeFileSync(join(scripts, "ecosym-sandbox"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   writeFileSync(join(scripts, "run-instruction.md"), "Test instruction\n");
-  writeFileSync(join(tasks, "example.md"), taskSpec(["src/example.ts"]));
+  writeFileSync(join(tasks, "example.md"), taskSpec("example", ["src/example.ts"]));
   writeFileSync(
     join(bin, "systemd-run"),
     '#!/bin/sh\nprintf "%s\\n" "$@" >> "$SYSTEMD_CAPTURE"\n',
@@ -127,7 +128,7 @@ test("run-task refuses to reuse a worktree on another branch", () => {
   chmodSync(join(scripts, "run-task"), 0o700);
   chmodSync(join(scripts, "run-ledger"), 0o700);
   writeFileSync(join(scripts, "run-instruction.md"), "Test instruction\n");
-  writeFileSync(join(tasks, "example.md"), taskSpec(["src/example.ts"]));
+  writeFileSync(join(tasks, "example.md"), taskSpec("example", ["src/example.ts"]));
   writeFileSync(join(bin, "systemd-run"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
 
   try {
@@ -178,10 +179,10 @@ function git(repository: string, arguments_: string[]): void {
   assert.equal(result.status, 0, result.stderr);
 }
 
-function taskSpec(touches: string[], needs: string[] = []): string {
+function taskSpec(task: string, touches: string[], needs: string[] = []): string {
   const list = (name: string, values: string[]) =>
     values.length === 0 ? `${name}: []` : `${name}:\n${values.map((value) => `  - ${value}`).join("\n")}`;
-  return `---\n${list("needs", needs)}\n${list("touches", touches)}\n---\n# Test task\n`;
+  return `---\n${list("needs", needs)}\n${list("touches", [...touches, `docs/tasks/${task}.md`])}\n---\n# Test task\n`;
 }
 
 test("a launch is registered with its territory, and registration failure stops it", () => {
@@ -199,9 +200,9 @@ test("a launch is registered with its territory, and registration failure stops 
   chmodSync(join(scripts, "run-task"), 0o700);
   writeFileSync(join(scripts, "ecosym-sandbox"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   writeFileSync(join(scripts, "run-instruction.md"), "Test instruction\n");
-  writeFileSync(join(tasks, "example.md"), taskSpec(["src/example.ts"]));
-  writeFileSync(join(tasks, "unrecorded.md"), taskSpec(["src/other.ts"]));
-  writeFileSync(join(tasks, "unstoppable.md"), taskSpec(["src/third.ts"]));
+  writeFileSync(join(tasks, "example.md"), taskSpec("example", ["src/example.ts"]));
+  writeFileSync(join(tasks, "unrecorded.md"), taskSpec("unrecorded", ["src/other.ts"]));
+  writeFileSync(join(tasks, "unstoppable.md"), taskSpec("unstoppable", ["src/third.ts"]));
   writeFileSync(join(bin, "systemd-run"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   writeFileSync(
     join(bin, "systemctl"),
@@ -257,7 +258,7 @@ test("a launch is registered with its territory, and registration failure stops 
     // result would let every run that started on main read as landed.
     assert.ok(typeof started.base_commit === "string");
     assert.equal(started.result_commit, undefined);
-    assert.deepEqual(started.touches, ["src/example.ts"]);
+    assert.deepEqual(started.touches, ["src/example.ts", "docs/tasks/example.md"]);
 
     // A live run without a recorded declaration would leave the next launcher
     // unable to prove disjointness. Let the preflight check work, then make the
@@ -840,7 +841,7 @@ test("a launch reserves its unit name instead of hanging when it cannot", () => 
   chmodSync(join(scripts, "run-ledger"), 0o700);
   writeFileSync(join(scripts, "ecosym-sandbox"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   writeFileSync(join(scripts, "run-instruction.md"), "Test instruction\n");
-  writeFileSync(join(tasks, "example.md"), taskSpec(["src/example.ts"]));
+  writeFileSync(join(tasks, "example.md"), taskSpec("example", ["src/example.ts"]));
   writeFileSync(join(bin, "systemd-run"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
 
   try {
@@ -910,7 +911,7 @@ test("the watchdog starts after the run's own unit exists, not before", () => {
   chmodSync(join(scripts, "run-ledger"), 0o700);
   writeFileSync(join(scripts, "ecosym-sandbox"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   writeFileSync(join(scripts, "run-instruction.md"), "Test instruction\n");
-  writeFileSync(join(tasks, "example.md"), taskSpec(["src/example.ts"]));
+  writeFileSync(join(tasks, "example.md"), taskSpec("example", ["src/example.ts"]));
   // Marks each systemd-run invocation with a line naming which unit it
   // registers, in call order — that order is exactly what is under test.
   writeFileSync(
@@ -979,6 +980,62 @@ test("a task name that escapes the specification directory is refused", () => {
   rmSync(directory, { force: true, recursive: true });
 });
 
+test("run-task refuses territory that omits the specification it copies", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-task-spec-territory-"));
+  const repository = join(directory, "repository");
+  const scripts = join(repository, "scripts");
+  const tasks = join(repository, "docs", "tasks");
+  const dataHome = join(directory, "data");
+  const bin = join(directory, "bin");
+  const capture = join(directory, "systemd-arguments");
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(tasks, { recursive: true });
+  mkdirSync(bin);
+  copyFileSync(runTask, join(scripts, "run-task"));
+  copyFileSync(runLedger, join(scripts, "run-ledger"));
+  chmodSync(join(scripts, "run-task"), 0o700);
+  chmodSync(join(scripts, "run-ledger"), 0o700);
+  writeFileSync(join(scripts, "ecosym-sandbox"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  writeFileSync(join(scripts, "run-watchdog"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  writeFileSync(join(scripts, "run-instruction.md"), "Test instruction\n");
+  writeFileSync(
+    join(tasks, "example.md"),
+    "---\nneeds: []\ntouches:\n  - src/example.ts\n---\n# Test task\n",
+  );
+  writeFileSync(
+    join(bin, "systemd-run"),
+    '#!/bin/sh\nprintf "%s\\n" "$@" >> "$SYSTEMD_CAPTURE"\n',
+    { mode: 0o700 },
+  );
+
+  try {
+    git(repository, ["init", "-b", "main"]);
+    git(repository, ["add", "."]);
+    commit(repository, "fixture");
+
+    const refused = spawnSync(join(scripts, "run-task"), ["example"], {
+      cwd: repository,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ECOSYM_PORT: "3215",
+        ECOSYM_PROJECT: "",
+        ECOSYM_WORKTREE: "",
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        SYSTEMD_CAPTURE: capture,
+        XDG_DATA_HOME: dataHome,
+      },
+    });
+
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /touches.*docs\/tasks\/example\.md/u);
+    assert.equal(existsSync(capture), false, "an invalid declaration never reaches systemd");
+    assert.equal(existsSync(join(dataHome, "ecosym", "worktrees", "example")), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("ready derives landed needs and conflicts from frozen run declarations", () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-run-ready-"));
   const repository = join(directory, "repository");
@@ -994,14 +1051,14 @@ test("ready derives landed needs and conflicts from frozen run declarations", ()
   mkdirSync(bin);
   copyFileSync(runLedger, join(scripts, "run-ledger"));
   chmodSync(join(scripts, "run-ledger"), 0o700);
-  writeFileSync(join(tasks, "base.md"), taskSpec(["src/base.ts"]));
-  writeFileSync(join(tasks, "dependent.md"), taskSpec(["src/dependent.ts"], ["base"]));
-  writeFileSync(join(tasks, "stale.md"), taskSpec(["src/stale.ts"], ["base"]));
-  writeFileSync(join(tasks, "free.md"), taskSpec(["src/free.ts"]));
-  writeFileSync(join(tasks, "contested.md"), taskSpec(["src/shared/child.ts"]));
-  writeFileSync(join(tasks, "running.md"), taskSpec(["src/not-shared.ts"]));
+  writeFileSync(join(tasks, "base.md"), taskSpec("base", ["src/base.ts"]));
+  writeFileSync(join(tasks, "dependent.md"), taskSpec("dependent", ["src/dependent.ts"], ["base"]));
+  writeFileSync(join(tasks, "stale.md"), taskSpec("stale", ["src/stale.ts"], ["base"]));
+  writeFileSync(join(tasks, "free.md"), taskSpec("free", ["src/free.ts"]));
+  writeFileSync(join(tasks, "contested.md"), taskSpec("contested", ["src/shared/child.ts"]));
+  writeFileSync(join(tasks, "running.md"), taskSpec("running", ["src/not-shared.ts"]));
   writeFileSync(join(tasks, "missing.md"), "# No declaration\n");
-  writeFileSync(join(runningTasks, "running.md"), taskSpec(["src/shared"]));
+  writeFileSync(join(runningTasks, "running.md"), taskSpec("running", ["src/shared"]));
   writeFileSync(
     join(bin, "systemctl"),
     '#!/bin/sh\ncase "$3" in unit-running.service|unit-legacy.service) echo active;; *) echo inactive;; esac\n',
@@ -1145,9 +1202,9 @@ test("run-task refuses contested ground in a worktree, and starts if that check 
   writeFileSync(join(scripts, "ecosym-sandbox"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   writeFileSync(join(scripts, "run-watchdog"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   writeFileSync(join(scripts, "run-instruction.md"), "Test instruction\n");
-  writeFileSync(join(tasks, "first.md"), taskSpec(["src/shared"]));
-  writeFileSync(join(tasks, "second.md"), taskSpec(["src/shared/file.ts"]));
-  writeFileSync(join(tasks, "racy.md"), taskSpec(["src/disjoint.ts"]));
+  writeFileSync(join(tasks, "first.md"), taskSpec("first", ["src/shared"]));
+  writeFileSync(join(tasks, "second.md"), taskSpec("second", ["src/shared/file.ts"]));
+  writeFileSync(join(tasks, "racy.md"), taskSpec("racy", ["src/disjoint.ts"]));
   writeFileSync(
     join(bin, "systemd-run"),
     '#!/bin/sh\nfor a in "$@"; do case "$a" in --unit=*) unit=${a#--unit=};; --working-directory=*) tree=${a#--working-directory=};; esac; done\nprintf "%s\\n" "$@" >> "$SYSTEMD_CAPTURE"\ncase "$unit" in *-watchdog) ;; *-first-*) printf "%s\\n" "---" "needs: []" "touches:" "  - src/not-shared.ts" "---" "# Mutated after launch" > "$tree/docs/tasks/first.md"; printf "%s.service\\n" "$unit" >> "$ACTIVE_UNIT";; *) printf "%s.service\\n" "$unit" >> "$ACTIVE_UNIT";; esac\n',
@@ -1188,7 +1245,7 @@ test("run-task refuses contested ground in a worktree, and starts if that check 
     ) as Record<string, unknown>;
     assert.deepEqual(
       firstRecord.touches,
-      ["src/shared"],
+      ["src/shared", "docs/tasks/first.md"],
       "the declaration must be frozen before the run can edit its own spec",
     );
     const launched = readFileSync(capture, "utf8");
@@ -1228,7 +1285,7 @@ test("run-task refuses contested ground in a worktree, and starts if that check 
       .find((record) => record.task === "racy");
     assert.deepEqual(
       racyRecord?.touches,
-      ["src/disjoint.ts"],
+      ["src/disjoint.ts", "docs/tasks/racy.md"],
       "the declaration checked and registered must come from the same frozen read",
     );
     copyFileSync(join(scripts, "run-ledger-real"), join(scripts, "run-ledger"));
@@ -1281,7 +1338,7 @@ test("a landed close is refused and records paths outside the launch declaration
   mkdirSync(source);
   copyFileSync(runLedger, join(scripts, "run-ledger"));
   chmodSync(join(scripts, "run-ledger"), 0o700);
-  writeFileSync(join(tasks, "bounded.md"), taskSpec(["src/allowed.ts"]));
+  writeFileSync(join(tasks, "bounded.md"), taskSpec("bounded", ["src/allowed.ts"]));
   writeFileSync(join(source, "allowed.ts"), "export {};\n");
 
   const ledger = (arguments_: string[]) =>
@@ -1435,14 +1492,42 @@ test("a landed close is refused when its launch declaration is unavailable", () 
 test("every repository task specification has a valid scheduling declaration", () => {
   const repository = fileURLToPath(new URL("..", import.meta.url));
   const dataHome = mkdtempSync(join(tmpdir(), "ecosym-run-validate-"));
-  const specifications = readdirSync(join(repository, "docs", "tasks"))
+  const tasks = join(repository, "docs", "tasks");
+  const specifications = readdirSync(tasks)
     .filter((name) => name.endsWith(".md"))
-    .map((name) => join(repository, "docs", "tasks", name));
+    .map((name) => join(tasks, name));
   const validated = spawnSync(runLedger, ["validate", ...specifications], {
     cwd: repository,
     encoding: "utf8",
   });
   assert.equal(validated.status, 0, validated.stderr);
+
+  const declaration = (task: string) => {
+    const result = spawnSync(runLedger, ["declaration", join(tasks, `${task}.md`)], {
+      cwd: repository,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout) as { touches: string[] };
+  };
+  assert.ok(declaration("002-close-review-findings").touches.includes("test/fifth-source.test.ts"));
+  assert.deepEqual(declaration("016-dependency-audit").touches, [
+    ".github/dependabot.yml",
+    ".github/workflows/check.yml",
+    "docs/tasks/016-dependency-audit.md",
+    "package.json",
+    "test/check-workflow.test.ts",
+  ]);
+  assert.doesNotMatch(
+    readFileSync(join(tasks, "009-equivalence-decided-on-stored-identity.md"), "utf8"),
+    /Note on `needs`/u,
+  );
+  const schedulerTask = readFileSync(
+    join(tasks, "017-runs-scheduled-by-need-and-territory.md"),
+    "utf8",
+  );
+  assert.doesNotMatch(schedulerTask, /## The question this task must decide/u);
+  assert.match(schedulerTask, /DEVELOPMENT\.md#writer-ownership-and-concurrency/u);
 
   try {
     const supervised = spawnSync(runLedger, ["can-start", "014-agent-shell-source-boundary"], {
@@ -1457,7 +1542,7 @@ test("every repository task specification has a valid scheduling declaration", (
   }
 });
 
-test("two launchers racing for one territory produce exactly one run", () => {
+test("two launchers racing for one territory produce exactly one run", async () => {
   // The conflict check is only as good as the window it runs in. Two launchers
   // that both read an empty territory before either registers would both start
   // on the same ground, and every other guarantee here rests on that not
@@ -1477,18 +1562,33 @@ test("two launchers racing for one territory produce exactly one run", () => {
   copyFileSync(runTask, join(scripts, "run-task"));
   copyFileSync(runLedger, join(scripts, "run-ledger"));
   chmodSync(join(scripts, "run-task"), 0o700);
-  chmodSync(join(scripts, "run-ledger"), 0o700);
+  copyFileSync(join(scripts, "run-ledger"), join(scripts, "run-ledger-real"));
+  writeFileSync(
+    join(scripts, "run-ledger"),
+    '#!/bin/sh\nreal="$(dirname "$0")/run-ledger-real"\nif [ "$1" = can-start ] && [ "${RACER_ROLE:-}" = a ]; then\n  "$real" "$@" || exit $?\n  : > "$A_CHECKED"\n  while [ ! -f "$RELEASE_A" ]; do sleep 0.01; done\n  exit 0\nfi\nif [ "$1" = can-start ] && [ "${RACER_ROLE:-}" = b ]; then : > "$B_CHECKED"; fi\nexec "$real" "$@"\n',
+    { mode: 0o700 },
+  );
+  chmodSync(join(scripts, "run-ledger-real"), 0o700);
   writeFileSync(join(scripts, "ecosym-sandbox"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   writeFileSync(join(scripts, "run-watchdog"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   writeFileSync(join(scripts, "run-instruction.md"), "Test instruction\n");
-  // Both claim the same path, so at most one may ever be launched.
-  writeFileSync(join(tasks, "racer-a.md"), taskSpec(["src/contested.ts"]));
-  writeFileSync(join(tasks, "racer-b.md"), taskSpec(["src/contested.ts"]));
-  // A launch that sleeps briefly before registering widens the window a
-  // broken implementation would fall through; a correct one still serialises.
+  for (const prefix of ["control", "racer"]) {
+    writeFileSync(join(tasks, `${prefix}-a.md`), taskSpec(`${prefix}-a`, ["src/contested.ts"]));
+    writeFileSync(join(tasks, `${prefix}-b.md`), taskSpec(`${prefix}-b`, ["src/contested.ts"]));
+  }
+
+  const realFlock = spawnSync("/bin/sh", ["-c", "command -v flock"], {
+    encoding: "utf8",
+  }).stdout.trim();
+  assert.notEqual(realFlock, "", "the race proof requires the same flock used by run-task");
+  writeFileSync(
+    join(bin, "flock"),
+    '#!/bin/sh\nif [ "$1" = -x ] && [ "${RACER_ROLE:-}" = b ]; then : > "$B_LOCK_ATTEMPT"; fi\nif [ -n "${DISABLE_SCHEDULE_LOCK:-}" ]; then exit 0; fi\nexec "$REAL_FLOCK" "$@"\n',
+    { mode: 0o700 },
+  );
   writeFileSync(
     join(bin, "systemd-run"),
-    '#!/bin/sh\nfor a in "$@"; do case "$a" in --unit=*) unit=${a#--unit=};; esac; done\nprintf "%s\\n" "$@" >> "$SYSTEMD_CAPTURE"\ncase "$unit" in *-watchdog) ;; *) sleep 0.3; printf "%s.service\\n" "$unit" >> "$ACTIVE_UNIT";; esac\n',
+    '#!/bin/sh\nfor a in "$@"; do case "$a" in --unit=*) unit=${a#--unit=};; esac; done\nprintf "%s\\n" "$@" >> "$SYSTEMD_CAPTURE"\ncase "$unit" in *-watchdog) ;; *) printf "%s.service\\n" "$unit" >> "$ACTIVE_UNIT";; esac\n',
     { mode: 0o700 },
   );
   writeFileSync(
@@ -1497,46 +1597,119 @@ test("two launchers racing for one territory produce exactly one run", () => {
     { mode: 0o700 },
   );
 
-  const environment = {
-    ...process.env,
-    ACTIVE_UNIT: activeUnit,
-    ECOSYM_PROJECT: "",
-    ECOSYM_WORKTREE: "",
-    PATH: `${bin}:${process.env.PATH ?? ""}`,
-    SYSTEMD_CAPTURE: capture,
-    XDG_DATA_HOME: dataHome,
-  };
-
   try {
     git(repository, ["init", "-b", "main"]);
     git(repository, ["add", "."]);
     commit(repository, "fixture");
 
-    // One shell, both launchers backgrounded together: the two processes
-    // reach the territory check as close to simultaneously as the OS allows.
-    const raced = spawnSync(
-      "/bin/sh",
-      [
-        "-c",
-        'scripts/run-task racer-a > a.out 2>&1 & scripts/run-task racer-b > b.out 2>&1 & wait; echo done',
-      ],
-      { cwd: repository, encoding: "utf8", env: { ...environment, ECOSYM_PORT: "3230" } },
+    const race = async (prefix: string, locking: boolean) => {
+      const raceDataHome = join(dataHome, prefix);
+      const firstChecked = join(directory, `${prefix}-a-checked`);
+      const secondChecked = join(directory, `${prefix}-b-checked`);
+      const secondLockAttempt = join(directory, `${prefix}-b-lock-attempt`);
+      const releaseFirst = join(directory, `${prefix}-release-a`);
+      const environment = {
+        ...process.env,
+        ACTIVE_UNIT: activeUnit,
+        A_CHECKED: firstChecked,
+        B_CHECKED: secondChecked,
+        B_LOCK_ATTEMPT: secondLockAttempt,
+        DISABLE_SCHEDULE_LOCK: locking ? "" : "1",
+        ECOSYM_PROJECT: "",
+        ECOSYM_WORKTREE: "",
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        REAL_FLOCK: realFlock,
+        RELEASE_A: releaseFirst,
+        SYSTEMD_CAPTURE: capture,
+        XDG_DATA_HOME: raceDataHome,
+      };
+      const launch = (task: string, role: string, port: string) => {
+        const child = spawn(join(scripts, "run-task"), [task], {
+          cwd: repository,
+          env: { ...environment, ECOSYM_PORT: port, RACER_ROLE: role },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let output = "";
+        child.stdout.setEncoding("utf8");
+        child.stderr.setEncoding("utf8");
+        child.stdout.on("data", (chunk: string) => (output += chunk));
+        child.stderr.on("data", (chunk: string) => (output += chunk));
+        const exited = new Promise<number | null>((resolve, reject) => {
+          child.once("error", reject);
+          child.once("close", resolve);
+        });
+        return { child, exited, output: () => output };
+      };
+
+      const runs: ReturnType<typeof launch>[] = [];
+      try {
+        const first = launch(`${prefix}-a`, "a", locking ? "3232" : "3230");
+        runs.push(first);
+        await waitForFile(firstChecked);
+
+        const second = launch(`${prefix}-b`, "b", locking ? "3233" : "3231");
+        runs.push(second);
+        await waitForFile(secondLockAttempt);
+        if (!locking) {
+          await waitForFile(secondChecked);
+        }
+        const secondCheckedBeforeRegistration = existsSync(secondChecked);
+        writeFileSync(releaseFirst, "release\n");
+        const statuses = await Promise.all(runs.map((run) => run.exited));
+        return {
+          outputs: runs.map((run) => run.output()),
+          secondCheckedBeforeRegistration,
+          statuses,
+        };
+      } finally {
+        if (!existsSync(releaseFirst)) {
+          writeFileSync(releaseFirst, "release\n");
+        }
+        for (const run of runs) {
+          run.child.kill();
+        }
+        await Promise.allSettled(runs.map((run) => run.exited));
+      }
+    };
+
+    const unlocked = await race("control", false);
+    assert.equal(
+      unlocked.secondCheckedBeforeRegistration,
+      true,
+      "the control must put racer-b's eligibility check inside racer-a's registration window",
     );
-    assert.equal(raced.status, 0, raced.stderr);
+    assert.deepEqual(unlocked.statuses, [0, 0], unlocked.outputs.join("\n---\n"));
+    assert.equal(unlocked.outputs.filter((text) => /^unit:/mu.test(text)).length, 2);
 
-    const outputs = [
-      readFileSync(join(repository, "a.out"), "utf8"),
-      readFileSync(join(repository, "b.out"), "utf8"),
-    ];
-    const launched = outputs.filter((text) => /^unit:/mu.test(text));
-    const refused = outputs.filter((text) => /territory conflicts with running task/u.test(text));
-
-    assert.equal(launched.length, 1, `exactly one launch expected, got:\n${outputs.join("\n---\n")}`);
-    assert.equal(refused.length, 1, `the loser must name the conflict, got:\n${outputs.join("\n---\n")}`);
+    const guarded = await race("racer", true);
+    assert.equal(
+      guarded.secondCheckedBeforeRegistration,
+      false,
+      "the schedule lock must keep racer-b out of the eligibility check until racer-a registers",
+    );
+    assert.deepEqual(guarded.statuses, [0, 1], guarded.outputs.join("\n---\n"));
+    assert.equal(
+      guarded.outputs.filter((text) => /^unit:/mu.test(text)).length,
+      1,
+      `exactly one launch expected, got:\n${guarded.outputs.join("\n---\n")}`,
+    );
+    assert.equal(
+      guarded.outputs.filter((text) => /territory conflicts with running task/u.test(text)).length,
+      1,
+      `the loser must name the conflict, got:\n${guarded.outputs.join("\n---\n")}`,
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+async function waitForFile(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    if (existsSync(path)) return;
+    await delay(10);
+  }
+  assert.fail(`timed out waiting for ${path}`);
+}
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");

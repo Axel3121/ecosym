@@ -2,6 +2,7 @@
 needs:
   - 003-store-boundary-values
 touches:
+  - docs/tasks/004-accept-real-utc-instants.md
   - src/materialize.ts
   - src/store.ts
   - src/time.ts

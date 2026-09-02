@@ -3,10 +3,9 @@ needs: []
 touches:
   - .github/dependabot.yml
   - .github/workflows/check.yml
+  - docs/tasks/016-dependency-audit.md
   - package.json
-  - package-lock.json
   - test/check-workflow.test.ts
-  - test/fixtures/dependency-audit/
 ---
 # Task 016 — The dependency check examines dependencies that exist
 
@@ -80,8 +79,9 @@ change or replace it.
 
 Two other runs are working in `src/` and `test/` concurrently. Confine changes
 to `.github/workflows/check.yml`, `.github/dependabot.yml`,
-`test/check-workflow.test.ts` and `package.json`. Do not modify existing files
-under `test/helpers/` or `test/fixtures/`.
+`docs/tasks/016-dependency-audit.md`, `test/check-workflow.test.ts` and
+`package.json`. Do not modify existing files under `test/helpers/` or
+`test/fixtures/`.
 
 ## Out of scope
 

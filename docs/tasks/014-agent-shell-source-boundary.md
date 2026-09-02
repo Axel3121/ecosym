@@ -2,6 +2,7 @@
 needs: []
 autonomous: false
 touches:
+  - docs/tasks/014-agent-shell-source-boundary.md
   - src/agent-shell.ts
   - src/sandbox.ts
   - src/sandbox-cli.ts

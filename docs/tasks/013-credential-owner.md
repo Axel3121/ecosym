@@ -3,6 +3,7 @@ needs:
   - 012-petition-identity
 touches:
   - docs/credential-owner-findings.md
+  - docs/tasks/013-credential-owner.md
 ---
 # Task 013 — Find out whether any credential owner on this machine can carry a petition
 

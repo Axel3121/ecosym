@@ -75,20 +75,11 @@ so it must hold when the operator is not paying attention.
 **A run refuses to start in the shared checkout.** Every run gets its own
 worktree. The main checkout stops being a work surface.
 
-## The question this task must decide
+## Territory policy
 
-`touches` is a claim made before the work happens, and the work may disagree
-with it. Two failure modes pull in opposite directions:
-
-- Declared too broadly (`src/`), every task conflicts with every other and the
-  scheduler serialises everything — the current state, with more ceremony.
-- Declared too narrowly, two runs are told they are disjoint and then both
-  discover they need to edit the same test helper.
-
-Decide which of these the design must prefer, and say why in the report. Decide
-also what happens when a run edits a path it did not declare: whether that is
-detected, whether it is refused, whether it is merely recorded. Do not treat
-this as settled by the phrasing above.
+The declaration-width and undeclared-write rules are owned by
+[`DEVELOPMENT.md`](../../DEVELOPMENT.md#writer-ownership-and-concurrency). This
+task implements those rules rather than redefining them.
 
 ## Evidence
 
@@ -115,3 +106,120 @@ tasks, or any automatic selection of what to run. This task makes the set of
 startable tasks visible and makes collision impossible. A person still chooses.
 
 Cross-repository coordination. This governs one repository.
+
+---
+
+# Closing the review on PR #20
+
+Everything above is the original task and has largely been implemented on this
+branch. This section is what remains before the pull request can land.
+
+## The state you are starting from
+
+PR #20 is `MERGEABLE / BLOCKED`. `check` and CodeRabbit pass. Two things are
+outstanding, and one of them is easy to miss:
+
+**The `automated review` check did not fail — it was CANCELLED.** It never
+produced a verdict. Unlike PRs #17, #18 and #19, this pull request has never
+been assessed by Qodo at all. A cancelled check is not a passing check, and it
+must not be treated as one. Find out why it cancelled and get a real verdict.
+
+**Three CodeRabbit rounds posted ten inline findings.** You have already
+answered four of them on the pull request: the frozen declaration, the atomic
+check-and-reserve (`08f6fb6`), the task identity (`4b55f63`), and the rejection
+of "do not turn ambiguous history into a valid declaration". Those answers
+stand. Do not re-litigate them.
+
+The rest are unanswered. Read the current set rather than trusting this list:
+
+```
+gh pr view 20 --json comments,reviews,statusCheckRollup
+gh api repos/Axel3121/ecosym/pulls/20/comments --paginate
+```
+
+## Two findings that are confirmed, not alleged
+
+These were reproduced against `d4b5d0b` in this worktree before this section
+was written. Both are in `scripts/run-ledger`, in the close path. Verify them
+yourself, then fix them.
+
+**A run with no declaration closes as landed without any audit.** The gate
+reads `if record_declaration(started) is not None and args.outcome ==
+"landed":`. A started record carrying no `needs`/`touches` therefore skips the
+undeclared-path refusal entirely. The run whose territory is *least* known is
+the one that receives the least scrutiny. That is backwards, and it
+contradicts the fail-closed principle you argued for on the pull request
+yourself: a spec without a declaration is refused at launch, so a *record*
+without one should not sail through at close.
+
+**`territory_audit: "passed"` is recorded for runs with undeclared writes.**
+The final `append` computes `"territory_audit": "unknown" if audit_error else
+("passed" if changed is not None else None)`. It never consults `undeclared`.
+The refusal block above it runs only when `args.outcome == "landed"`, so
+closing with any other outcome writes a record where `undeclared_paths` lists
+real violations while `territory_audit` says `passed`. The ledger is the
+evidence trail for this repository; a record that contradicts itself is worse
+than no record, because it will be believed.
+
+Decide what a truthful status is for each case and make the record say it.
+
+## The remaining findings
+
+Assess each against the current branch. Some may be stale — for example, the
+`run-task` task-name validation the review asks for is already present at
+`scripts/run-task` l. 33-39, and the `Task 013` heading was corrected in
+`4b55f63`. A stale finding gets answered as stale, with the evidence that
+retires it.
+
+Findings still open at the time of writing, by file:
+
+- `scripts/run-task:122` — specs whose `touches` does not cover their own spec
+  file.
+- `test/run-task.test.ts:1270` — assert the recorded audit status, not only the
+  exit code. This is the test that would have caught the mislabel above.
+- `test/run-task.test.ts:1365` — the race setup does not prove overlapping
+  eligibility checks. It starts both processes near the same time, which is not
+  the same as forcing `racer-b` to call `can-start` inside `racer-a`'s window.
+- `docs/tasks/002-close-review-findings.md:16` — `test/fifth-source.test.ts` is
+  edited by that task but absent from its `touches`.
+- `docs/tasks/016-dependency-audit.md:9` — the prose constraint list names four
+  paths, the declaration names six.
+- `docs/tasks/017-...:91` — the section reopens decisions `DEVELOPMENT.md`
+  already owns.
+- `docs/tasks/009-...:19` — repeated scheduler-policy note across specs.
+
+The last two are the same species of problem `AGENTS.md` warns about: policy
+restated away from its owner drifts. Decide once where the rule lives.
+
+## Boundaries
+
+This branch owns `DEVELOPMENT.md`, `docs/tasks/`, `scripts/run-ledger`,
+`scripts/run-task` and `test/run-task.test.ts`. Task 013 is running
+concurrently in its own worktree and owns `docs/credential-owner-findings.md`.
+Task 012 is running concurrently and owns `docs/petition-identity.md`. Do not
+touch either.
+
+Your territory includes `docs/tasks/`, and both of those runs have an addendum
+appended to their own specification there. You may add frontmatter to those
+files as this task requires — that is your declared territory. Do not edit
+their prose; those two runs are working from it as they read.
+
+Note the asymmetry: your own scheduler is what would normally enforce this,
+and it is unmerged. For the duration of these three runs the boundary is
+honoured because it is written here, not because anything is checking.
+
+Do not weaken or delete an existing test to make a new rule pass.
+
+## Evidence
+
+Every fix gets a regression test that fails before it. Run each new test
+against the unfixed code first and report that it failed. For the two
+confirmed defects specifically, prove the tests are load-bearing: remove the
+fix, show the test fails, restore it, report both outputs.
+
+Report the real output of `npm run check` and the exact commit it ran against.
+
+## Report
+
+Per finding: addressed, or rejected with evidence. Say plainly whether the
+`automated review` check produced a verdict this time, and what it said.

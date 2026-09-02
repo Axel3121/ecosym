@@ -2,6 +2,7 @@
 needs:
   - 004-accept-real-utc-instants
 touches:
+  - docs/tasks/005-close-automated-review.md
   - scripts/run-task
   - src/materialize.ts
   - src/store.ts

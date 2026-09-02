@@ -2,6 +2,7 @@
 needs:
   - 001-observation-layer
 touches:
+  - docs/tasks/010-runs-reach-only-declared-evidence.md
   - .opencode/agent/prober.md
   - .opencode/tools/bash.ts
   - docs/observation-layer.md

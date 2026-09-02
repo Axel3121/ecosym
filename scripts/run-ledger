@@ -386,6 +386,13 @@ def paths_overlap(left: str, right: str) -> bool:
     return left_parts[:shorter] == right_parts[:shorter]
 
 
+def require_task_spec_touch(task: str, declaration: dict) -> dict:
+    spec = f"docs/tasks/{task}.md"
+    if not any(paths_overlap(spec, touch) for touch in declaration["touches"]):
+        raise DeclarationError(f"'touches' must cover {spec}, which run-task copies into the worktree")
+    return declaration
+
+
 def record_declaration(record: dict) -> dict | None:
     try:
         return validate_declaration_values(
@@ -853,7 +860,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
     for value in args.specs:
         path = Path(value)
         try:
-            read_declaration(path)
+            declaration = read_declaration(path)
+            if path.resolve().parent == (repo_root() / "docs" / "tasks").resolve():
+                require_task_spec_touch(path.stem, declaration)
         except DeclarationError as error:
             print(f"{path}: {error}", file=sys.stderr)
             failed = True
@@ -863,7 +872,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
 def declaration_for_task(task: str, spec: str | None = None) -> tuple[dict | None, str | None]:
     path = Path(spec) if spec else repo_root() / "docs" / "tasks" / f"{task}.md"
     try:
-        return read_declaration(path), None
+        return require_task_spec_touch(task, read_declaration(path)), None
     except DeclarationError as error:
         return None, f"{path}: {error}"
 
@@ -884,7 +893,10 @@ def candidate_commit_for_task(
 def cmd_can_start(args: argparse.Namespace) -> int:
     if args.declaration:
         try:
-            declaration = parse_declaration_json(args.declaration)
+            declaration = require_task_spec_touch(
+                args.task,
+                parse_declaration_json(args.declaration),
+            )
             error = None
         except (json.JSONDecodeError, DeclarationError) as declaration_error:
             declaration = None
@@ -915,11 +927,11 @@ def cmd_ready(args: argparse.Namespace) -> int:
     snapshot = scheduling_snapshot(records)
     for path in sorted((repo_root() / "docs" / "tasks").glob("*.md")):
         task = path.stem
-        try:
-            declaration = read_declaration(path)
-        except DeclarationError as error:
+        declaration, error = declaration_for_task(task, str(path))
+        if error:
             print(f"{task} is not startable: {error}", file=sys.stderr)
             continue
+        assert declaration is not None
         candidate_commit = candidate_commit_for_task(task)
         if not start_reasons(task, declaration, snapshot, candidate_commit):
             print(task)

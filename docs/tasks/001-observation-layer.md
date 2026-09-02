@@ -1,6 +1,7 @@
 ---
 needs: []
 touches:
+  - docs/tasks/001-observation-layer.md
   - .github/workflows/check.yml
   - package.json
   - package-lock.json

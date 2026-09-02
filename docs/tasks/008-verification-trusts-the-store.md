@@ -2,6 +2,7 @@
 needs:
   - 007-stored-identity-migration
 touches:
+  - docs/tasks/008-verification-trusts-the-store.md
   - src/collect.ts
   - src/record-index.ts
   - src/store.ts

@@ -2,6 +2,7 @@
 needs:
   - 008-verification-trusts-the-store
 touches:
+  - docs/tasks/011-confirmation-proves-preview.md
   - docs/observation-layer.md
   - src/store.ts
   - test/cli.test.ts

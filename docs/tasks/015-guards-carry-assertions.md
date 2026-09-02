@@ -1,6 +1,7 @@
 ---
 needs: []
 touches:
+  - docs/tasks/015-guards-carry-assertions.md
   - src/config.ts
   - src/json.ts
   - src/materialize.ts

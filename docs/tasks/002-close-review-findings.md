@@ -2,6 +2,7 @@
 needs:
   - 001-observation-layer
 touches:
+  - docs/tasks/002-close-review-findings.md
   - src/collect.ts
   - src/config.ts
   - src/materialize.ts
@@ -12,6 +13,7 @@ touches:
   - test/collection.test.ts
   - test/config.test.ts
   - test/csv-cli.test.ts
+  - test/fifth-source.test.ts
   - test/store.test.ts
   - test/verify.test.ts
   - test/fixtures/fifth-source/habitat-survey.csv

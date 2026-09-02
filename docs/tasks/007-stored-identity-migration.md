@@ -2,6 +2,7 @@
 needs:
   - 006-guards-under-production-settings
 touches:
+  - docs/tasks/007-stored-identity-migration.md
   - src/collect.ts
   - src/readers.ts
   - src/store.ts
