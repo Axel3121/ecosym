@@ -13,12 +13,14 @@ process that would execute it, by two independent mechanisms:
 
 - `opencode.json` sets `"src/agent-shell.ts": "deny"` and the same for
   `sandbox.ts`, `sandbox-cli.ts` and `sandbox-runtime.ts` under
-  `permission.edit`.
-- `agentShellArguments` re-binds those four paths read-only through
-  `sandboxDefinitionPaths` (`src/agent-shell.ts` l. 287-297), so even a shell
-  that got past the permission layer meets a read-only filesystem. A probe
-  attempting to overwrite `src/agent-shell.ts` from a fresh worktree in agent
-  mode received `Read-only file system` and the file was unchanged.
+  `permission.edit`, along with `opencode.json` itself and `.opencode/**` — so
+  an agent cannot unblock itself by editing the permission file.
+- `agentShellArguments` re-binds those paths read-only through
+  `sandboxDefinitionPaths` (`src/agent-shell.ts` l. 287-297), which covers
+  `.opencode/` and `opencode.json` as well as the four `src/` files, so even a
+  shell that got past the permission layer meets a read-only filesystem. A
+  probe attempting to overwrite `src/agent-shell.ts` from a fresh worktree in
+  agent mode received `Read-only file system` and the file was unchanged.
 
 This is not a defect to route around. `SECURITY.md` records the incident that
 put those protections there: a shell could rewrite the sandbox definition that
@@ -96,6 +98,15 @@ Whether you achieve that by narrowing the granularity or by accepting the
 directory-level boundary is your call; report which you chose and why.
 
 Report the output of all cases: registered, unregistered, and the sibling.
+
+Exercise them through `executeAgentShellCommand`, not by invoking
+`scripts/agent-shell` directly. That function is what selects prober or agent
+mode from the calling agent's declaration (`declaresNoWrites`) and builds the
+boundary from it; the script takes a mode it is handed. A test that calls the
+script proves the mount plan behaves, not that the API an agent actually
+reaches refuses a registered source. `.opencode/tools/bash.ts` wires
+`executeAgentShellCommand` as the real `bash` tool, so that is the path a
+prompt-injected agent would take.
 
 ## Evidence
 
