@@ -96,7 +96,7 @@ function workTree(s: Settlement) {
     `<li><span class="live">●</span> ${esc(i.label)}${i.tool ? ` <span class="muted">${esc(i.tool)}</span>` : ""}${kids(i.runId)}</li>`;
   const tree = (_p: undefined, _d: number) => roots.map(node).join("");
   const running = roots.length ? `<ul class="work">${tree(undefined, 0)}</ul>` : `<p class="muted">Ingen i arbeid.</p>`;
-  const traces = s.traces.length ? `<ul class="work traces">${s.traces.map((t) => `<li><span class="muted">○</span> ${esc(t.label)} <span class="muted">${Math.round(t.freshness * 100)}%</span></li>`).join("")}</ul>` : "";
+  const traces = s.traces.length ? `<ul class="work traces">${s.traces.map((t) => `<li><span class="muted">○</span> ${esc(t.label)} <span class="dim" title="hvor mye av oppbevaringsvinduet som er igjen">blekner · ${Math.round(t.freshness * 100)}% igjen</span></li>`).join("")}</ul>` : "";
   return { running, traces };
 }
 
@@ -117,19 +117,21 @@ function tabRaadet(scene: Scene, state: DeskState) {
   const card = (m: typeof items[number]) => {
     const s = scene.settlements.find((x) => x.civilizationId === m.raisedBy);
     const d = state.decisions[m.id];
-    const [what, crosses] = m.summary.split(" (crosses: ");
-    const rule = crosses?.replace(/\)$/, "");
+    const [whatRaw, crosses] = m.summary.split(" (crosses: ");
+    const what = (whatRaw ?? m.summary).replace(/^\w+ asks to /, "");
+    const ruleRaw = crosses?.replace(/\)$/, "");
+    const rule = ruleRaw && ruleRaw !== what ? ruleRaw : undefined;
     return `<li class="q big ${d ? "decided" : ""}">
       <div class="q-head"><span class="q-who">${esc(s?.name ?? m.raisedBy)} · ${esc(s?.seatName ?? "")}</span><span class="q-when">${ago(scene, m.raisedAt)}</span></div>
-      <div class="q-what">${esc((what ?? m.summary).replace(/^\w+ asks to /, ""))}</div>
-      ${rule ? `<div class="q-cross">${esc(rule)} <span class="dim">— utenfor mandatet «${esc(s?.mandate.alone.join(", ") ?? "")}»</span></div>` : `<div class="dim">ingen regel navngitt i saken</div>`}
+      <div class="q-what">«${esc(what)}»</div>
+      ${rule ? `<div class="q-cross">${esc(rule)} <span class="dim">— utenfor mandatet «${esc(s?.mandate.alone.join(", ") ?? "")}»</span></div>` : ruleRaw ? `<div class="q-cross"><span class="dim">krysser mandatet «${esc(s?.mandate.alone.join(", ") ?? "")}»</span></div>` : `<div class="dim">ingen regel navngitt i saken</div>`}
       ${d ? `<span class="q-done ${d.decision}">${d.decision === "ja" ? "✓ ja" : d.decision === "nei" ? "✗ nei" : "? spurt tilbake"} <button data-undo="${m.id}" title="angre">↶</button></span>`
           : `<span class="q-act"><button data-decide="ja" data-id="${m.id}">ja</button><button data-decide="nei" data-id="${m.id}">nei</button><button data-decide="spør" data-id="${m.id}">spør tilbake</button>${s ? `<button data-go="${esc(s.civilizationId)}" class="ghost">se ${esc(s.name)}</button>` : ""}</span>`}
     </li>`;
   };
   return `<section class="desk-sec"><h3><span>Åpne</span><span class="muted">${open.length}</span></h3><ol class="queue">${open.map(card).join("") || '<li class="muted">Ingenting venter.</li>'}</ol></section>
   ${done.length ? `<section class="desk-sec"><h3><span>Avgjort denne økten</span><span class="muted">${done.length}</span></h3><ol class="queue">${done.map(card).join("")}</ol></section>` : ""}
-  <p class="desk-note">Avgjørelser blir petisjoner. Ikke koblet i prototypen.</p>`;
+  <p class="desk-note">⚑ = krysser sivilisasjonens mandat. Avgjørelser blir petisjoner. Ikke koblet i prototypen.</p>`;
 }
 
 /** Arbeid tab: everything running, every civilization, one screen. */

@@ -31,7 +31,7 @@ type Voice = {
 const VOICES: Record<string, Voice> = {
   Curia: {
     hello: (_s, f) => `Curia. ${f}. Si hva du vil, jeg har ting å gjøre.`,
-    status: (f) => `Akkurat nå: ${f}. Neste.`,
+    status: (f) => `Akkurat nå: ${f}. Mer har jeg ikke.`,
     why: (f) => `Hvorfor? Jeg fører protokoll, ikke motiver. Det som er ført: ${f}. Vil du ha mer, spør runtimen — den er ikke koblet.`,
     mandate: (a, c) => `Uten deg: ${a}. Med rådet: ${c}. Ikke be meg om det siste.`,
     inside: (o) => `Innenfor. Forseglet: «${o}». Kom tilbake når det er observert, ikke før.`,

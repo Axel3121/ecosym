@@ -44,11 +44,16 @@ test("routes exist only where something crossed a border", () => {
   const scene = deriveScene(fixture);
   const touched = new Set(scene.routes.map((r) => JSON.stringify(r.to) + JSON.stringify(r.from)));
   assert.equal(touched.size, scene.routes.length, "one route per crossing pair");
-  const midgard = scene.settlements.find((s) => s.civilizationId === "midgard")!;
+  // Thule was never observed and never petitioned: no route may touch it.
+  const thule = scene.settlements.find((s) => s.civilizationId === "thule")!;
   assert.ok(
-    !scene.routes.some((r) => r.to === midgard.ground || r.from === midgard.ground),
-    "Midgard neither petitioned nor was petitioned: no route",
+    !scene.routes.some((r) => r.to === thule.ground || r.from === thule.ground),
+    "Thule neither petitioned nor was petitioned: no route",
   );
+  // A refused petition still crossed the border: Midgard has a route, and the letter says refused.
+  const midgard = scene.settlements.find((s) => s.civilizationId === "midgard")!;
+  assert.ok(scene.routes.some((r) => r.to === midgard.ground || r.from === midgard.ground), "a refused petition is still a crossing");
+  assert.equal(scene.letters.find((l) => l.toCivilizationId === "midgard")?.state, "refused");
 });
 
 test("the capital holds a hall for every civilization in summary only", () => {

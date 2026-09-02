@@ -81,6 +81,7 @@ export const fixture: Observations = {
   petitions: [
     { id: "p1", toCivilizationId: "roma", text: "Add PS5 controllers to the watchlist", state: "in-progress", sentAt: min(25) },
     { id: "p2", toCivilizationId: "edo", text: "Hold publishing until Friday", state: "queued", sentAt: min(60) },
+    { id: "p3", toCivilizationId: "midgard", text: "Merge #6 without review", state: "refused", sentAt: min(200) },
   ],
   council: [
     { id: "c1", raisedBy: "roma", summary: "Roma asks to contact a seller (crosses: contact a seller)", raisedAt: min(8) },
