@@ -120,6 +120,26 @@ test("derives the transaction view from the same validated request", () => {
   assert.equal(view.recoverability.evidence.scope.expectedObjectId, view.target.expectedObjectId);
 });
 
+function flattenLeafPaths(value: unknown, prefix: string[] = []): string[] {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    return Object.keys(value as Record<string, unknown>).flatMap((key) =>
+      flattenLeafPaths((value as Record<string, unknown>)[key], [...prefix, key]),
+    );
+  }
+  return [prefix.join(".")];
+}
+
+test("the transaction view presents fields in the declared disclosure order", () => {
+  const view = requestTransactionView(validRequest());
+  const { format, ...disclosed } = view;
+
+  assert.deepEqual(
+    flattenLeafPaths(disclosed),
+    DELETE_GIT_BRANCH_REQUEST_DEFINITION.institutionOwner.trustedTransactionPresentation
+      .orderedFields,
+  );
+});
+
 test("content-addresses the closed definition with the specified domain and its own identity", () => {
   const independentlyComputed = createHash("sha256")
     .update(Buffer.from("ecosym.petition-request-definition.v1\0", "utf8"))
