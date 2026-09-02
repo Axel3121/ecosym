@@ -225,8 +225,23 @@ def by_unit(records: list[dict]) -> dict[str, list[dict]]:
     return grouped
 
 
+def main_reference() -> str:
+    """Which ref speaks for 'landed': origin/main when it exists, else local main.
+
+    `in_main` prefers `origin/main` because a local `main` only answers where
+    this checkout last pulled, and a checkout behind origin read landed work
+    as unmerged — measured 2026-09-02. `merged_branches` and
+    `branch_carries_nothing` judge a *branch* the same way `in_main` judges a
+    *commit*, so they must ask the same ref or a stale checkout reads a
+    branch that genuinely merged upstream as still open.
+    """
+    if git("rev-parse", "--verify", "--quiet", "origin/main^{commit}"):
+        return "origin/main"
+    return "main"
+
+
 def merged_branches() -> set[str]:
-    out = git("branch", "-a", "--format=%(refname:short)", "--merged", "main")
+    out = git("branch", "-a", "--format=%(refname:short)", "--merged", main_reference())
     return {b.strip().removeprefix("origin/") for b in out.splitlines() if b.strip()}
 
 
@@ -308,7 +323,7 @@ def branch_carries_nothing(branch: str) -> bool | None:
     happens for a branch that exists only on the remote and whenever local
     main is missing — and an unanswered question must not become evidence.
     """
-    out = git("rev-list", "--count", f"main..{branch}")
+    out = git("rev-list", "--count", f"{main_reference()}..{branch}")
     if not out.isdigit():
         return None
     return int(out) == 0
