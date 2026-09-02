@@ -26,14 +26,14 @@ export const PLATES: Record<string, { img: string; aspect: number; seat: P; well
   lake:    { img: "/art/lake.png",    aspect: 1122 / 1402, seat: { x: 0.5, y: 0.2 }, well: { x: 0.5, y: 0.44 }, slots: [{ x: 0.2, y: 0.36 }, { x: 0.8, y: 0.4 }, { x: 0.25, y: 0.68 }, { x: 0.76, y: 0.68 }] },
 };
 type P = { x: number; y: number };
-export const PLATE_OF: Record<string, keyof typeof PLATES> = { roma: "harbor", midgard: "hill", edo: "orchard", thule: "lake" };
+import { plateKeyFor } from "./looks.ts";
 const CAPITAL = { x: 770, y: 400, r: 130 };
 
 // sprite sheet cells
 export const WCOLS = [100, 400, 660, 960], WROWS = [60, 360, 660, 940], WCELL = { w: 200, h: 240 };
 
 function plateRect(s: Settlement) {
-  const key = PLATE_OF[s.civilizationId] ?? "lake";
+  const key = plateKeyFor(s.civilizationId);
   const p = PLATES[key]!;
   const w = s.radius * 2.3, h = w / p.aspect;
   return { p, x: s.ground.x - w / 2, y: s.ground.y - h * 0.5, w, h };

@@ -3,9 +3,10 @@ import type { Scene } from "./scene.ts";
 import { fixture } from "./fixture.ts";
 import { Chart, makeWalkers, stepWalkers, ZOOM_MIN, ZOOM_MAX, SETTLEMENT_ZOOM, coverZoom } from "./chart.ts";
 import type { Hit } from "./chart.ts";
-import { renderLog, renderSamtaler, renderInnstillinger, civByIndex, SECTIONS, PAGES, DEFAULT_SETTINGS, SEAT_FACES, TOOL_FACES } from "./desk.ts";
+import { renderLog, renderSamtaler, renderInnstillinger, civByIndex, SECTIONS, PAGES, DEFAULT_SETTINGS } from "./desk.ts";
 import type { DeskState, Decision, Section, Page, Settings, Thread, DeskMode } from "./desk.ts";
-import { PLATES, PLATE_OF } from "./chart.ts";
+import { PLATES } from "./chart.ts";
+import { plateKeyFor, seatFaceFor, agentFaceFor } from "./looks.ts";
 import { opening, reply } from "./dialogue.ts";
 import type { Target, Line } from "./dialogue.ts";
 
@@ -165,8 +166,9 @@ window.addEventListener("keydown", (e) => {
     if (pg) { goPage(pg.id); return; }
     if (e.key.toLowerCase() === "i") { goPage("innstillinger"); return; }
   }
-  const n = Number(e.key);
-  if (n >= 1 && n <= 4) { const s = civByIndex(scene, n); if (s) select({ kind: "settlement", settlementId: s.civilizationId, label: s.name }); }
+  // Digits select a civilization in declaration order; 0 is the tenth. No upper bound.
+  const n = e.key === "0" ? 10 : Number(e.key);
+  if (Number.isInteger(n) && n >= 1) { const s = civByIndex(scene, n); if (s) select({ kind: "settlement", settlementId: s.civilizationId, label: s.name }); }
   if (e.key === "c" || e.key === "C") select({ kind: "capital", label: "Capital" });
 });
 
@@ -304,15 +306,16 @@ function focus(t: Target) {
     $("focus-facts").innerHTML = `<b>Saker</b>${scene.capital.matters.map((m) => `${m.summary}<br>`).join("") || "ingen"}<b>Haller</b>${scene.capital.halls.map((h) => `${h.name} · ${h.epistemic === "observed" ? (h.live ? "i arbeid" : "stille") : "aldri sett"}<br>`).join("")}`;
     flyTo(770, 410, 2.2);
   } else {
-    const s = t.settlement; const plate = PLATES[PLATE_OF[s.civilizationId] ?? "lake"]!;
+    const s = t.settlement; const plate = PLATES[plateKeyFor(s.civilizationId)]!;
+    const idx = scene.settlements.indexOf(s);
     if (t.kind === "seat") {
       $("focus-name").textContent = s.seatName; $("focus-kind").textContent = `setet i ${s.name} · ${s.domain}`;
-      portrait.className = "portrait face-big"; portrait.style.backgroundImage = `url(/art/faces/${SEAT_FACES[s.civilizationId] ?? 3}.png)`; portrait.style.backgroundPosition = "50% 50%";
+      portrait.className = "portrait face-big"; portrait.style.backgroundImage = `url(/art/faces/${seatFaceFor(idx, s.epistemic === "observed")}.png)`; portrait.style.backgroundPosition = "50% 50%";
       $("focus-facts").innerHTML = `<b>Kan alene</b>${s.mandate.alone.join("<br>")}<b>Må til rådet</b>${s.mandate.council.join("<br>")}<b>Nå</b>${s.inhabitants.length} i arbeid · ${s.traces.length} spor · ${s.openMatters} hos rådet`;
     } else {
       const a = t.agent;
       $("focus-name").textContent = a.label; $("focus-kind").textContent = `forbipasserende arbeid i ${s.name}`;
-      portrait.className = "portrait face-big"; portrait.style.backgroundImage = `url(/art/faces/${TOOL_FACES[a.tool ?? ""] ?? 6}.png)`; portrait.style.backgroundPosition = "50% 50%";
+      portrait.className = "portrait face-big"; portrait.style.backgroundImage = `url(/art/faces/${agentFaceFor(a.runId, a.tool)}.png)`; portrait.style.backgroundPosition = "50% 50%";
       $("focus-facts").innerHTML = `<b>Verktøy</b>${a.tool ?? "—"}<b>Under</b>${a.parentRunId ? s.inhabitants.find((p) => p.runId === a.parentRunId)?.label ?? a.parentRunId : "ingen (rot)"}<b>Har delegert</b>${s.inhabitants.filter((c) => c.parentRunId === a.runId).map((c) => c.label).join("<br>") || "ingenting"}`;
     }
     flyTo(s.ground.x, s.ground.y - 30, 2.4);

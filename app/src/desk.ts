@@ -7,9 +7,8 @@
 // red is the word "nei"/"krysser mandatet", one red dot marks a line that
 // needs you. Everything else is cream and grey.
 import type { Scene, Settlement } from "./scene.ts";
+import { seatFaceFor, agentFaceFor } from "./looks.ts";
 
-export const SEAT_FACES: Record<string, number> = { roma: 0, midgard: 1, edo: 2 };
-export const TOOL_FACES: Record<string, number> = { browser: 4, python: 5, opencode: 7, tsc: 7 };
 export type Decision = "ja" | "nei" | "spør";
 
 /** Anchors inside the one scrolling document. Adding one = a row here + a case in renderLog. */
@@ -99,7 +98,7 @@ function workTree(s: Settlement) {
 function civEntry(scene: Scene, state: DeskState) {
   if (state.selectedCiv === "__capital") return capitalEntry(scene);
   const s = scene.settlements.find((x) => x.civilizationId === state.selectedCiv);
-  if (!s) return `<p class="dim">Velg en sivilisasjon — tastene 1–4 og C, eller under Sivilisasjoner.</p>`;
+  if (!s) return `<p class="dim">Velg en sivilisasjon — tallene på tastaturet, eller under Sivilisasjoner.</p>`;
   if (s.epistemic !== "observed") return `<p class="civ-name faint">${esc(s.name)}</p><p class="dim">Aldri observert. Koble en kilde for å se noe her.</p>`;
   const { running, traces } = workTree(s);
   return `<p class="civ-name">${esc(s.name)}</p><p class="civ-sub">${esc(s.domain)} — sist observert <span class="mono">${ago(scene, s.lastSeen!)}</span> siden</p>
@@ -222,17 +221,8 @@ export function renderLog(scene: Scene, state: DeskState): string {
  *  Hovedkvarter (Rådet) first, then each civilization's seat and its live agents. A
  *  thread's last line shows as the preview once a conversation has started. */
 export function renderSamtaler(scene: Scene, state: DeskState): string {
-  // Every face is a portrait plate from /art/faces — council and each seat have a
-  // fixed slot, agents pick a plate by tool (or a stable hash of their runId).
-  const SEAT_FACE = SEAT_FACES;
-  const TOOL_FACE = TOOL_FACES;
-  const hashFace = (runId: string) => {
-    let h = 0;
-    for (let i = 0; i < runId.length; i++) h = (h * 31 + runId.charCodeAt(i)) >>> 0;
-    return 6 + (h % 6); // 6..11
-  };
-  const seatFace = (civilizationId: string) => SEAT_FACE[civilizationId] ?? 3;
-  const agentFace = (runId: string, tool: string | undefined) => (tool && TOOL_FACE[tool] !== undefined) ? TOOL_FACE[tool] : hashFace(runId);
+  // Every face is a portrait plate from /art/faces. Looks are derived from identity
+  // (looks.ts), never from a per-id table, so any number of civilizations works.
   const face = (n: number, cls = "") => `<img class="face${cls ? ` ${cls}` : ""}" src="/art/faces/${n}.png" alt="">`;
   const row = (id: string, title: string, defaultSub: string, faceImg: string) => {
     const th = state.threads[id];
@@ -246,10 +236,10 @@ export function renderSamtaler(scene: Scene, state: DeskState): string {
   const openMatters = scene.capital.matters.length;
   const global = `<p class="group-label">Hovedkvarter</p>${row("council", "Rådet", openMatters ? `${openMatters} ${openMatters === 1 ? "sak" : "saker"} på bordet` : "bordet er tomt", face(0, "council"))}`;
 
-  const civs = scene.settlements.map((s) => {
+  const civs = scene.settlements.map((s, idx) => {
     if (s.epistemic !== "observed") return `<p class="group-label">${esc(s.name)} <span class="faint">aldri sett</span></p>`;
-    const seat = row(`seat:${s.civilizationId}`, s.seatName, "setet", face(seatFace(s.civilizationId)));
-    const agents = s.inhabitants.map((i) => row(`agent:${i.runId}`, i.label, i.tool ?? "agent", face(agentFace(i.runId, i.tool)))).join("");
+    const seat = row(`seat:${s.civilizationId}`, s.seatName, "setet", face(seatFaceFor(idx, true)));
+    const agents = s.inhabitants.map((i) => row(`agent:${i.runId}`, i.label, i.tool ?? "agent", face(agentFaceFor(i.runId, i.tool)))).join("");
     return `<p class="group-label">${esc(s.name)}</p>${seat}${agents}`;
   }).join("");
 
@@ -281,7 +271,7 @@ export function renderInnstillinger(scene: Scene, state: DeskState): string {
   <p class="label">Kilder</p>
   <p class="dim">Ingen koblinger. Verdenen leser en syntetisk fixture.</p>
   <p class="label">Tastatur</p>
-  <p class="dim"><kbd>1</kbd>–<kbd>4</kbd> sivilisasjon · <kbd>C</kbd> Capital</p>
+  <p class="dim"><kbd>1</kbd>–<kbd>9</kbd> sivilisasjon i rekkefølge (<kbd>0</kbd> = den tiende) · <kbd>C</kbd> Capital</p>
   <p class="dim">${allKeys.map((t) => `<kbd>${t.key}</kbd> ${t.label}`).join(" · ")}</p>
   <p class="dim"><kbd>⌥B</kbd> skjul / vis bordet · <kbd>⌥F</kbd> fullskjerm · <kbd>Esc</kbd> tilbake</p>`;
 }
