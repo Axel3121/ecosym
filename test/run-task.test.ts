@@ -2521,6 +2521,10 @@ test("installation artefacts do not put a run outside its territory", () => {
       reopened.status, 0,
       "an undeclared write closed anyway; the audit is no longer a guard",
     );
+    assert.match(
+      reopened.stderr, /smuggled\.ts/u,
+      `the close failed, but not because the audit saw the undeclared write: ${reopened.stderr}`,
+    );
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }
