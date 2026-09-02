@@ -128,27 +128,12 @@ p.note { margin-top: 14px; }
 .hover { position: absolute; pointer-events: none; transform: translate(14px, -50%); padding: 4px 10px; white-space: nowrap; font-size: 12px; }
 .hover small { display: block; color: var(--fg-dim); }
 
-.sheet { position: absolute; top: 16px; right: 16px; width: 320px; max-height: calc(100vh - 120px); overflow: auto; padding: 14px 18px 16px; }
-.sheet h2 { font-size: 16px; font-weight: 500; }
-.sheet .kind { font-size: 11px; color: var(--fg-dim); margin: 0 0 4px; letter-spacing: 0.06em; text-transform: uppercase; }
-.sheet h3 { font-size: 11px; margin: 14px 0 4px; color: var(--fg-dim); letter-spacing: 0.1em; text-transform: uppercase; }
-.sheet p { margin: 6px 0; }
-.sheet ul { margin: 0; padding-left: 1.1em; }
-.sheet li { margin: 0 0 2px; }
-.sheet .close { position: absolute; top: 6px; right: 10px; border: 0; background: none; font-size: 18px; color: var(--fg-dim); cursor: pointer; }
-.sheet .close:hover, .sheet .close:focus-visible { color: var(--fg); outline: none; }
-.sheet .halls { list-style: none; padding: 0; }
-.sheet .halls li { display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px dashed var(--line); padding: 5px 0; cursor: pointer; }
-.sheet .halls li:hover { background: var(--bg-2); }
-.sheet .halls .seatname, .sheet .halls .bare { color: var(--fg-dim); }
 
 .btn, .sheet .talk, .focus-side .back, .ask button {
   display: inline-block; font-size: 12px; line-height: 1; padding: 8px 14px; cursor: pointer;
   color: var(--fg); background: transparent; border: 1px solid var(--line-2); font-family: var(--mono);
 }
 .btn:hover, .sheet .talk:hover, .focus-side .back:hover, .ask button:hover { border-color: var(--fg-dim); }
-.sheet .talk { margin-top: 12px; border-color: var(--live-dim); color: var(--live); }
-.sheet .talk::before { content: "› "; }
 
 /* ---- focus (conversation) ---------------------------------------------- */
 .focus { position: absolute; inset: 32px; display: grid; grid-template-columns: 300px 1fr; font-family: var(--mono); }

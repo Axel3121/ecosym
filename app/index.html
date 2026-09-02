@@ -20,7 +20,7 @@ line for what a click cannot do: ja, nei, spør, snakk.
       <div id="hover" class="hover panel" hidden></div>
 
       <!-- the sheet: context for what you chose; never a permanent panel -->
-      <aside id="sheet" class="sheet" hidden aria-live="polite">
+      <aside id="sheet" class="sheet etched" hidden aria-live="polite">
         <div class="sheet-head"><span id="sheet-title"></span><button id="sheet-close" class="quiet" aria-label="Lukk">✕</button></div>
         <div id="sheet-body"></div>
       </aside>
@@ -44,15 +44,15 @@ line for what a click cannot do: ja, nei, spør, snakk.
       </section>
 
       <!-- the strip: the world in one sentence, numbers are links; the command line lives in it -->
-      <footer id="strip" class="strip">
+      <footer id="strip" class="strip etched">
         <span class="brand">Ecosym</span>
         <span id="strip-text" class="strip-text"></span>
         <form id="cmd" class="cmd" autocomplete="off">
           <input id="cmd-input" type="text" placeholder="/ for å skrive: ja · nei · spør · snakk curia · roma" aria-label="Kommando" />
-          <ul id="cmd-suggest" class="cmd-suggest" hidden></ul>
+          <ul id="cmd-suggest" class="cmd-suggest etched" hidden></ul>
         </form>
         <details class="more"><summary aria-label="Flere valg">•••</summary>
-          <div class="more-menu">
+          <div class="more-menu etched">
             <button data-sheet="innstillinger">Innstillinger</button>
             <button data-sheet="observert">Logg</button>
           </div>
