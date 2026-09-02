@@ -1,5 +1,6 @@
 ---
-needs: []
+needs:
+  - 012-petition-identity
 touches:
   - docs/tasks/018-first-request-type.md
   - src/petition-request.ts
@@ -97,6 +98,13 @@ forbid the value in the schema, or make the canonicaliser conform. Do not
 assume `canonicalJson` is JCS because it is called canonical — if you rely on
 it, demonstrate agreement against RFC 8785's own test vectors for the value
 space your schema admits.
+
+**Take the schema route.** `src/json.ts` is not in this task's declared
+territory, and the declaration is frozen at launch, so a run that changes the
+canonicaliser has its landed close refused for writing outside its territory —
+after doing the work. Reject `-0` where the request schema is validated. If you
+conclude the canonicaliser genuinely must change, stop and report that rather
+than editing it: that is a second task with its own territory.
 
 ## The test that decides it
 

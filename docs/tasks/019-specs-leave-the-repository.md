@@ -1,5 +1,6 @@
 ---
-needs: []
+needs:
+  - 017-runs-scheduled-by-need-and-territory
 touches:
   - AGENTS.md
   - DEVELOPMENT.md

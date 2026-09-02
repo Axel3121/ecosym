@@ -4,6 +4,7 @@ needs:
 touches:
   - docs/tasks/011-confirmation-proves-preview.md
   - docs/observation-layer.md
+  - src/cli.ts
   - src/store.ts
   - test/cli.test.ts
   - test/collection.test.ts

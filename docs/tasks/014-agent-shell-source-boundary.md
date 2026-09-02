@@ -99,6 +99,13 @@ would pass under today's defect too.
 
 Report the output of all cases, registered and unregistered.
 
+`src/readers.ts` supports four source types — `sqlite`, `jsonl`, `json` and
+`csv` (see its `case` arms; do not trust this list, read them). The outcome
+above says *a connected source*, not *a SQLite source*, so a test that
+registers only SQLite can pass while the other three stay writable. Cover
+every type `readers.ts` actually supports, and if you protect them by a shared
+mechanism rather than per-type, show that the mechanism is reached for each.
+
 ## Evidence
 
 Every rule above gets a regression test that fails before its fix — show the
@@ -111,10 +118,14 @@ check` and the commit it ran against.
 
 ## Constraints
 
-Another run is working on test assertions across `src/` at the same time. Files
-outside your subject are being edited concurrently: confine changes to
-`src/agent-shell.ts`, `src/sandbox.ts`, `src/sandbox-cli.ts`,
+Confine changes to `src/agent-shell.ts`, `src/sandbox.ts`, `src/sandbox-cli.ts`,
 `src/sandbox-runtime.ts`, `test/agent-shell.test.ts` and `test/sandbox.test.ts`.
+
+The `touches` header also lists this specification. That is not permission to
+rewrite the task: `run-task` copies the specification into the worktree at
+launch, so the path is written on every run and the close-time territory audit
+requires it to be declared. Declaring it is mechanical; editing it is not in
+the allowed set above.
 
 Do not modify existing files under `test/helpers/` or `test/fixtures/` — they
 are shared. Add a new file there if you need one.
