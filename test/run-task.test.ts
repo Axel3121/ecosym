@@ -311,6 +311,7 @@ test("a recorded result outranks the branch it was made on", () => {
       encoding: "utf8",
       env: { ...process.env, XDG_DATA_HOME: dataHome },
     });
+  const declaration = JSON.stringify({ autonomous: true, needs: [], touches: ["file.txt"] });
 
   try {
     git(repository, ["init", "-b", "main"]);
@@ -343,7 +344,19 @@ test("a recorded result outranks the branch it was made on", () => {
     }).stdout.trim();
     git(repository, ["checkout", "main"]);
 
-    record(["start", "landed-run", "unit-landed", "--branch", "task/live", "--commit", landed]);
+    record([
+      "start",
+      "landed-run",
+      "unit-landed",
+      "--branch",
+      "task/live",
+      "--worktree",
+      repository,
+      "--commit",
+      landed,
+      "--declaration",
+      declaration,
+    ]);
     record([
       "close",
       "unit-landed",
@@ -363,7 +376,20 @@ test("a recorded result outranks the branch it was made on", () => {
     // The inverse: a merged-looking branch must not vouch for a result
     // commit that never reached main.
     git(repository, ["branch", "task/merged", "main"]);
-    record(["start", "false-run", "unit-false", "--branch", "task/merged", "--commit", landed]);
+    record([
+      "start",
+      "false-run",
+      "unit-false",
+      "--branch",
+      "task/merged",
+      "--worktree",
+      repository,
+      "--commit",
+      landed,
+      "--declaration",
+      declaration,
+    ]);
+    git(repository, ["checkout", "task/live"]);
     record([
       "close",
       "unit-false",
@@ -374,6 +400,7 @@ test("a recorded result outranks the branch it was made on", () => {
       "--evidence",
       "PR #99",
     ]);
+    git(repository, ["checkout", "main"]);
 
     const disputed = ledger(["list"]);
     assert.match(disputed.stdout, /unmerged/);
@@ -384,7 +411,19 @@ test("a recorded result outranks the branch it was made on", () => {
     // neither does a branch nobody committed to. Ambiguous evidence must
     // never be spent contradicting a close-out.
     git(repository, ["branch", "task/kept", "main"]);
-    record(["start", "kept-run", "unit-kept", "--branch", "task/kept"]);
+    record([
+      "start",
+      "kept-run",
+      "unit-kept",
+      "--branch",
+      "task/kept",
+      "--worktree",
+      repository,
+      "--commit",
+      landed,
+      "--declaration",
+      declaration,
+    ]);
     record(["close", "unit-kept", "--outcome", "landed", "--evidence", "merged, see PR"]);
 
     const ambiguous = ledger(["list"]);
@@ -405,16 +444,18 @@ test("a recorded result outranks the branch it was made on", () => {
     git(repository, ["checkout", "main"]);
 
     record(["start", "typo-run", "unit-typo", "--branch", "task/alive"]);
-    record([
-      "close",
-      "unit-typo",
-      "--outcome",
-      "landed",
-      "--commit",
-      "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-      "--evidence",
-      "PR #7",
-    ]);
+    appendFileSync(
+      join(dataHome, "ecosym", "ledger.jsonl"),
+      `${JSON.stringify({
+        branch: "task/alive",
+        event: "closed",
+        evidence: "PR #7",
+        outcome: "landed",
+        result_commit: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        task: "typo-run",
+        unit: "unit-typo",
+      })}\n`,
+    );
 
     const typo = ledger(["list"]);
     const typoRow = typo.stdout.split("\n").find((line) => line.startsWith("unit-typo"));
@@ -448,7 +489,17 @@ test("a recorded result outranks the branch it was made on", () => {
           env: { ...process.env, XDG_DATA_HOME: join(noMain, "data") },
         });
 
-      away(["start", "away-run", "unit-away"]);
+      away([
+        "start",
+        "away-run",
+        "unit-away",
+        "--worktree",
+        elsewhere,
+        "--commit",
+        only,
+        "--declaration",
+        declaration,
+      ]);
       const stored = away([
         "close",
         "unit-away",
@@ -621,10 +672,37 @@ test("a closed landed run is not hidden as RUNNING while its unit lingers", () =
     writeFileSync(join(repository, "file.txt"), "one\n");
     git(repository, ["add", "."]);
     commit(repository, "first");
+    const base = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: repository,
+      encoding: "utf8",
+    }).stdout.trim();
+    git(repository, ["checkout", "-b", "task/demo"]);
+    writeFileSync(join(repository, "file.txt"), "two\n");
+    git(repository, ["add", "."]);
+    commit(repository, "unmerged result");
+    const resultCommit = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: repository,
+      encoding: "utf8",
+    }).stdout.trim();
 
-    assert.equal(ledger(["start", "demo", "unit-still-active"]).status, 0);
-    // A result commit Git cannot find at all — an unambiguous false claim,
-    // regardless of what state the ledger displays it under.
+    assert.equal(
+      ledger([
+        "start",
+        "demo",
+        "unit-still-active",
+        "--branch",
+        "task/demo",
+        "--worktree",
+        repository,
+        "--commit",
+        base,
+        "--declaration",
+        JSON.stringify({ autonomous: true, needs: [], touches: ["file.txt"] }),
+      ]).status,
+      0,
+    );
+    // A valid result commit that has not reached main is an unambiguous false
+    // landed claim, regardless of what state the ledger displays it under.
     assert.equal(
       ledger([
         "close",
@@ -632,7 +710,7 @@ test("a closed landed run is not hidden as RUNNING while its unit lingers", () =
         "--outcome",
         "landed",
         "--commit",
-        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        resultCommit,
         "--evidence",
         "merged",
       ]).status,
@@ -647,7 +725,7 @@ test("a closed landed run is not hidden as RUNNING while its unit lingers", () =
     );
     assert.match(listed.stdout, /landed/);
     assert.match(listed.stdout, /!!/, "the false claim must still be disputed");
-    assert.equal(listed.status, 1, "list must fail on a landed claim Git cannot find");
+    assert.equal(listed.status, 1, "list must fail on a landed claim outside main");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -686,7 +764,20 @@ test("a Git failure while checking a result commit is unproven, not no-such-comm
       encoding: "utf8",
     }).stdout.trim();
 
-    assert.equal(ledger(["start", "demo", "unit-broken-git"]).status, 0);
+    assert.equal(
+      ledger([
+        "start",
+        "demo",
+        "unit-broken-git",
+        "--worktree",
+        repository,
+        "--commit",
+        landed,
+        "--declaration",
+        JSON.stringify({ autonomous: true, needs: [], touches: ["file.txt"] }),
+      ]).status,
+      0,
+    );
     assert.equal(
       ledger([
         "close",
@@ -1268,6 +1359,74 @@ test("a landed close is refused and records paths outside the launch declaration
 
     const failed = ledger(["close", "unit-bounded", "--outcome", "failed"]);
     assert.equal(failed.status, 0, failed.stderr);
+    const closed = readFileSync(join(dataHome, "ecosym", "ledger.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .at(-1);
+    assert.equal(closed?.event, "closed");
+    assert.deepEqual(closed?.undeclared_paths, ["src/outside.ts"]);
+    assert.equal(closed?.territory_audit, "failed");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a landed close is refused when its launch declaration is unavailable", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-unknown-territory-"));
+  const repository = join(directory, "repository");
+  const scripts = join(repository, "scripts");
+  const dataHome = join(directory, "data");
+  mkdirSync(scripts, { recursive: true });
+  copyFileSync(runLedger, join(scripts, "run-ledger"));
+  chmodSync(join(scripts, "run-ledger"), 0o700);
+
+  const ledger = (arguments_: string[]) =>
+    spawnSync(join(scripts, "run-ledger"), arguments_, {
+      cwd: repository,
+      encoding: "utf8",
+      env: { ...process.env, XDG_DATA_HOME: dataHome },
+    });
+
+  try {
+    git(repository, ["init", "-b", "main"]);
+    writeFileSync(join(repository, "result.txt"), "result\n");
+    git(repository, ["add", "."]);
+    commit(repository, "fixture");
+    const head = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: repository,
+      encoding: "utf8",
+    }).stdout.trim();
+
+    assert.equal(
+      ledger([
+        "start",
+        "unknown-territory",
+        "unit-unknown-territory",
+        "--worktree",
+        repository,
+        "--commit",
+        head,
+      ]).status,
+      0,
+    );
+    const refused = ledger([
+      "close",
+      "unit-unknown-territory",
+      "--outcome",
+      "landed",
+      "--commit",
+      head,
+    ]);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /no valid launch-time territory declaration/u);
+
+    const records = readFileSync(join(dataHome, "ecosym", "ledger.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    assert.equal(records.at(-1)?.event, "territory-audit-failed");
+    assert.match(String(records.at(-1)?.reason), /no valid launch-time territory declaration/u);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

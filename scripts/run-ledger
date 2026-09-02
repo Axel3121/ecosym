@@ -710,7 +710,7 @@ def territory_audit(
 ) -> tuple[list[str] | None, list[str] | None, str | None]:
     declaration = record_declaration(started)
     if declaration is None:
-        return None, None, None
+        return None, None, "the run has no valid launch-time territory declaration"
     changed, error = changed_paths(started, result_commit)
     if changed is None:
         return None, None, error
@@ -753,7 +753,7 @@ def cmd_close(args: argparse.Namespace) -> int:
 
     started = started_record(unit_records) or lifecycle
     changed, undeclared, audit_error = territory_audit(started, args.commit)
-    if record_declaration(started) is not None and args.outcome == "landed":
+    if args.outcome == "landed":
         if audit_error:
             append(
                 {
@@ -796,7 +796,15 @@ def cmd_close(args: argparse.Namespace) -> int:
             "result_commit": args.commit,
             "changed_paths": changed,
             "undeclared_paths": undeclared,
-            "territory_audit": "unknown" if audit_error else ("passed" if changed is not None else None),
+            "territory_audit": (
+                "unknown"
+                if audit_error
+                else "failed"
+                if undeclared
+                else "passed"
+                if changed is not None
+                else None
+            ),
         }
     )
     print(f"{unit}: {args.outcome}")
