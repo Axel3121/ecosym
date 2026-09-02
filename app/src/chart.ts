@@ -189,11 +189,11 @@ export class Chart {
 
   private label(x: number, y: number, text: string, alpha: number) {
     const { ctx } = this;
-    ctx.save(); ctx.globalAlpha = alpha; ctx.font = `13px "Silkscreen", monospace`; ctx.textAlign = "center";
-    const w = ctx.measureText(text).width + 22;
-    ctx.fillStyle = "#4a2c14"; ctx.fillRect(x - w / 2 - 3, y - 16, w + 6, 26);
-    ctx.fillStyle = "#f6e2b8"; ctx.fillRect(x - w / 2, y - 13, w, 20);
-    ctx.fillStyle = "#3a2410"; ctx.fillText(text, x, y + 2); ctx.restore();
+    ctx.save(); ctx.globalAlpha = alpha; ctx.font = `500 12px "Plex Mono", monospace`; ctx.textAlign = "center";
+    const w = ctx.measureText(text).width + 18;
+    ctx.fillStyle = "rgba(29,26,21,0.9)"; ctx.fillRect(x - w / 2, y - 12, w, 20);
+    ctx.strokeStyle = "#5a5040"; ctx.lineWidth = 1; ctx.strokeRect(x - w / 2 + 0.5, y - 11.5, w - 1, 19);
+    ctx.fillStyle = "#e6dcc3"; ctx.fillText(text, x, y + 3); ctx.restore();
   }
 
   private fog(s: Settlement, now: number) {
