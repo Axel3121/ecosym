@@ -2059,7 +2059,13 @@ test("two launchers racing for one territory produce exactly one run", async () 
 });
 
 async function waitForFile(path: string): Promise<void> {
-  for (let attempt = 0; attempt < 500; attempt += 1) {
+  // The marker appears only after run-task adds a worktree, copies the
+  // specification and shells out to Git several times through
+  // `run-ledger can-start`. Five seconds is comfortable locally and tight on
+  // a loaded runner, and a timeout here reports a defect that is not there.
+  // The loop exits the moment the file exists, so a larger bound costs the
+  // passing case nothing.
+  for (let attempt = 0; attempt < 3000; attempt += 1) {
     if (existsSync(path)) return;
     await delay(10);
   }
@@ -2116,6 +2122,9 @@ test("a landed run recorded before declarations existed still satisfies a need",
   chmodSync(join(scripts, "run-ledger"), 0o700);
   writeFileSync(join(tasks, "ancient.md"), taskSpec("ancient", ["src/ancient.ts"]));
   writeFileSync(join(tasks, "successor.md"), taskSpec("successor", ["src/successor.ts"], ["ancient"]));
+  // A need that never landed at all, to prove the acceptance above is the
+  // ledger answering rather than the scheduler waving every `needs` through.
+  writeFileSync(join(tasks, "orphan.md"), taskSpec("orphan", ["src/orphan.ts"], ["never-ran"]));
 
   try {
     git(repository, ["init", "-b", "main"]);
@@ -2172,6 +2181,19 @@ test("a landed run recorded before declarations existed still satisfies a need",
     });
     assert.equal(ready.status, 0, ready.stderr);
     assert.doesNotMatch(ready.stdout, /^ancient$/mu, "a landed task is not startable");
+
+    // The other half of that control, which the comment above promised and
+    // the fixture did not deliver: a need naming a task that never ran must
+    // still be refused. Without this, a scheduler that accepted every `needs`
+    // entry would pass this test unchanged.
+    const orphan = spawnSync(join(scripts, "run-ledger"), ["can-start", "orphan"], {
+      cwd: repository,
+      encoding: "utf8",
+      env: environment,
+    });
+    assert.notEqual(orphan.status, 0, "an unlanded need must be refused");
+    assert.match(orphan.stderr, /needs not landed: never-ran/u);
+    assert.doesNotMatch(ready.stdout, /^orphan$/mu);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
