@@ -1298,6 +1298,87 @@ test("every repository task specification has a valid scheduling declaration", (
   }
 });
 
+test("two launchers racing for one territory produce exactly one run", () => {
+  // The conflict check is only as good as the window it runs in. Two launchers
+  // that both read an empty territory before either registers would both start
+  // on the same ground, and every other guarantee here rests on that not
+  // happening. run-task holds an exclusive lock across the whole check-and-
+  // reserve; this is the test that the window is actually closed.
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-race-"));
+  const repository = join(directory, "repository");
+  const scripts = join(repository, "scripts");
+  const tasks = join(repository, "docs", "tasks");
+  const dataHome = join(directory, "data");
+  const bin = join(directory, "bin");
+  const activeUnit = join(directory, "active-unit");
+  const capture = join(directory, "systemd-arguments");
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(tasks, { recursive: true });
+  mkdirSync(bin);
+  copyFileSync(runTask, join(scripts, "run-task"));
+  copyFileSync(runLedger, join(scripts, "run-ledger"));
+  chmodSync(join(scripts, "run-task"), 0o700);
+  chmodSync(join(scripts, "run-ledger"), 0o700);
+  writeFileSync(join(scripts, "ecosym-sandbox"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  writeFileSync(join(scripts, "run-watchdog"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  writeFileSync(join(scripts, "run-instruction.md"), "Test instruction\n");
+  // Both claim the same path, so at most one may ever be launched.
+  writeFileSync(join(tasks, "racer-a.md"), taskSpec(["src/contested.ts"]));
+  writeFileSync(join(tasks, "racer-b.md"), taskSpec(["src/contested.ts"]));
+  // A launch that sleeps briefly before registering widens the window a
+  // broken implementation would fall through; a correct one still serialises.
+  writeFileSync(
+    join(bin, "systemd-run"),
+    '#!/bin/sh\nfor a in "$@"; do case "$a" in --unit=*) unit=${a#--unit=};; esac; done\nprintf "%s\\n" "$@" >> "$SYSTEMD_CAPTURE"\ncase "$unit" in *-watchdog) ;; *) sleep 0.3; printf "%s.service\\n" "$unit" >> "$ACTIVE_UNIT";; esac\n',
+    { mode: 0o700 },
+  );
+  writeFileSync(
+    join(bin, "systemctl"),
+    '#!/bin/sh\nif [ -f "$ACTIVE_UNIT" ] && grep -Fxq "$3" "$ACTIVE_UNIT"; then echo active; else echo inactive; fi\n',
+    { mode: 0o700 },
+  );
+
+  const environment = {
+    ...process.env,
+    ACTIVE_UNIT: activeUnit,
+    ECOSYM_PROJECT: "",
+    ECOSYM_WORKTREE: "",
+    PATH: `${bin}:${process.env.PATH ?? ""}`,
+    SYSTEMD_CAPTURE: capture,
+    XDG_DATA_HOME: dataHome,
+  };
+
+  try {
+    git(repository, ["init", "-b", "main"]);
+    git(repository, ["add", "."]);
+    commit(repository, "fixture");
+
+    // One shell, both launchers backgrounded together: the two processes
+    // reach the territory check as close to simultaneously as the OS allows.
+    const raced = spawnSync(
+      "/bin/sh",
+      [
+        "-c",
+        'scripts/run-task racer-a > a.out 2>&1 & scripts/run-task racer-b > b.out 2>&1 & wait; echo done',
+      ],
+      { cwd: repository, encoding: "utf8", env: { ...environment, ECOSYM_PORT: "3230" } },
+    );
+    assert.equal(raced.status, 0, raced.stderr);
+
+    const outputs = [
+      readFileSync(join(repository, "a.out"), "utf8"),
+      readFileSync(join(repository, "b.out"), "utf8"),
+    ];
+    const launched = outputs.filter((text) => /^unit:/mu.test(text));
+    const refused = outputs.filter((text) => /territory conflicts with running task/u.test(text));
+
+    assert.equal(launched.length, 1, `exactly one launch expected, got:\n${outputs.join("\n---\n")}`);
+    assert.equal(refused.length, 1, `the loser must name the conflict, got:\n${outputs.join("\n---\n")}`);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
