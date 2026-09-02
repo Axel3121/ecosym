@@ -3,12 +3,21 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 
 import type { SandboxSourceMount } from "./sandbox.ts";
 
+/** The host's DNS stub resolver on a systemd-resolved system. */
+const DEFAULT_RESOLVER = "/run/systemd/resolve/stub-resolv.conf";
+
 interface SandboxArgumentsInput {
   childArguments: string[];
   executable: string;
   home: string;
   project: string | undefined;
   readonlySourceDirectories: string[];
+  /**
+   * Path to the host's DNS stub resolver. Absent from the sandbox's own
+   * namespace, which is why a nested run must be able to name a different
+   * one — or none — instead of assuming the host's.
+   */
+  resolver?: string;
   sourceDirectories: string[];
   sourceMounts: SandboxSourceMount[];
   stateDirectory: string;
@@ -73,12 +82,14 @@ export function sandboxArguments(input: SandboxArgumentsInput): string[] {
     }
   }
   const hiddenHomeRoot = dirname(input.home) === "/home" ? "/home" : input.home;
+  const resolver = input.resolver ?? DEFAULT_RESOLVER;
+  const resolverPresent = existsSync(resolver);
   const directories = parentDirectories([
     input.home,
     ...input.sourceDirectories,
     ...allMounts.map((mount) => dirname(mount.destination)),
     input.stateDirectory,
-    "/run/systemd/resolve",
+    ...(resolverPresent ? [dirname(resolver)] : []),
   ]);
   const arguments_ = [
     "--die-with-parent",
@@ -130,8 +141,7 @@ export function sandboxArguments(input: SandboxArgumentsInput): string[] {
     arguments_.push("--tmpfs", directory);
   }
   arguments_.push("--tmpfs", input.stateDirectory);
-  const resolver = "/run/systemd/resolve/stub-resolv.conf";
-  if (existsSync(resolver)) {
+  if (resolverPresent) {
     arguments_.push("--ro-bind", resolver, resolver);
   }
   arguments_.push("--dev", "/dev", "--proc", "/proc");
