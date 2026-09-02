@@ -60,10 +60,18 @@ mkdir -p "$RUNS" "$STATE/worktrees"
 exec 9>"$STATE/schedule.lock"
 flock -x 9
 
+# Freeze both the instructions and their scheduling fields before asking the
+# conflict question. Checking one read and launching another would leave a
+# shared-spec edit between them as an unchecked territory change.
+SPEC_SNAPSHOT="$(mktemp "$STATE/${TASK}.spec.XXXXXX")"
+trap 'rm -f "$SPEC_SNAPSHOT"' EXIT
+cp "$SPEC" "$SPEC_SNAPSHOT"
+DECLARATION_JSON="$("$REPO/scripts/run-ledger" declaration "$SPEC_SNAPSHOT")"
+
 # The second launcher in a race waits above and then asks again here, after the
 # first run has been registered. This call is intentionally one line: the
 # regression test removes it to prove the refusal comes from this check.
-"$REPO/scripts/run-ledger" can-start "$TASK" --spec "$SPEC"
+"$REPO/scripts/run-ledger" can-start "$TASK" --declaration "$DECLARATION_JSON"
 
 BRANCH="${BRANCH:-task/${TASK}}"
 WORKTREE="$STATE/worktrees/${TASK}"
@@ -96,7 +104,9 @@ fi
 # parsed needs and touches below, so edits made during the run cannot shrink the
 # territory it holds and the shared branch is never consulted for a live run.
 mkdir -p "$WORKTREE/docs/tasks"
-cp "$SPEC" "$WORKTREE/$SPEC"
+cp "$SPEC_SNAPSHOT" "$WORKTREE/$SPEC"
+rm -f "$SPEC_SNAPSHOT"
+trap - EXIT
 export ECOSYM_WORKTREE="$WORKTREE"
 
 # Run under a transient user unit so the work survives a Hermes restart.
@@ -134,16 +144,29 @@ while ! mkdir "$RUNS/${UNIT}.lock" 2>"$MKDIR_ERR"; do
 done
 rm -f "$MKDIR_ERR"
 LOG="$RUNS/${UNIT}.log"
+
+# A dependency must be attributable to this run, not merely to a later commit
+# that happened to touch the same files. Git's per-worktree hook appends a
+# durable run identity without changing how the agent invokes `git commit`.
+HOOKS="$RUNS/${UNIT}.hooks"
+mkdir -p "$HOOKS"
+printf '%s\n' \
+  '#!/bin/sh' \
+  "printf '\\nEcosym-Run: $UNIT\\nEcosym-Task: $TASK\\n' >> \"\$1\"" \
+  > "$HOOKS/commit-msg"
+chmod 700 "$HOOKS/commit-msg"
+git -C "$REPO" config extensions.worktreeConfig true
+git -C "$WORKTREE" config --worktree core.hooksPath "$HOOKS"
+
 if [ -n "${ECOSYM_PORT:-}" ]; then
   PORT="$ECOSYM_PORT"
 else
   PORT="$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")"
 fi
 
-# Parse the worktree copy before execution begins. The JSON is kept in this
-# process and in a fallback marker outside the worktree, so an agent that edits
-# its own specification cannot change the territory later registered for it.
-DECLARATION_JSON="$("$REPO/scripts/run-ledger" declaration "$WORKTREE/$SPEC")"
+# The JSON is kept in this process and in a fallback marker outside the
+# worktree, so an agent that edits its own specification cannot change the
+# territory later registered for it.
 printf '%s\n' "$DECLARATION_JSON" > "$RUNS/${UNIT}.declaration.json"
 
 echo "$PORT" > "$RUNS/${UNIT}.port"

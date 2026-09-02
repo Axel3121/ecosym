@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""What autonomous runs came to, as far as anyone recorded it.
+"""What autonomous runs came to, and which declared tasks may begin.
 
 A run leaves behind a log, a branch and a commit. None of those say whether the
 run *landed*. This ledger is where that is written down.
 
+    run-ledger ready                    tasks whose needs and territory are free
+    run-ledger can-start <task>         check one task, failing closed
     run-ledger list                     what every run is doing or did
     run-ledger start  <task> <unit> ..  append a started record (run-task does this)
     run-ledger close  <unit> --outcome landed|dropped|superseded|failed [--evidence ..]
@@ -401,7 +403,7 @@ def started_record(records: list[dict]) -> dict | None:
 def landed_tasks(records: list[dict]) -> set[str]:
     """Tasks whose non-empty, declared result diff Git still places in main."""
     landed: set[str] = set()
-    for unit_records in by_unit(records).values():
+    for unit, unit_records in by_unit(records).items():
         record = unit_records[-1]
         started = started_record(unit_records)
         task = record.get("task")
@@ -434,6 +436,7 @@ def landed_tasks(records: list[dict]) -> set[str]:
                 any(paths_overlap(path, declared) for declared in declaration["touches"])
                 for path in changed
             )
+            and range_has_run_attribution(base_commit, result_commit, unit, task)
             and is_ancestor(base_commit, result_commit) is True
             and in_main(result_commit) is True
         ):
@@ -528,14 +531,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     }
     if args.declaration:
         try:
-            value = json.loads(args.declaration)
-            if not isinstance(value, dict):
-                raise DeclarationError("frozen declaration is not an object")
-            declaration = validate_declaration_values(
-                value.get("needs"),
-                value.get("touches"),
-                value.get("autonomous", True),
-            )
+            declaration = parse_declaration_json(args.declaration)
         except (json.JSONDecodeError, DeclarationError) as error:
             print(f"invalid frozen declaration: {error}", file=sys.stderr)
             return 1
@@ -553,16 +549,20 @@ def cmd_start(args: argparse.Namespace) -> int:
     return 0
 
 
+def parse_declaration_json(value: str) -> dict:
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict):
+        raise DeclarationError("frozen declaration is not an object")
+    return validate_declaration_values(
+        parsed.get("needs"),
+        parsed.get("touches"),
+        parsed.get("autonomous", True),
+    )
+
+
 def frozen_declaration(path: Path) -> dict | None:
     try:
-        value = json.loads(path.read_text())
-        if not isinstance(value, dict):
-            return None
-        return validate_declaration_values(
-            value.get("needs"),
-            value.get("touches"),
-            value.get("autonomous", True),
-        )
+        return parse_declaration_json(path.read_text())
     except (OSError, json.JSONDecodeError, DeclarationError):
         return None
 
@@ -620,6 +620,34 @@ def is_ancestor(base: str, result: str) -> bool | None:
     if out.returncode not in (0, 1):
         return None
     return out.returncode == 0
+
+
+def range_has_run_attribution(base: str, result: str, unit: str, task: str) -> bool:
+    try:
+        out = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root()),
+                "log",
+                "--format=%B%x00",
+                f"{base}..{result}",
+                "--",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if out.returncode != 0:
+        return False
+    run_trailer = f"Ecosym-Run: {unit}"
+    task_trailer = f"Ecosym-Task: {task}"
+    return any(
+        run_trailer in message.splitlines() and task_trailer in message.splitlines()
+        for message in out.stdout.split("\0")
+    )
 
 
 def changed_paths(started: dict, result_commit: str | None) -> tuple[set[str] | None, str | None]:
@@ -815,7 +843,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
-def declaration_for_task(task: str, spec: str | None = None) -> tuple[dict[str, list[str]] | None, str | None]:
+def declaration_for_task(task: str, spec: str | None = None) -> tuple[dict | None, str | None]:
     path = Path(spec) if spec else repo_root() / "docs" / "tasks" / f"{task}.md"
     try:
         return read_declaration(path), None
@@ -824,7 +852,15 @@ def declaration_for_task(task: str, spec: str | None = None) -> tuple[dict[str, 
 
 
 def cmd_can_start(args: argparse.Namespace) -> int:
-    declaration, error = declaration_for_task(args.task, args.spec)
+    if args.declaration:
+        try:
+            declaration = parse_declaration_json(args.declaration)
+            error = None
+        except (json.JSONDecodeError, DeclarationError) as declaration_error:
+            declaration = None
+            error = f"invalid frozen declaration: {declaration_error}"
+    else:
+        declaration, error = declaration_for_task(args.task, args.spec)
     if error:
         print(f"cannot start {args.task}: {error}", file=sys.stderr)
         return 1
@@ -1030,6 +1066,7 @@ def main() -> int:
     s = sub.add_parser("can-start", help="refuse a task whose needs or territory are blocked")
     s.add_argument("task")
     s.add_argument("--spec", help="candidate specification (defaults to docs/tasks/<task>.md)")
+    s.add_argument("--declaration", help="frozen declaration JSON to check")
     s.set_defaults(fn=cmd_can_start)
 
     s = sub.add_parser("ready", help="list declared tasks that may begin now")

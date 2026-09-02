@@ -79,6 +79,20 @@ test("run-task launches the tracked sandbox only from its managed worktree", () 
     assert.ok(arguments_.includes(`--setenv=ECOSYM_WORKTREE=${managedWorktree}`));
     assert.ok(arguments_.includes(join(repository, "scripts", "ecosym-sandbox")));
 
+    mkdirSync(join(managedWorktree, "src"), { recursive: true });
+    writeFileSync(join(managedWorktree, "src", "example.ts"), "export {};\n");
+    git(managedWorktree, ["add", "."]);
+    commit(managedWorktree, "run work");
+    const started = JSON.parse(
+      readFileSync(join(dataHome, "ecosym", "ledger.jsonl"), "utf8").trim(),
+    ) as Record<string, unknown>;
+    const message = spawnSync("git", ["log", "-1", "--format=%B"], {
+      cwd: managedWorktree,
+      encoding: "utf8",
+    }).stdout;
+    assert.match(message, new RegExp(`^Ecosym-Run: ${escapeRegExp(String(started.unit))}$`, "mu"));
+    assert.match(message, /^Ecosym-Task: example$/mu);
+
     // A run that stops working holds its unit open, so nothing notices unless
     // something is watching. Launching without that watcher is the failure
     // this asserts against: it is invisible until a run hangs for hours.
@@ -464,8 +478,12 @@ test("a recorded result outranks the branch it was made on", () => {
   }
 });
 
-function commit(repository: string, message: string): void {
-  git(repository, [
+function commit(
+  repository: string,
+  message: string,
+  attribution?: { unit: string; task: string },
+): void {
+  const arguments_ = [
     "-c",
     "user.name=Ecosym Test",
     "-c",
@@ -473,7 +491,14 @@ function commit(repository: string, message: string): void {
     "commit",
     "-m",
     message,
-  ]);
+  ];
+  if (attribution) {
+    arguments_.push(
+      "-m",
+      `Ecosym-Run: ${attribution.unit}\nEcosym-Task: ${attribution.task}`,
+    );
+  }
+  git(repository, arguments_);
 }
 
 test("a ledger line that is not a record does not take the whole ledger with it", () => {
@@ -936,7 +961,34 @@ test("ready derives landed needs and conflicts from frozen run declarations", ()
     mkdirSync(join(repository, "src"), { recursive: true });
     writeFileSync(join(repository, "src", "base.ts"), "export {};\n");
     git(repository, ["add", "."]);
-    commit(repository, "land base task");
+    commit(repository, "unattributed change in declared territory");
+    const unrelatedHead = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: repository,
+      encoding: "utf8",
+    }).stdout.trim();
+    assert.equal(
+      ledger([
+        "close",
+        "unit-base",
+        "--outcome",
+        "landed",
+        "--commit",
+        unrelatedHead,
+        "--reopen",
+      ]).status,
+      0,
+    );
+    const unattributed = ledger(["can-start", "dependent"]);
+    assert.equal(unattributed.status, 1);
+    assert.match(
+      unattributed.stderr,
+      /base/u,
+      "an unrelated descendant in declared territory cannot satisfy a dependency",
+    );
+
+    writeFileSync(join(repository, "src", "base.ts"), "export const landed = true;\n");
+    git(repository, ["add", "."]);
+    commit(repository, "land base task", { unit: "unit-base", task: "base" });
     const landedHead = spawnSync("git", ["rev-parse", "HEAD"], {
       cwd: repository,
       encoding: "utf8",
@@ -1028,14 +1080,15 @@ test("run-task refuses contested ground in a worktree, and starts if that check 
   writeFileSync(join(scripts, "run-instruction.md"), "Test instruction\n");
   writeFileSync(join(tasks, "first.md"), taskSpec(["src/shared"]));
   writeFileSync(join(tasks, "second.md"), taskSpec(["src/shared/file.ts"]));
+  writeFileSync(join(tasks, "racy.md"), taskSpec(["src/disjoint.ts"]));
   writeFileSync(
     join(bin, "systemd-run"),
-    '#!/bin/sh\nfor a in "$@"; do case "$a" in --unit=*) unit=${a#--unit=};; --working-directory=*) tree=${a#--working-directory=};; esac; done\nprintf "%s\\n" "$@" >> "$SYSTEMD_CAPTURE"\ncase "$unit" in *-watchdog) ;; *-first-*) printf "%s\\n" "---" "needs: []" "touches:" "  - src/not-shared.ts" "---" "# Mutated after launch" > "$tree/docs/tasks/first.md"; printf "%s.service\\n" "$unit" > "$ACTIVE_UNIT";; *) printf "%s.service\\n" "$unit" > "$ACTIVE_UNIT";; esac\n',
+    '#!/bin/sh\nfor a in "$@"; do case "$a" in --unit=*) unit=${a#--unit=};; --working-directory=*) tree=${a#--working-directory=};; esac; done\nprintf "%s\\n" "$@" >> "$SYSTEMD_CAPTURE"\ncase "$unit" in *-watchdog) ;; *-first-*) printf "%s\\n" "---" "needs: []" "touches:" "  - src/not-shared.ts" "---" "# Mutated after launch" > "$tree/docs/tasks/first.md"; printf "%s.service\\n" "$unit" >> "$ACTIVE_UNIT";; *) printf "%s.service\\n" "$unit" >> "$ACTIVE_UNIT";; esac\n',
     { mode: 0o700 },
   );
   writeFileSync(
     join(bin, "systemctl"),
-    '#!/bin/sh\nif [ -f "$ACTIVE_UNIT" ] && [ "$3" = "$(cat "$ACTIVE_UNIT")" ]; then echo active; else echo inactive; fi\n',
+    '#!/bin/sh\nif [ -f "$ACTIVE_UNIT" ] && grep -Fxq "$3" "$ACTIVE_UNIT"; then echo active; else echo inactive; fi\n',
     { mode: 0o700 },
   );
 
@@ -1048,6 +1101,7 @@ test("run-task refuses contested ground in a worktree, and starts if that check 
     PATH: `${bin}:${process.env.PATH ?? ""}`,
     SYSTEMD_CAPTURE: capture,
     XDG_DATA_HOME: dataHome,
+    RACY_SPEC: join(tasks, "racy.md"),
   };
 
   try {
@@ -1074,11 +1128,35 @@ test("run-task refuses contested ground in a worktree, and starts if that check 
     assert.match(launched, new RegExp(`--working-directory=${escapeRegExp(managedWorktree)}`));
     assert.doesNotMatch(launched, new RegExp(`--working-directory=${escapeRegExp(repository)}(?:\\n|$)`));
 
+    copyFileSync(join(scripts, "run-ledger"), join(scripts, "run-ledger-real"));
+    writeFileSync(
+      join(scripts, "run-ledger"),
+      '#!/bin/sh\nif [ "$1" = "can-start" ] && [ "$2" = "racy" ]; then printf "%s\\n" "---" "needs: []" "touches:" "  - src/shared/racy.ts" "---" "# Changed after check input froze" > "$RACY_SPEC"; fi\nexec "$(dirname "$0")/run-ledger-real" "$@"\n',
+      { mode: 0o700 },
+    );
+    const racy = spawnSync(join(scripts, "run-task"), ["racy"], {
+      cwd: repository,
+      encoding: "utf8",
+      env: { ...environment, ECOSYM_PORT: "3221" },
+    });
+    assert.equal(racy.status, 0, racy.stderr);
+    const racyRecord = readFileSync(join(dataHome, "ecosym", "ledger.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .find((record) => record.task === "racy");
+    assert.deepEqual(
+      racyRecord?.touches,
+      ["src/disjoint.ts"],
+      "the declaration checked and registered must come from the same frozen read",
+    );
+    copyFileSync(join(scripts, "run-ledger-real"), join(scripts, "run-ledger"));
+
     const beforeRefusal = readFileSync(capture, "utf8");
     const refused = spawnSync(join(scripts, "run-task"), ["second"], {
       cwd: repository,
       encoding: "utf8",
-      env: { ...environment, ECOSYM_PORT: "3221" },
+      env: { ...environment, ECOSYM_PORT: "3222" },
     });
     assert.equal(refused.status, 1);
     assert.match(refused.stderr, /first/u);
@@ -1096,7 +1174,7 @@ test("run-task refuses contested ground in a worktree, and starts if that check 
     const unchecked = spawnSync(join(scripts, "run-task"), ["second"], {
       cwd: repository,
       encoding: "utf8",
-      env: { ...environment, ECOSYM_PORT: "3222" },
+      env: { ...environment, ECOSYM_PORT: "3223" },
     });
     assert.equal(unchecked.status, 0, unchecked.stderr);
     assert.notEqual(readFileSync(capture, "utf8"), beforeRefusal);
