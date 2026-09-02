@@ -812,6 +812,19 @@ def changed_paths(started: dict, result_commit: str | None) -> tuple[set[str] | 
     # untracked files closes that gap without touching the tracked, staged,
     # or committed collections above.
     ignored = git_paths(worktree, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+    if ignored:
+        # The agent harness installs its own dependencies and writes its own
+        # .opencode/ scaffolding while the run works. Those paths are created BY
+        # the run, not authored by it, and no specification would declare them.
+        # Auditing them makes a clean run unclosable: task 018 produced 4
+        # authored files against ~3000 flagged installation artefacts.
+        ignored = {
+            path
+            for path in ignored
+            if "node_modules/" not in path
+            and not path.endswith("node_modules")
+            and not path.startswith(".opencode/")
+        }
     if any(paths is None for paths in (committed, unstaged, staged, untracked, ignored)):
         return None, "Git could not determine every path changed by the run"
     return set().union(committed or set(), unstaged or set(), staged or set(), untracked or set(), ignored or set()), None

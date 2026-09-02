@@ -2454,6 +2454,77 @@ test("--worktree rejects a following path instead of letting it become the task"
   }
 });
 
+test("installation artefacts do not put a run outside its territory", () => {
+  // The territory audit reads gitignored untracked files so a run cannot
+  // smuggle an undeclared write past it. But the agent harness installs
+  // dependencies and .opencode/ scaffolding WHILE the run works: those are
+  // created by the run, not authored by it, and no specification declares
+  // them. Regression for: task 018 produced 4 authored files against ~3000
+  // flagged artefacts, so a clean run could not be closed at all.
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-artefacts-"));
+  const repository = join(directory, "repository");
+  const dataHome = join(directory, "data");
+  mkdirSync(repository, { recursive: true });
+  mkdirSync(dataHome, { recursive: true });
+
+  const ledger = (arguments_: string[]) =>
+    spawnSync(runLedger, arguments_, {
+      encoding: "utf8",
+      env: { ...process.env, XDG_DATA_HOME: dataHome },
+    });
+
+  try {
+    git(repository, ["init", "-b", "main"]);
+    writeFileSync(join(repository, ".gitignore"), "node_modules\n.opencode/\n");
+    writeFileSync(join(repository, "work.ts"), "export const a = 1;\n");
+    git(repository, ["add", "."]);
+    commit(repository, "first");
+    const head = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: repository,
+      encoding: "utf8",
+    }).stdout.trim();
+
+    // What the harness installs underneath the run while it works.
+    mkdirSync(join(repository, "node_modules", "left-pad"), { recursive: true });
+    writeFileSync(join(repository, "node_modules", "left-pad", "index.js"), "//\n");
+    mkdirSync(join(repository, ".opencode"), { recursive: true });
+    writeFileSync(join(repository, ".opencode", "package.json"), "{}\n");
+
+    const declaration = JSON.stringify({
+      touches: ["work.ts", "docs/tasks/artefact-run.md"],
+      needs: [],
+    });
+    const started = ledger([
+      "start", "artefact-run", "unit-artefacts",
+      "--branch", "main", "--worktree", repository,
+      "--commit", head, "--declaration", declaration,
+    ]);
+    assert.equal(started.status, 0, started.stderr);
+
+    const closed = ledger([
+      "close", "unit-artefacts", "--outcome", "landed",
+      "--commit", head, "--evidence", "the authored work",
+    ]);
+    assert.equal(
+      closed.status, 0,
+      `installation artefacts blocked a clean close: ${closed.stderr}`,
+    );
+
+    // The guard itself must survive: a real undeclared ignored write
+    // still has to be refused.
+    writeFileSync(join(repository, "smuggled.ts"), "export const b = 2;\n");
+    const reopened = ledger([
+      "close", "unit-artefacts", "--outcome", "landed", "--reopen",
+      "--commit", head, "--evidence", "probe",
+    ]);
+    assert.notEqual(
+      reopened.status, 0,
+      "an undeclared write closed anyway; the audit is no longer a guard",
+    );
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
 test("an uncheckable result commit is unproven, not merged or open", () => {
   // git_state() must not let branch fallback classify a run whose result
   // commit exists but whose reachability question Git could not answer
