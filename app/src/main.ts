@@ -1,7 +1,7 @@
 import { deriveScene } from "./scene.ts";
 import type { Scene } from "./scene.ts";
 import { fixture } from "./fixture.ts";
-import { Chart, makeWalkers, stepWalkers, ZOOM_MIN, ZOOM_MAX, SETTLEMENT_ZOOM } from "./chart.ts";
+import { Chart, makeWalkers, stepWalkers, ZOOM_MIN, ZOOM_MAX, SETTLEMENT_ZOOM, coverZoom } from "./chart.ts";
 import type { Hit } from "./chart.ts";
 import { PLATES, PLATE_OF } from "./chart.ts";
 import { opening, reply } from "./dialogue.ts";
@@ -10,6 +10,7 @@ import type { Target, Line } from "./dialogue.ts";
 const scene: Scene = deriveScene(fixture);
 const canvas = document.getElementById("chart") as HTMLCanvasElement;
 const chart = new Chart(canvas);
+function minZoom() { return Math.max(ZOOM_MIN, coverZoom(canvas.clientWidth, canvas.clientHeight)); }
 const walkers = makeWalkers(scene);
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -40,7 +41,7 @@ let target = { ...chart.camera };
 let flying = false;
 
 function flyTo(x: number, y: number, zoom: number) {
-  target = { x, y, zoom: Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom)) };
+  target = { x, y, zoom: Math.min(ZOOM_MAX, Math.max(minZoom(), zoom)) };
   flying = true;
   if (reduced) { chart.camera = { ...target }; flying = false; }
 }
@@ -72,7 +73,7 @@ canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
   const before = chart.toWorld(e.clientX, e.clientY);
   const factor = Math.exp(-e.deltaY * 0.0014);
-  const zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, chart.camera.zoom * factor));
+  const zoom = Math.min(ZOOM_MAX, Math.max(minZoom(), chart.camera.zoom * factor));
   chart.camera.zoom = zoom;
   const after = chart.toWorld(e.clientX, e.clientY);
   // keep the point under the pointer fixed
@@ -94,7 +95,7 @@ function select(h: Hit | null) {
     if (s.epistemic === "observed") flyTo(s.ground.x, s.ground.y - 30, Math.max(chart.camera.zoom, 2.4));
     else flyTo(s.ground.x, s.ground.y, Math.max(chart.camera.zoom, 1.2));
   }
-  if (h.kind === "capital") flyTo(760, 470, Math.max(chart.camera.zoom, 1.7));
+  if (h.kind === "capital") flyTo(770, 410, Math.max(chart.camera.zoom, 1.7));
   sheet.hidden = false;
   sheet.innerHTML = sheetFor(h);
   sheet.querySelector<HTMLButtonElement>(".close")?.addEventListener("click", () => select(null));
@@ -171,7 +172,7 @@ function focus(t: Target) {
     $("focus-name").textContent = "Rådet"; $("focus-kind").textContent = "Capital · verdens hovedkvarter";
     portrait.style.backgroundImage = `url(/art/capital.png)`; portrait.style.backgroundPosition = "50% 30%";
     $("focus-facts").innerHTML = `<b>Saker</b>${scene.capital.matters.map((m) => `${m.summary}<br>`).join("") || "ingen"}<b>Haller</b>${scene.capital.halls.map((h) => `${h.name} · ${h.epistemic === "observed" ? (h.live ? "i arbeid" : "stille") : "aldri sett"}<br>`).join("")}`;
-    flyTo(760, 470, 2.2);
+    flyTo(770, 410, 2.2);
   } else {
     const s = t.settlement; const plate = PLATES[PLATE_OF[s.civilizationId] ?? "lake"]!;
     if (t.kind === "seat") {

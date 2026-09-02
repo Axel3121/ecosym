@@ -152,7 +152,7 @@ export interface Scene {
 
 // ---- derivation ------------------------------------------------------------
 
-const CAPITAL_GROUND = { x: 760, y: 460 };
+const CAPITAL_GROUND = { x: 770, y: 400 };
 
 const PROGRESS: Record<PetitionState, number> = {
   sent: 0.15,

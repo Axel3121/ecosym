@@ -4,10 +4,12 @@ import type { Scene, Settlement } from "./scene.ts";
 import { hash01 } from "./scene.ts";
 
 export interface Camera { x: number; y: number; zoom: number }
-export const ZOOM_MIN = 0.7;
+export const ZOOM_MIN = 0.3; // hard floor; the real floor is coverZoom()
 export const ZOOM_MAX = 5;
 export const SETTLEMENT_ZOOM = 2.2; // plate fully in by here
 export const WORLD_W = 1536, WORLD_H = 1024;
+/** Smallest zoom at which the painting still covers the whole viewport. */
+export function coverZoom(w: number, h: number) { return Math.max(w / WORLD_W, h / WORLD_H); }
 
 
 export interface Hit {
@@ -25,7 +27,7 @@ export const PLATES: Record<string, { img: string; aspect: number; seat: P; well
 };
 type P = { x: number; y: number };
 export const PLATE_OF: Record<string, keyof typeof PLATES> = { roma: "harbor", midgard: "hill", edo: "orchard", thule: "lake" };
-const CAPITAL = { x: 760, y: 460, r: 200 };
+const CAPITAL = { x: 770, y: 400, r: 130 };
 
 // sprite sheet cells
 export const WCOLS = [100, 400, 660, 960], WROWS = [60, 360, 660, 940], WCELL = { w: 200, h: 240 };
@@ -77,7 +79,7 @@ export class Chart {
   private img = new Map<string, HTMLImageElement>();
   private t0 = performance.now();
 
-  constructor(private canvas: HTMLCanvasElement, public camera: Camera = { x: 768, y: 512, zoom: 0.9 }) {
+  constructor(private canvas: HTMLCanvasElement, public camera: Camera = { x: 768, y: 512, zoom: 1 }) {
     this.ctx = canvas.getContext("2d")!;
     for (const src of ["/art/world.png", "/art/capital.png", "/art/walkers.png", "/art/smoke.png", "/art/fog.png", ...Object.values(PLATES).map((p) => p.img)]) {
       const im = new Image(); im.src = src; this.img.set(src, im);

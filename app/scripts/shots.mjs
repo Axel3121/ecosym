@@ -26,7 +26,7 @@ await page.evaluate(() => window.__ecosym.select({ kind: "seat", settlementId: "
 await page.waitForTimeout(300);
 await page.screenshot({ path: "shots/4-curia.png" });
 
-await page.evaluate(() => { window.__ecosym.select(null); window.__ecosym.flyTo(280, 760, 1.6); });
+await page.evaluate(() => { window.__ecosym.select(null); window.__ecosym.flyTo(280, 850, 1.6); });
 await page.waitForTimeout(1200);
 await page.screenshot({ path: "shots/5-thule-unobserved.png" });
 
