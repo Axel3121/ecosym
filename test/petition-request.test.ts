@@ -132,7 +132,7 @@ test("content-addresses the closed definition with the specified domain and its 
   );
   assert.equal(
     DELETE_GIT_BRANCH_REQUEST_DEFINITION_DIGEST,
-    "sha256:260e6fad249ab81f271ff0511e89688b1cf8e0bb1a0506b62708d0417c50d2e5",
+    "sha256:a913f697d282fb874bdd43f8fefa74e44828d1e21ba348336f6f2811a808dda7",
   );
   assert.equal(DELETE_GIT_BRANCH_REQUEST_DEFINITION.id, DELETE_GIT_BRANCH_REQUEST_ID);
   assert.equal(
@@ -143,6 +143,29 @@ test("content-addresses the closed definition with the specified domain and its 
     DELETE_GIT_BRANCH_REQUEST_DEFINITION_DIGEST,
     `sha256:${sha256(DELETE_GIT_BRANCH_REQUEST_DEFINITION_CANONICAL)}`,
   );
+});
+
+test("the authority projection enumerates every scope field it admits", () => {
+  // `scope` is a named container. Copying it wholesale means a later schema
+  // addition silently joins `canonical-projection-equality` without anyone
+  // deciding it should bear authority. Enumeration is the decision; this test
+  // is what makes the enumeration binding rather than stylistic.
+  const scope =
+    DELETE_GIT_BRANCH_REQUEST_DEFINITION.institutionOwner.authorityProjection
+      .resources.recoverabilityEvidence.scope;
+
+  assert.deepEqual(
+    Object.keys(scope).sort(),
+    ["branchReference", "expectedObjectId", "preservedReference", "repositoryId"],
+    "a scope field was added or removed without an authority decision",
+  );
+  for (const [name, mapping] of Object.entries(scope)) {
+    assert.equal(
+      (mapping as { from: string }).from,
+      `/consequence/recoverability/evidence/scope/${name}`,
+      `${name} does not project from its own evidence field`,
+    );
+  }
 });
 
 test("the definition digest is unaffected by non-normative conformanceVectors edits", () => {

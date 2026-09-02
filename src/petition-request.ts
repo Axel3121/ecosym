@@ -151,7 +151,15 @@ export const DELETE_GIT_BRANCH_REQUEST_DEFINITION = deepFreeze({
         preservedReference: { from: "/parameters/preservedReference" },
         recoverabilityEvidence: {
           digest: { from: "/consequence/recoverability/evidence/digest" },
-          scope: { from: "/consequence/recoverability/evidence/scope" },
+          // `scope` is a named container. Copying it wholesale means a later
+          // schema addition silently joins the authority projection without a
+          // decision. Enumerate the four fields that actually bear authority.
+          scope: {
+            repositoryId: { from: "/consequence/recoverability/evidence/scope/repositoryId" },
+            branchReference: { from: "/consequence/recoverability/evidence/scope/branchReference" },
+            expectedObjectId: { from: "/consequence/recoverability/evidence/scope/expectedObjectId" },
+            preservedReference: { from: "/consequence/recoverability/evidence/scope/preservedReference" },
+          },
         },
       },
       limits: {
