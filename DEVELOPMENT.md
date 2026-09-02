@@ -117,6 +117,24 @@ Source concurrency does not imply isolated ports, processes, databases,
 credentials, caches, or machine resources. Stronger isolation must follow the
 actual risk or collision being prevented.
 
+A run declares the territory it expects to touch before it starts, and that
+declaration is frozen at launch rather than read from the shared branch while
+the run is live. Two rules follow from a measurement rather than a preference.
+
+**Prefer a declaration that is too broad.** Declared too broadly, the scheduler
+serialises work that could have run in parallel — the cost is waiting. Declared
+too narrowly, two runs are told they are disjoint and then edit the same file,
+and the cost is a collision nothing was watching for. Lost throughput is
+recoverable; a silent collision is not, so the safe error is the expensive one.
+
+**An undeclared write is refused at close, not merely recorded.** A run that
+edits a path outside its declaration cannot close as `landed`. It cannot be
+prevented at the moment of writing — the edit has already happened by the time
+anything can observe it — so the boundary is enforced where it still means
+something: the run does not get to claim it landed. Recording alone would leave
+the declaration decorative, and a territory nothing enforces cannot make the
+disjointness check trustworthy.
+
 ## Implementation and evidence
 
 Implementation stays within the authorized outcome and preserves the relevant
