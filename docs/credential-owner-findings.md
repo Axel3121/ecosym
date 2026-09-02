@@ -644,6 +644,22 @@ sandbox_rc=0 cleanup=namespace-destroyed
 
 The complete command is in [Appendix B](#appendix-b-gpg-lifecycle-probe).
 
+### The revocation result generalises beyond GPG
+
+`default_current_verify_rc=0` is the number that matters here, and it is not a
+GPG quirk. Reproduced independently on 2026-09-02 with a disposable ed25519
+key: after importing the key's own revocation certificate, `gpg --list-keys`
+reports validity `r`, and `gpg --verify` still prints `Good signature` and
+exits **0**. The revocation is visible only as human-readable warning text on
+stderr; the machine-readable answer requires `--status-fd`, where `REVKEYSIG`
+and `KEYREVOKED` appear.
+
+The general rule this measurement establishes: a verifier that decides on an
+exit code cannot see revocation at all. Success and revoked-success are the
+same signal, so any petition verifier built here must read structured status
+and treat `REVKEYSIG` as failure. Checking that a signature verified is not
+checking that the credential was still valid.
+
 ## Recommendation
 
 Select **none** of the tested owners as the first proof profile. In particular,
