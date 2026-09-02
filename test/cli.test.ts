@@ -750,3 +750,76 @@ async function runCli(arguments_: string[], xdgDataHome: string): Promise<CliRes
     stderr,
   };
 }
+
+test("collect reports failure in its outcome and its exit status", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-cli-failure-"));
+  const xdgDataHome = join(directory, "data");
+  const readablePath = join(directory, "readable.jsonl");
+  const unreadablePath = join(directory, "absent.jsonl");
+  writeFileSync(
+    readablePath,
+    '{"id":"record-1","subject":"subject-1","at":"2026-08-30T00:00:00.000Z","value":7}\n',
+  );
+
+  const configFor = (id: string, sourcePath: string) => {
+    const path = join(directory, `${id}.json`);
+    writeFileSync(
+      path,
+      JSON.stringify({
+        schemaVersion: 1,
+        id,
+        factOwner: "external-owner",
+        reader: { type: "jsonl", path: sourcePath },
+        sourceRecord: {
+          identity: [{ scope: "record", path: "id" }],
+          retention: "history",
+          recordedAt: {
+            selector: { scope: "record", path: "at" },
+            format: "iso8601",
+          },
+        },
+        facts: [
+          {
+            epistemicStatus: "observation",
+            kind: "api.value",
+            subject: { scope: "record", path: "subject" },
+            payload: { value: { scope: "record", path: "value" } },
+          },
+        ],
+      }),
+    );
+    return path;
+  };
+
+  // The source file for this one is never created, so collection fails for a
+  // reason the store reports rather than a crash.
+  assert.equal((await runCli(["connect", configFor("absent-source", unreadablePath)], xdgDataHome)).code, 0);
+
+  // One connection, and it fails: every collection attempted was unreadable.
+  const allFailed = await runCli(["collect"], xdgDataHome);
+  assert.equal(allFailed.output.outcome, "unread");
+  assert.equal(allFailed.code, 2);
+
+  assert.equal((await runCli(["connect", configFor("readable-source", readablePath)], xdgDataHome)).code, 0);
+
+  // Two connections, one of each: a partial failure is neither success nor a
+  // total failure, and it must not exit zero.
+  const mixed = await runCli(["collect"], xdgDataHome);
+  assert.equal(mixed.output.outcome, "mixed");
+  assert.equal(mixed.code, 2);
+  assert.deepEqual(
+    (mixed.output.connections as { connectionId: string; outcome: string }[])
+      .map((connection) => [connection.connectionId, connection.outcome])
+      .sort(),
+    [
+      ["absent-source", "unread"],
+      ["readable-source", "success"],
+    ],
+  );
+
+  // Collecting only the healthy connection still succeeds, so the assertions
+  // above distinguish failure from a CLI that reports failure unconditionally.
+  const succeeded = await runCli(["collect", "readable-source"], xdgDataHome);
+  assert.equal(succeeded.output.outcome, "success");
+  assert.equal(succeeded.code, 0);
+});
