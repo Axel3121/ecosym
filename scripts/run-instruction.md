@@ -16,5 +16,19 @@ once it works.
 Prefer a named agent over an unnamed one. An agent with no role has no
 instructions about what it must not do.
 
+Verify what the deliverable can actually get wrong. Code that runs is bound by
+the verification and evidence contract in `DEVELOPMENT.md`; do not restate it
+here. A document cannot fail a test suite, and running one against it proves
+nothing: check it against the canonical documents it must not contradict, and
+stop.
+
+Review once, when the work is coherent. Repeated self-audit of your own output
+finds progressively less and costs the same each time; a second opinion is
+worth more than a third reading. If a check cannot run for a reason outside
+the work — a missing host path, an absent service — name it and stop rather
+than debugging the environment: that check did not run, so its status is
+unknown or blocked, never verified or passed, no matter how plausible the
+reason.
+
 Report honestly what you built, what you decided and why, and anything in the
 canonical documents that turned out to be wrong or unbuildable.
