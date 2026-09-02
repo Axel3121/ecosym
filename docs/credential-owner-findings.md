@@ -26,38 +26,26 @@ nevertheless failed the decisive requirements:
 
 GPG also signed and verified exact synthetic input, but it signed unattended
 with pinentry disabled and emitted none of the input marker. Its synthetic
-revocation path can fail closed only when the verifier treats machine-readable
-`REVKEYSIG` as failure; default `gpg --verify` returned zero for the revoked
-signature. No existing GPG agent key or smartcard was safely established.
+revocation path failed closed only when the verifier treated machine-readable
+`REVKEYSIG` or `KEYREVOKED` as failure; default `gpg --verify` returned zero for
+the revoked signature. No existing GPG agent key or smartcard was safely
+established.
 
 Every other required candidate was either absent, lacked usable hardware, or
 did not expose a signing owner that could be exercised. Most importantly, no
 tested path showed trusted transaction confirmation derived from the canonical
 envelope bytes.
 
-## Required properties
+## Assessment
 
-The columns below use the six properties from
-`docs/tasks/013-credential-owner.md`:
-
-1. **Bytes**: the credential owner accepts the canonical envelope bytes and
-   the proof binds those exact bytes.
-2. **Confirm**: a trusted surface shows the transaction derived from those
-   bytes and requires deliberate approval.
-3. **Isolate**: the requesting process and another agent sharing the user's
-   account cannot read the private key.
-4. **Durable**: a proof made while its authority is current remains
-   independently verifiable after that authority has expired.
-5. **Revoke**: current revocation fails closed without erasing verification of
-   a proof made while the credential was valid.
-6. **Principal**: the credential maps to the same user already recognized by
-   the target runtime.
+The table's six shorthand columns correspond to the credential-owner
+requirements owned by
+[`docs/petition-identity.md`](petition-identity.md#established-proving-the-user).
+They classify the evidence below; they do not redefine that contract.
 
 `D` means demonstrated by an executed probe. `F` means executed behavior
 contradicted the requirement. `P` means only part of the property was
-demonstrated. `U` means untested; it never means pass. A profile qualifies only
-if all six properties are demonstrated, along with the local-disclosure and
-retention obligations in `docs/petition-identity.md`.
+demonstrated. `U` means untested; it never means pass.
 
 | Candidate | Availability measured | Bytes | Confirm | Isolate | Durable | Revoke | Principal | Result |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -66,7 +54,7 @@ retention obligations in `docs/petition-identity.md`.
 | Existing GPG agent / smartcard | Agent answered with zero key records; no USB CCID interface | U | U | U | U | U | U | No usable credential established |
 | Synthetic GPG software/agent path | GnuPG 2.4.9 exercised in isolation | P | F | F | P | P | U | Does not qualify |
 | `age`, `minisign`, `signify` | Binaries absent | U | U | U | U | U | U | Not present |
-| Synthetic OpenSSH agent path | OpenSSH 10.2p1 exercised in isolation; no existing agent exposed | P | F | P | P | P | U | Does not qualify |
+| Synthetic OpenSSH agent path | OpenSSH 10.2p1 exercised with disposable state; no existing agent exposed | P | F | P | P | P | U | Does not qualify |
 | OpenSSL file signer | OpenSSL 3.5.7 exercised with a disposable file key | P | F | F | P | U | U | Does not qualify |
 | Secret Service / GNOME Keyring | Clients and PKCS#11 module installed; no reachable service | U | U | U | U | U | U | No live signing owner established |
 | Linux kernel keyring | `keyctl` present; session keyring reachable | U | U | U | U | U | U | No signing owner tested |
@@ -115,10 +103,10 @@ signing unattended.
 
 After revocation, the signing home refused another signature. A current
 verifier emitted `KEYREVOKED` and `REVKEYSIG`, but default `gpg --verify` still
-returned zero. A strict status parser rejected it, while an archived
-pre-revocation public verifier still accepted the original proof. This shows a
-possible verifier mechanism, not an existing proof profile or trusted
-historical signing time.
+returned zero. The probe's structured-status check rejected it, while an
+archived pre-revocation public verifier still accepted the original proof.
+This shows a possible verifier mechanism, not an existing proof profile or
+trusted historical signing time.
 
 ### age, minisign, and signify
 
@@ -130,14 +118,15 @@ installed to change that result.
 
 No `SSH_AUTH_SOCK` was exposed, and `ssh-add -l` could not connect to an
 authentication agent. The installed mechanism was therefore tested with a
-disposable key and an isolated disposable agent only.
+disposable key and a dedicated disposable agent only.
 
 The synthetic run loaded the key with `ssh-add -c`, deleted the private-key
-file, and signed through the agent inside `bwrap --unshare-net`. Verification
-succeeded after the agent stopped. A same-length, one-byte mutation failed,
-which is the required negative control. A KRL made current-policy verification
-fail, while verification without that current KRL and `check-novalidate`
-continued to verify the historical cryptographic proof.
+file, and had the client sign through the agent from inside
+`bwrap --unshare-net`. Verification succeeded after the agent stopped. A
+same-length, one-byte mutation failed, which is the required negative control.
+A KRL made current-policy verification fail, while verification without that
+current KRL and `check-novalidate` continued to verify the historical
+cryptographic proof.
 
 The run did not wait until the envelope's signed `expiresAt`, so it demonstrated
 verification after signer disappearance, not after authority expiry. Durable
@@ -398,8 +387,26 @@ output explicitly says none was suitable.
 ### GPG agent and smartcard substrate
 
 ```bash
-scratch=$(mktemp -d /tmp/ecosym013-card.XXXXXX)
-cd "$scratch"
+#!/usr/bin/env bash
+set -u
+
+scratch=$(mktemp -d /tmp/ecosym013-card.XXXXXX) || exit 1
+
+cleanup() {
+    status=$?
+    trap - EXIT HUP INT TERM
+    if rm -rf -- "$scratch"; then
+        printf 'cleanup=complete\n'
+    else
+        printf 'cleanup=failed\n' >&2
+        status=1
+    fi
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+cd "$scratch" || exit 1
 
 interfaces=0
 : > parents
@@ -440,8 +447,6 @@ status=$?
 set +o pipefail
 printf 'gpg-agent-keyinfo rc=%s records=%s identifiers=suppressed\n' \
     "$status" "$records"
-
-rm -rf "$scratch"
 ```
 
 Measured output:
@@ -458,6 +463,7 @@ pcscd.socket enabled_rc=0
 pcscd-process-count=0
 pcsc-runtime-socket-present rc=1
 gpg-agent-keyinfo rc=0 records=0 identifiers=suppressed
+cleanup=complete
 ```
 
 ### Agent and keychain availability
@@ -594,9 +600,11 @@ authorizing petition.
 
 The restricted fixture contains only ASCII strings, integer `1`, empty objects,
 and `null`. The script sorts every object key and uses compact JSON encoding;
-for those values the output is JCS-compatible. The signing, verification, and
-stream capture run without network access. It prints no key, fingerprint,
-petition ID, signature, or protocol bytes.
+for those values the output is JCS-compatible. The signing client and
+verification commands run without network access. The agent holding the key
+and the stream-capture proxy do not; they run outside the client's network
+namespace as described under **Local processing and retention**. The probe
+prints no key, fingerprint, petition ID, signature, or protocol bytes.
 
 Measured output:
 
@@ -605,7 +613,7 @@ envelope_structure_and_canonicalization=pass
 request_semantic_validation=unavailable-no-consequential-request-type
 confirmed_key_loaded=yes
 private_key_file_deleted_before_sign=yes
-signing_network_isolation=bwrap-unshare-net  # client only; the agent holding the key ran outside it
+signing_client_network_isolation=bwrap-unshare-net
 askpass_prompt_sanitized=Allow use of key <SYNTHETIC_KEY_IDENTIFIER>?
 askpass_prompt_line_count=2
 request_marker_in_askpass_prompt=no
@@ -640,7 +648,7 @@ Measured output:
 ```text
 generate_rc=0 export_rc=0 sign_rc=0 confirmation_required=no pinentry_invocations=0 marker_in_signer_or_pinentry_output=no
 signing_home_revocation_import_rc=0 post_revocation_sign_rc=2 post_sign_pinentry_invocations=0
-signing_home_removed=yes
+signing_agent_stop_rc=0 signing_home_removed=yes
 public_only_secret_records=0 pre_revocation_verify_rc=0 status_names=GOODSIG,KEY_CONSIDERED,NEWSIG,SIG_ID,TRUST_UNDEFINED,VALIDSIG one_byte_mutation_verify_rc=1 mutation_status_names=BADSIG,FAILURE,KEY_CONSIDERED,NEWSIG
 revocation_import_rc=0 default_current_verify_rc=0 current_status_names=KEY_CONSIDERED,KEYREVOKED,NEWSIG,REVKEYSIG,SIG_ID,TRUST_UNDEFINED,VALIDSIG strict_current_rc=1 archived_verify_rc=0 archived_status_names=GOODSIG,KEY_CONSIDERED,NEWSIG,SIG_ID,TRUST_UNDEFINED,VALIDSIG strict_archived_rc=0
 inside_cleanup=complete
@@ -649,25 +657,18 @@ sandbox_rc=0 cleanup=namespace-destroyed
 
 The complete command is in [Appendix B](#appendix-b-gpg-lifecycle-probe).
 
-### GPG's exit code cannot see revocation
+### Default GPG verification did not enforce current revocation
 
-`default_current_verify_rc=0` is the number that matters here, and it holds
-across key algorithms. Reproduced independently on 2026-09-02 with a disposable
-ed25519 key — a different algorithm, the same verifier: after importing the
-key's own revocation certificate, `gpg --list-keys` reports validity `r`, and
-`gpg --verify` still prints `Good signature` and exits **0**. The revocation
-is visible only as human-readable warning text on stderr; the machine-readable
-answer requires `--status-fd`, where `REVKEYSIG` and `KEYREVOKED` appear.
+In the Appendix B run, `default_current_verify_rc=0` after the synthetic RSA
+key's own revocation certificate was imported. The machine-readable status
+contained both `REVKEYSIG` and `KEYREVOKED`; the probe's explicit status check
+rejected either value. This is measured only for GnuPG 2.4.9 and this synthetic
+key. It establishes no behavior for another verifier or key algorithm.
 
-This is measured for GnuPG only. Both the original probe and the reproduction
-used it, so nothing here establishes how any other verifier behaves.
-
-The warning it earns is nevertheless general, because the failure shape is:
-success and revoked-success were the same signal, and only a channel nobody
-was reading told them apart. A petition verifier built on GnuPG must read
-structured status and treat `REVKEYSIG` as failure. A verifier built on
-anything else must be measured the same way before it is trusted — checking
-that a signature verified is not checking that the credential was still valid.
+A petition verifier built on this GnuPG path therefore cannot decide current
+credential validity from `gpg --verify`'s exit status alone. It must evaluate
+the structured status, including both measured revocation records. Any other
+verifier needs its own current-revocation measurement.
 
 ## Recommendation
 
@@ -676,22 +677,11 @@ do not treat SSH agent confirmation, GPG pinentry, TPM sealing, a Secret Service
 item, or a file signature as transaction confirmation.
 
 The next measurement can recommend a profile only after an actual candidate
-owner is present and executes all of the following in one synthetic test:
-
-- accepts and validates the complete canonical envelope bytes;
-- derives both the digest and transaction view from those bytes inside the
-  owner;
-- displays the principal, audience, civilization, typed request and limits,
-  consequence disclosure, and absolute expiry on a trusted surface;
-- attests deliberate approval and binds it to the envelope digest;
-- keeps the private key unavailable to same-account requesting agents;
-- signs while the interval is current, then verifies the retained proof after
-  `expiresAt` and a verifier restart without treating it as current authority;
-- fails current revocation closed while preserving evidence that a proof made
-  before revocation was then valid;
-- maps the credential through a target runtime's existing authenticated user
-  path; and
-- demonstrates no outbound content flow and bounded content retention.
+owner executes the complete current credential-owner contract and proof-profile
+test named in
+[`docs/petition-identity.md`](petition-identity.md#established-proving-the-user)
+and its [open decision](petition-identity.md#open-decisions). This report does
+not define a smaller qualification checklist.
 
 No statement in `docs/petition-identity.md` was shown to be impossible in
 general. Its first proof profile is, however, **unbuildable with every owner
@@ -710,11 +700,13 @@ fixture.
 #!/bin/sh
 set -eu
 
-D=/tmp/ecosym-task013-final.$$
+D=$(mktemp -d /tmp/ecosym-task013-final.XXXXXX)
 AGENT_PID=
 PROXY_PID=
 
 cleanup() {
+    status=$?
+    trap - EXIT HUP INT TERM
     [ -z "${PROXY_PID:-}" ] || {
         kill "$PROXY_PID" 2>/dev/null || :
         wait "$PROXY_PID" 2>/dev/null || :
@@ -723,12 +715,17 @@ cleanup() {
         kill "$AGENT_PID" 2>/dev/null || :
         wait "$AGENT_PID" 2>/dev/null || :
     }
-    rm -rf "$D"
-    echo cleanup=complete
+    if rm -rf -- "$D"; then
+        echo cleanup=complete
+    else
+        echo cleanup=failed >&2
+        status=1
+    fi
+    exit "$status"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
 
-mkdir -m 700 "$D"
 cd "$D"
 export HOME="$D"
 unset SSH_AUTH_SOCK SSH_AGENT_PID
@@ -812,10 +809,15 @@ raw = open("envelope.jcs", "rb").read()
 envelope = json.loads(raw)
 keys = lambda value: set(value)
 
-assert raw.isascii()
-assert not raw.endswith(b"\n")
+def require(condition):
+    if not condition:
+        raise SystemExit("structural envelope validation failed")
 
-assert keys(envelope) == {
+
+require(raw.isascii())
+require(not raw.endswith(b"\n"))
+
+require(keys(envelope) == {
     "schemaVersion",
     "petitionId",
     "principal",
@@ -829,24 +831,24 @@ assert keys(envelope) == {
     "notBefore",
     "expiresAt",
     "predecessorPetitionId",
-}
-assert keys(envelope["principal"]) == {"issuer", "subject"}
-assert keys(envelope["proofProfile"]) == {
+})
+require(keys(envelope["principal"]) == {"issuer", "subject"})
+require(keys(envelope["proofProfile"]) == {
     "id",
     "revision",
     "definitionDigest",
-}
-assert keys(envelope["audience"]) == {
+})
+require(keys(envelope["audience"]) == {
     "runtimeId",
     "controlPlaneId",
-}
-assert keys(envelope["authorityContext"]) == {
+})
+require(keys(envelope["authorityContext"]) == {
     "mandateId",
     "mandateRevision",
     "mandateDigest",
-}
-assert keys(envelope["authorityBasis"]) == {"type"}
-assert keys(envelope["request"]) == {
+})
+require(keys(envelope["authorityBasis"]) == {"type"})
+require(keys(envelope["request"]) == {
     "type",
     "operation",
     "resources",
@@ -854,47 +856,67 @@ assert keys(envelope["request"]) == {
     "limits",
     "userText",
     "consequence",
-}
-assert keys(envelope["request"]["type"]) == {
+})
+require(keys(envelope["request"]["type"]) == {
     "id",
     "revision",
     "definitionDigest",
-}
-assert keys(envelope["request"]["consequence"]) == {
+})
+require(keys(envelope["request"]["consequence"]) == {
     "classification",
     "summary",
     "recoverability",
-}
+})
 
 encoded_id = envelope["petitionId"][9:]
-assert envelope["petitionId"].startswith("petition:")
-assert "=" not in encoded_id
-assert re.fullmatch(r"[A-Za-z0-9_-]{43}", encoded_id)
-assert len(base64.urlsafe_b64decode(encoded_id + "=")) == 32
+require(envelope["petitionId"].startswith("petition:"))
+require("=" not in encoded_id)
+require(re.fullmatch(r"[A-Za-z0-9_-]{43}", encoded_id))
+require(len(base64.urlsafe_b64decode(encoded_id + "=")) == 32)
 
 instant = re.compile(
     r"\d{4}-\d{2}-\d{2}T"
     r"\d{2}:\d{2}:\d{2}\.\d{3}Z"
 )
-assert instant.fullmatch(envelope["notBefore"])
-assert instant.fullmatch(envelope["expiresAt"])
+require(instant.fullmatch(envelope["notBefore"]))
+require(instant.fullmatch(envelope["expiresAt"]))
 
 digest = re.compile(r"sha256:[0-9a-f]{64}")
-assert all(
+require(all(
     digest.fullmatch(value)
     for value in (
         envelope["proofProfile"]["definitionDigest"],
         envelope["authorityContext"]["mandateDigest"],
         envelope["request"]["type"]["definitionDigest"],
     )
-)
+))
 
-assert raw == json.dumps(
-    envelope,
-    ensure_ascii=True,
-    sort_keys=True,
-    separators=(",", ":"),
-).encode("ascii")
+def restricted_jcs(value):
+    if value is None:
+        return b"null"
+    if isinstance(value, int):
+        require(value == 1)
+        return b"1"
+    if isinstance(value, str):
+        require(all(
+            0x20 <= ord(character) <= 0x7e
+            and character not in {'"', "\\"}
+            for character in value
+        ))
+        return b'"' + value.encode("ascii") + b'"'
+    if isinstance(value, dict):
+        return (
+            b"{"
+            + b",".join(
+                restricted_jcs(key) + b":" + restricted_jcs(value[key])
+                for key in sorted(value)
+            )
+            + b"}"
+        )
+    raise SystemExit("fixture contains a value outside its JCS subset")
+
+
+require(raw == restricted_jcs(envelope))
 PY
 
 echo envelope_structure_and_canonicalization=pass
@@ -1042,17 +1064,22 @@ wait "$PROXY_PID"
 PROXY_PID=
 [ -s envelope.jcs.sig ]
 
-echo signing_network_isolation=bwrap-unshare-net
+echo signing_client_network_isolation=bwrap-unshare-net
 
 python3 - <<'PY'
 prompt = open("askpass.log", encoding="utf-8").read().rstrip("\n")
 lines = prompt.splitlines()
-assert lines
+if not lines:
+    raise SystemExit("SSH confirmation prompt was empty")
 
 recognized = (
     lines[0].startswith("Allow use of key ")
     and lines[0].endswith("?")
 )
+marker_seen = "ECOSYM_TASK013_UNIQUE_CONTENT_MARKER" in prompt
+
+if not recognized or len(lines) != 2 or marker_seen:
+    raise SystemExit("SSH confirmation content did not match the measurement")
 
 print(
     "askpass_prompt_sanitized="
@@ -1065,11 +1092,7 @@ print(
 print("askpass_prompt_line_count=" + str(len(lines)))
 print(
     "request_marker_in_askpass_prompt="
-    + (
-        "yes"
-        if "ECOSYM_TASK013_UNIQUE_CONTENT_MARKER" in prompt
-        else "no"
-    )
+    + ("yes" if marker_seen else "no")
 )
 PY
 
@@ -1170,23 +1193,31 @@ sizes = []
 offset = 0
 
 while offset < len(stream):
-    assert offset + 4 <= len(stream)
+    if offset + 4 > len(stream):
+        raise SystemExit("truncated SSH agent frame length")
     size = struct.unpack(">I", stream[offset:offset + 4])[0]
     offset += 4
-    assert offset + size <= len(stream)
+    if offset + size > len(stream):
+        raise SystemExit("truncated SSH agent frame payload")
     sizes.append(size)
     offset += size
 
-assert offset == len(stream)
-assert sizes
+if offset != len(stream) or not sizes:
+    raise SystemExit("invalid or empty SSH agent request stream")
+
+exact_envelope_seen = envelope in stream
+marker_seen = marker in stream
+
+if exact_envelope_seen or marker_seen:
+    raise SystemExit("SSH agent received canonical petition content")
 
 print(
     "exact_envelope_in_client_to_agent_stream="
-    + ("yes" if envelope in stream else "no")
+    + ("yes" if exact_envelope_seen else "no")
 )
 print(
     "request_marker_in_client_to_agent_stream="
-    + ("yes" if marker in stream else "no")
+    + ("yes" if marker_seen else "no")
 )
 print("envelope_byte_count=" + str(len(envelope)))
 print("client_agent_request_count=" + str(len(sizes)))
@@ -1288,9 +1319,16 @@ printf 'signing_home_revocation_import_rc=%s post_revocation_sign_rc=%s post_sig
     "$(awk 'NF { n++ } END { print n + 0 }' pinentry-invocations)"
 
 gpgconf --homedir /tmp/sign --kill gpg-agent >/dev/null 2>&1
+signing_agent_stop_status=$?
 rm -rf sign
-printf 'signing_home_removed=%s\n' \
-    "$(test -e sign && echo no || echo yes)"
+signing_home_removed=$(test -e sign && echo no || echo yes)
+printf 'signing_agent_stop_rc=%s signing_home_removed=%s\n' \
+    "$signing_agent_stop_status" "$signing_home_removed"
+if [ "$signing_agent_stop_status" -ne 0 ] ||
+    [ "$signing_home_removed" != yes ]
+then
+    exit 1
+fi
 
 for home in verify-pre verify-current; do
     GNUPGHOME=/tmp/$home gpg --batch --no-tty --import public.asc \
@@ -1351,7 +1389,7 @@ current_names=$(
 )
 
 if [ "$current_status" -ne 0 ] ||
-    grep -q '^\[GNUPG:\] REVKEYSIG ' current.status ||
+    grep -Eq '^\[GNUPG:\] (REVKEYSIG|KEYREVOKED)( |$)' current.status ||
     ! grep -q '^\[GNUPG:\] VALIDSIG ' current.status
 then
     current_strict_status=1
@@ -1371,7 +1409,7 @@ archived_names=$(
 )
 
 if [ "$archived_status" -ne 0 ] ||
-    grep -q '^\[GNUPG:\] REVKEYSIG ' archived.status ||
+    grep -Eq '^\[GNUPG:\] (REVKEYSIG|KEYREVOKED)( |$)' archived.status ||
     ! grep -q '^\[GNUPG:\] VALIDSIG ' archived.status
 then
     archived_strict_status=1
@@ -1397,6 +1435,8 @@ probe_status=0
 [ "$mutation_status" -ne 0 ] || probe_status=1
 [ "$revoke_import_status" -eq 0 ] || probe_status=1
 [ "$current_status" -eq 0 ] || probe_status=1
+grep -Eq '^\[GNUPG:\] REVKEYSIG( |$)' current.status || probe_status=1
+grep -Eq '^\[GNUPG:\] KEYREVOKED( |$)' current.status || probe_status=1
 [ "$current_strict_status" -eq 1 ] || probe_status=1
 [ "$archived_status" -eq 0 ] || probe_status=1
 [ "$archived_strict_status" -eq 0 ] || probe_status=1
