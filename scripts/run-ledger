@@ -397,6 +397,24 @@ def unit_activity(unit: str) -> bool | None:
     return None
 
 
+def tasks_root() -> Path:
+    """Where task specifications live.
+
+    They are our workflow rather than the product, so they sit outside the
+    repository (DEVELOPMENT.md, "Repository artifacts"). ECOSYM_TASKS names
+    that directory; a checkout that still carries them in-tree keeps working
+    through the fallback.
+    """
+    configured = os.environ.get("ECOSYM_TASKS")
+    if configured:
+        return Path(configured)
+    in_tree = repo_root() / "docs" / "tasks"
+    if in_tree.is_dir():
+        return in_tree
+    data_home = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(data_home) / "ecosym" / "tasks"
+
+
 def path_parts(path: str) -> tuple[str, ...]:
     return PurePosixPath(path.removesuffix("/")).parts
 
@@ -934,7 +952,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         path = Path(value)
         try:
             declaration = read_declaration(path)
-            if path.resolve().parent == (repo_root() / "docs" / "tasks").resolve():
+            if path.resolve().parent == tasks_root().resolve():
                 require_task_spec_touch(path.stem, declaration)
         except DeclarationError as error:
             print(f"{path}: {error}", file=sys.stderr)
@@ -943,7 +961,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
 
 def declaration_for_task(task: str, spec: str | None = None) -> tuple[dict | None, str | None]:
-    path = Path(spec) if spec else repo_root() / "docs" / "tasks" / f"{task}.md"
+    path = Path(spec) if spec else tasks_root() / f"{task}.md"
     try:
         return require_task_spec_touch(task, read_declaration(path)), None
     except DeclarationError as error:
@@ -998,7 +1016,7 @@ def cmd_can_start(args: argparse.Namespace) -> int:
 def cmd_ready(args: argparse.Namespace) -> int:
     records = read_records()
     snapshot = scheduling_snapshot(records)
-    for path in sorted((repo_root() / "docs" / "tasks").glob("*.md")):
+    for path in sorted(tasks_root().glob("*.md")):
         task = path.stem
         declaration, error = declaration_for_task(task, str(path))
         if error:
