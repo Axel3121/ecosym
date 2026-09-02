@@ -240,6 +240,26 @@ const refusalCases: RefusalCase[] = [
     mutate: (request) => setAt(request, ["consequence", "summary"], "Delete a branch"),
   },
   {
+    // The recoverability claim is the reason this deletion is presentable as
+    // recoverable at all. A request that keeps the destructive classification
+    // but rewrites *how* it is recoverable is disclosing something the
+    // projection cannot back.
+    name: "a recoverability classification the projection does not establish",
+    rule: "destructive_disclosure",
+    mutate: (request) =>
+      setAt(
+        request,
+        ["consequence", "recoverability", "classification"],
+        "recoverable-from-backup",
+      ),
+  },
+  {
+    name: "an unrecoverable claim on an operation that preserves a tag",
+    rule: "destructive_disclosure",
+    mutate: (request) =>
+      setAt(request, ["consequence", "recoverability", "classification"], "unrecoverable"),
+  },
+  {
     name: "missing recoverability evidence",
     rule: "evidence_required",
     mutate: (request) => removeAt(request, ["consequence", "recoverability", "evidence"]),
