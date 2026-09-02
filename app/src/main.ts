@@ -3,6 +3,8 @@ import type { Scene } from "./scene.ts";
 import { fixture } from "./fixture.ts";
 import { Chart, makeWalkers, stepWalkers, ZOOM_MIN, ZOOM_MAX, SETTLEMENT_ZOOM, coverZoom } from "./chart.ts";
 import type { Hit } from "./chart.ts";
+import { renderDesk, civByIndex } from "./desk.ts";
+import type { DeskState, Decision } from "./desk.ts";
 import { PLATES, PLATE_OF } from "./chart.ts";
 import { opening, reply } from "./dialogue.ts";
 import type { Target, Line } from "./dialogue.ts";
@@ -18,19 +20,25 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 $("observed-at").textContent = new Date(scene.observedAt).toLocaleString("nb-NO", { dateStyle: "long", timeStyle: "short" });
 if (scene.synthetic) $("synthetic").hidden = false;
 
-// ---- docket -----------------------------------------------------------------
-function renderDocket() {
-  const d = $("docket");
-  const items = scene.capital.matters
-    .slice()
-    .sort((a, b) => Date.parse(b.raisedAt) - Date.parse(a.raisedAt))
-    .map((m) => {
-      const s = scene.settlements.find((x) => x.civilizationId === m.raisedBy);
-      return `<li><span class="who">${s?.name ?? m.raisedBy}</span> — ${m.summary}<br><span class="when">${ago(m.raisedAt)}</span></li>`;
-    })
-    .join("");
-  d.innerHTML = `<h2>Rådet</h2><ol>${items || '<li class="when">ingenting for rådet</li>'}</ol>`;
-}
+// ---- desk -------------------------------------------------------------------
+const desk: DeskState = { decisions: {}, selectedCiv: null };
+function renderDocket() { $("desk-body").innerHTML = renderDesk(scene, desk); }
+$("desk-body").addEventListener("click", (e) => {
+  const t = (e.target as HTMLElement).closest<HTMLElement>("[data-decide],[data-undo],[data-civ],[data-go],[data-talk-civ]");
+  if (!t) return;
+  if (t.dataset.decide) { desk.decisions[t.dataset.id!] = { decision: t.dataset.decide as Decision, at: Date.now() }; renderDocket(); return; }
+  if (t.dataset.undo) { delete desk.decisions[t.dataset.undo]; renderDocket(); return; }
+  if (t.dataset.go) { const s = scene.settlements.find((x) => x.civilizationId === t.dataset.go)!; select({ kind: "settlement", settlementId: s.civilizationId, label: s.name }); return; }
+  if (t.dataset.talkCiv) { const s = scene.settlements.find((x) => x.civilizationId === t.dataset.talkCiv)!; focus({ kind: "seat", settlement: s }); return; }
+  if (t.dataset.civ === "__capital") { select({ kind: "capital", label: "Capital" }); return; }
+  if (t.dataset.civ) { const s = scene.settlements.find((x) => x.civilizationId === t.dataset.civ)!; desk.selectedCiv = s.civilizationId; renderDocket(); flyTo(s.ground.x, s.ground.y, Math.max(chart.camera.zoom, 1.2)); }
+});
+window.addEventListener("keydown", (e) => {
+  if ((e.target as HTMLElement).tagName === "INPUT") return;
+  const n = Number(e.key);
+  if (n >= 1 && n <= 4) { const s = civByIndex(scene, n); if (s) select({ kind: "settlement", settlementId: s.civilizationId, label: s.name }); }
+  if (e.key === "c" || e.key === "C") select({ kind: "capital", label: "Capital" });
+});
 function ago(iso: string) {
   const m = Math.round((Date.parse(scene.observedAt) - Date.parse(iso)) / 60000);
   return m < 1 ? "nå nettopp" : m < 60 ? `${m} min siden` : `${Math.round(m / 60)} t siden`;
@@ -56,26 +64,26 @@ canvas.addEventListener("pointermove", (e) => {
     target = { ...chart.camera }; flying = false;
     last = { x: e.clientX, y: e.clientY };
   } else {
-    const h = chart.hitTest(e.clientX, e.clientY);
+    const h = chart.hitTest(e.offsetX, e.offsetY);
     const hv = $("hover");
     canvas.classList.toggle("pointing", !!h);
-    if (h) { hv.hidden = false; hv.style.left = `${e.clientX}px`; hv.style.top = `${e.clientY}px`; hv.innerHTML = `${h.label}${h.sub ? `<small>${h.sub}</small>` : ""}`; }
+    if (h) { hv.hidden = false; hv.style.left = `${e.offsetX}px`; hv.style.top = `${e.offsetY}px`; hv.innerHTML = `${h.label}${h.sub ? `<small>${h.sub}</small>` : ""}`; }
     else hv.hidden = true;
   }
 });
 canvas.addEventListener("pointerup", (e) => {
   dragging = false; canvas.classList.remove("dragging");
   if (moved > 6) return;
-  const h = chart.hitTest(e.clientX, e.clientY);
+  const h = chart.hitTest(e.offsetX, e.offsetY);
   select(h);
 });
 canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
-  const before = chart.toWorld(e.clientX, e.clientY);
+  const before = chart.toWorld(e.offsetX, e.offsetY);
   const factor = Math.exp(-e.deltaY * 0.0014);
   const zoom = Math.min(ZOOM_MAX, Math.max(minZoom(), chart.camera.zoom * factor));
   chart.camera.zoom = zoom;
-  const after = chart.toWorld(e.clientX, e.clientY);
+  const after = chart.toWorld(e.offsetX, e.offsetY);
   // keep the point under the pointer fixed
   chart.camera.x += before.x - after.x; chart.camera.y += before.y - after.y;
   target = { ...chart.camera }; flying = false;
@@ -87,6 +95,7 @@ window.addEventListener("keydown", (e) => { if (e.key === "Escape") select(null)
 let selected: Hit | null = null;
 
 function select(h: Hit | null) {
+  if (h?.kind === "settlement" && h.settlementId) { desk.selectedCiv = h.settlementId; renderDocket(); }
   selected = h;
   const sheet = $("sheet");
   if (!h) { sheet.hidden = true; return; }
@@ -115,7 +124,7 @@ function select(h: Hit | null) {
 
 function sheetFor(h: Hit): string {
   const close = `<button class="close" aria-label="close">✕</button>`;
-  const syn = scene.synthetic ? `<p class="synthetic-note">syntetisk — ingenting på dette arket er observert</p>` : "";
+  const syn = ""; // the synthetic flag lives once, in the desk header
   const s = h.settlementId ? scene.settlements.find((x) => x.civilizationId === h.settlementId) : undefined;
   switch (h.kind) {
     case "capital": {
@@ -125,7 +134,7 @@ function sheetFor(h: Hit): string {
     case "settlement": {
       if (!s) return close;
       if (s.epistemic !== "observed") return `${close}<p class="kind">sivilisasjon</p><h2>${s.name}</h2><p class="muted">Aldri observert. Ecosym har ikke sett dette stedet; ingenting tegnes fordi ingenting er kjent.</p>${syn}`;
-      return `${close}<p class="kind">sivilisasjon · ${s.domain}</p><h2>${s.name}</h2><p>sist sett <span class="muted">${ago(s.lastSeen!)}</span> · ${s.inhabitants.length} i arbeid · ${s.traces.length} spor</p><h3>Sete</h3><p class="muted">${s.seatName}</p><button class="talk" data-talk="seat">Snakk med ${s.seatName}</button><h3>I arbeid nå</h3><ul>${s.inhabitants.map((i) => `<li style="margin-left:${i.depth * 1.2}em">${i.label}${i.tool ? ` <span class="muted">(${i.tool})</span>` : ""}</li>`).join("") || '<li class="muted">ingen</li>'}</ul>${syn}`;
+      return `${close}<p class="kind">sivilisasjon · ${s.domain}</p><h2>${s.name}</h2><p>sist sett <span class="muted">${ago(s.lastSeen!)}</span> · ${s.inhabitants.length} i arbeid · ${s.traces.length} spor</p><p class="muted">Arbeidet står på bordet til venstre. Klikk en person eller ${s.seatName} for detaljer.</p><button class="talk" data-talk="seat">Snakk med ${s.seatName}</button>${syn}`;
     }
     case "seat": {
       if (!s) return close;

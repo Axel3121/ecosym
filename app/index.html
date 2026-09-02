@@ -16,13 +16,16 @@ FORM: Treasure chart fused with Civitates engraving and the byōbu's cloud-as-un
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
 -->
   <div id="app">
+    <aside id="desk" class="desk" aria-label="Arbeidsbord">
+      <header class="desk-head">
+        <h1>Ecosym</h1>
+        <p class="sub">observert <span id="observed-at"></span></p>
+        <p class="synthetic" id="synthetic" hidden>syntetisk fixture — ingenting her er observert</p>
+      </header>
+      <div id="desk-body"></div>
+    </aside>
+    <main id="stage">
     <canvas id="chart" tabindex="0" aria-label="Verdenskart"></canvas>
-    <div id="cartouche" class="cartouche panel">
-      <h1>Ecosym</h1>
-      <p class="sub">orbis · <span id="observed-at"></span></p>
-      <p class="synthetic" id="synthetic" hidden>syntetisk fixture — ingenting her er observert</p>
-    </div>
-    <aside id="docket" class="docket panel" aria-label="Council docket"></aside>
     <div id="hover" class="hover panel" hidden></div>
     <section id="sheet" class="sheet panel" hidden aria-live="polite"></section>
     <section id="focus" class="focus panel" hidden aria-live="polite">
@@ -41,7 +44,8 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
         </form>
       </div>
     </section>
-    <p class="hint panel" id="hint">scroll for å gå ned · klikk et sted · dra for å panorere</p>
+    <p class="hint panel" id="hint">scroll for å gå ned · klikk et sted · dra for å panorere · 1–4 sivilisasjon · C Capital</p>
+    </main>
   </div>
   <script type="module" src="/src/main.ts"></script>
 </body>
