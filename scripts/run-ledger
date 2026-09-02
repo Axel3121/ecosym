@@ -386,7 +386,9 @@ def paths_overlap(left: str, right: str) -> bool:
     return left_parts[:shorter] == right_parts[:shorter]
 
 
-def require_task_spec_touch(task: str, declaration: dict) -> dict:
+def require_task_spec_touch(task: object, declaration: dict) -> dict:
+    if not isinstance(task, str) or not TASK_RE.fullmatch(task) or ".." in task:
+        raise DeclarationError(f"invalid task name: {task!r}")
     spec = f"docs/tasks/{task}.md"
     if not any(paths_overlap(spec, touch) for touch in declaration["touches"]):
         raise DeclarationError(f"'touches' must cover {spec}, which run-task copies into the worktree")
@@ -395,10 +397,13 @@ def require_task_spec_touch(task: str, declaration: dict) -> dict:
 
 def record_declaration(record: dict) -> dict | None:
     try:
-        return validate_declaration_values(
-            record.get("needs"),
-            record.get("touches"),
-            record.get("autonomous", True),
+        return require_task_spec_touch(
+            record.get("task"),
+            validate_declaration_values(
+                record.get("needs"),
+                record.get("touches"),
+                record.get("autonomous", True),
+            ),
         )
     except DeclarationError:
         return None
@@ -575,7 +580,10 @@ def cmd_start(args: argparse.Namespace) -> int:
     }
     if args.declaration:
         try:
-            declaration = parse_declaration_json(args.declaration)
+            declaration = require_task_spec_touch(
+                args.task,
+                parse_declaration_json(args.declaration),
+            )
         except (json.JSONDecodeError, DeclarationError) as error:
             print(f"invalid frozen declaration: {error}", file=sys.stderr)
             return 1
@@ -583,7 +591,10 @@ def cmd_start(args: argparse.Namespace) -> int:
         record["spec"] = str(Path(args.spec).resolve()) if args.spec else None
     elif args.spec:
         try:
-            declaration = read_declaration(Path(args.spec))
+            declaration = require_task_spec_touch(
+                args.task,
+                read_declaration(Path(args.spec)),
+            )
         except DeclarationError as error:
             print(f"{args.spec}: {error}", file=sys.stderr)
             return 1
