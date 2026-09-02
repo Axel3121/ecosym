@@ -216,6 +216,57 @@ export function renderLog(scene: Scene, state: DeskState): string {
   return [oversikt, raadet, arbeid, petisjoner, observert].join('<hr class="chapter">');
 }
 
+/** A single sheet: what the map click or the strip number asked for. Nothing else. */
+export type Sheet = "place" | "raadet" | "arbeid" | "petisjoner" | "observert";
+export function renderSheet(scene: Scene, state: DeskState, sheet: Sheet): string {
+  const sorted = scene.capital.matters.slice().sort((a, b) => Date.parse(b.raisedAt) - Date.parse(a.raisedAt));
+  switch (sheet) {
+    case "place": {
+      const s = scene.settlements.find((x) => x.civilizationId === state.selectedCiv);
+      const own = s ? sorted.filter((m) => m.raisedBy === s.civilizationId && !state.decisions[m.id]) : [];
+      const matters = own.length ? `<p class="label">Venter på deg</p>${own.map((m) => matterEntry(scene, state, m, false)).join("")}` : "";
+      return `<div class="civ-block">${civEntry(scene, state)}</div>${matters}`;
+    }
+    case "raadet":
+      return `<p class="label">Rådet</p>${sorted.length ? sorted.map((m) => matterEntry(scene, state, m, true)).join("") : `<p class="dim">Ingenting venter.</p>`}<p class="dim note">Krysser mandatet = utenfor det sivilisasjonen kan alene. Avgjørelser blir petisjoner. Ikke koblet i prototypen.</p>`;
+    case "arbeid":
+      return `<p class="label">Arbeid</p>${scene.settlements.map((s) => {
+        if (s.epistemic !== "observed") return `<p class="civ-name faint">${esc(s.name)} <span class="dim">aldri sett</span></p>`;
+        const { running, traces } = workTree(s);
+        return `<p class="civ-name"><a href="#" data-go="${esc(s.civilizationId)}">${esc(s.name)}</a> <span class="dim">${s.inhabitants.length ? `${s.inhabitants.length} i arbeid` : "stille"} · <span class="mono">${ago(scene, s.lastSeen!)}</span></span></p><div class="work-tree">${running}${traces}</div>`;
+      }).join("")}`;
+    case "petisjoner":
+      return `<p class="label">Petisjoner</p>${scene.letters.length ? scene.letters.slice().sort((a, b) => Date.parse(b.sentAt) - Date.parse(a.sentAt)).map((l) => {
+        const s = scene.settlements.find((x) => x.civilizationId === l.toCivilizationId);
+        const steps = ["sendt", "akseptert", "i kø", "pågår"];
+        const order: Record<string, number> = { sent: 0, accepted: 1, queued: 2, "in-progress": 3, refused: 3 };
+        const cur = order[l.state] ?? 0;
+        const trail = l.state === "refused" ? `<span class="seal">avslått</span>` : steps.map((st, i) => i === cur ? `<b>${st}</b>` : st).join(" → ");
+        return `<div class="matter"><p class="matter-meta"><span>til ${esc(s?.seatName ?? l.toCivilizationId)} · ${esc(s?.name ?? "")}</span><span class="mono dim">${ago(scene, l.sentAt)}</span></p><p class="matter-title">${esc(l.text)}</p><p class="dim">${trail}</p></div>`;
+      }).join("") : `<p class="dim">Ingen petisjoner.</p>`}<p class="dim note">Noe som ble bedt om. Vises aldri som noe som skjedde.</p>`;
+    case "observert":
+      return `<p class="label">Observert</p>${observedLog(scene, state.settings.logLimit)}`;
+  }
+}
+
+/** The strip: the whole world in one sentence. Each number is a link to its sheet. */
+export function renderStrip(scene: Scene, state: DeskState): string {
+  const open = scene.capital.matters.filter((m) => !state.decisions[m.id]).length;
+  const live = scene.settlements.filter((s) => s.epistemic === "observed" && s.inhabitants.length > 0).length;
+  const quiet = scene.settlements.filter((s) => s.epistemic === "observed" && s.inhabitants.length === 0).length;
+  const unseen = scene.settlements.filter((s) => s.epistemic !== "observed").length;
+  const waiting = Object.values(state.threads).filter((t) => t.lines.length && t.lines[t.lines.length - 1]!.who === "you").length;
+  const part = (n: number, word: string, sheet: string, cls = "") => `<a href="#" data-sheet="${sheet}" class="strip-part"><span class="n ${n ? cls : "faint"}">${n}</span> ${word}</a>`;
+  return [
+    part(open, open === 1 ? "sak venter" : "saker venter", "raadet", "seal"),
+    part(live, "i arbeid", "arbeid", "live"),
+    part(quiet, "stille", "arbeid"),
+    part(unseen, "aldri sett", "arbeid"),
+    part(scene.letters.length, "petisjoner", "petisjoner"),
+    `<a href="#" data-sheet="samtaler" class="strip-part">${waiting ? `<span class="n live">${waiting}</span> venter på svar` : "samtaler"}</a>`,
+  ].join('<span class="sep">·</span>');
+}
+
 /** Samtaler: the one page-exception that is a roster of faces, Stardew-journal style.
  *  Everyone you can talk to — not just threads that already exist — grouped by place:
  *  Hovedkvarter (Rådet) first, then each civilization's seat and its live agents. A

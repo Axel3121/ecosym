@@ -1,10 +1,12 @@
 import { deriveScene } from "./scene.ts";
 import type { Scene } from "./scene.ts";
 import { fixture } from "./fixture.ts";
-import { Chart, makeWalkers, stepWalkers, ZOOM_MIN, ZOOM_MAX, SETTLEMENT_ZOOM, coverZoom } from "./chart.ts";
+import { Chart, makeWalkers, stepWalkers, ZOOM_MIN, ZOOM_MAX, coverZoom } from "./chart.ts";
 import type { Hit } from "./chart.ts";
-import { renderLog, renderSamtaler, renderInnstillinger, civByIndex, SECTIONS, PAGES, DEFAULT_SETTINGS } from "./desk.ts";
-import type { DeskState, Decision, Section, Page, Settings, Thread, DeskMode } from "./desk.ts";
+import { renderSheet, renderStrip, renderSamtaler, renderInnstillinger, civByIndex, DEFAULT_SETTINGS } from "./desk.ts";
+import type { DeskState, Decision, Settings, Thread } from "./desk.ts";
+import type { Sheet } from "./desk.ts";
+import { parse, suggest } from "./command.ts";
 import { PLATES } from "./chart.ts";
 import { plateKeyFor, seatFaceFor, agentFaceFor } from "./looks.ts";
 import { opening, reply } from "./dialogue.ts";
@@ -19,28 +21,43 @@ const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 let motionOff = false;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
-$("observed-at").textContent = new Date(scene.observedAt).toLocaleString("nb-NO", { dateStyle: "long", timeStyle: "short" });
 
-// ---- the desk: a logbook you page through --------------------------------
+// ---- the shell: map navigates; a strip says the world; a sheet comes and goes ----
 const app = $("app");
 const SETTINGS_KEY = "ecosym.settings";
 function loadSettings(): Settings { try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") }; } catch { return { ...DEFAULT_SETTINGS }; } }
 const desk: DeskState = { decisions: {}, selectedCiv: null, view: "log", section: "oversikt", lastPage: "samtaler", mode: "side", threads: {}, settings: loadSettings() };
+type Open = Sheet | "samtaler" | "innstillinger";
+let openSheet: Open | null = null;
+
 function applySettings() {
   const s = desk.settings;
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
-  document.documentElement.style.setProperty("--desk-w", `${s.deskWidth}px`);
-  app.classList.toggle("wide-desk", s.deskWidth >= 400);
+  document.documentElement.style.setProperty("--sheet-w", `${s.deskWidth}px`);
   const dark = s.theme === "dark" || (s.theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
   document.documentElement.dataset.theme = dark ? "dark" : "light";
   chart.showLabels = s.labels;
   motionOff = !s.smoke;
-  requestAnimationFrame(() => chart.resize()); setTimeout(() => chart.resize(), 200);
+  requestAnimationFrame(() => chart.resize());
 }
 
-function pageBody(page: Page): string {
-  return page === "samtaler" ? renderSamtaler(scene, desk) : renderInnstillinger(scene, desk);
+const SHEET_TITLES: Record<Open, string> = { place: "", raadet: "Rådet", arbeid: "Arbeid", petisjoner: "Petisjoner", observert: "Observert", samtaler: "Samtaler", innstillinger: "Innstillinger" };
+
+function renderDocket() {
+  $("strip-text").innerHTML = renderStrip(scene, desk);
+  $("strip-text").querySelectorAll<HTMLElement>("[data-sheet]").forEach((a) => a.classList.toggle("on", a.dataset.sheet === openSheet));
+  const sheet = $("sheet");
+  if (!openSheet) { sheet.hidden = true; return; }
+  sheet.hidden = false;
+  const civ = scene.settlements.find((x) => x.civilizationId === desk.selectedCiv);
+  $("sheet-title").textContent = openSheet === "place" ? (desk.selectedCiv === "__capital" ? "Capital" : civ?.name ?? "") : SHEET_TITLES[openSheet];
+  const body = $("sheet-body");
+  body.innerHTML = openSheet === "samtaler" ? renderSamtaler(scene, desk)
+    : openSheet === "innstillinger" ? renderInnstillinger(scene, desk)
+    : renderSheet(scene, desk, openSheet);
+  wireBody(body);
 }
+function show(sheet: Open | null) { openSheet = sheet; renderDocket(); }
 function wireBody(el: HTMLElement) {
   el.querySelectorAll<HTMLElement>("[data-set]").forEach((e) => e.addEventListener("click", (ev) => {
     ev.preventDefault();
@@ -56,117 +73,71 @@ function wireBody(el: HTMLElement) {
   }));
   el.querySelectorAll<HTMLElement>("[data-resume]").forEach((e) => e.addEventListener("click", (ev) => { ev.preventDefault(); resumeThread(e.dataset.resume!); }));
 }
-
-function renderDocket() {
-  // Table of contents: sticky, scrolls the one document to an anchor; never a page change.
-  const toc = $("desk-toc");
-  const openMatters = scene.capital.matters.filter((m) => !desk.decisions[m.id]).length;
-  const nThreads = Object.keys(desk.threads).length;
-  const secItem = (t: { id: Section; label: string; key: string }) =>
-    `<a href="#" class="toc-item${desk.view === "log" && desk.section === t.id ? " on" : ""}" data-anchor="${t.id}" title="${t.key}"><span class="tlabel">${t.label}</span></a>`;
-  const pageItem = (t: { id: Page; label: string; key: string }) =>
-    `<a href="#" class="toc-item${desk.view === t.id ? " on" : ""}" data-page="${t.id}" title="${t.key}"><span class="tlabel">${t.label}</span></a>`;
-  toc.innerHTML = SECTIONS.map(secItem).join("") + `<span class="toc-rule"></span>` + PAGES.map(pageItem).join("");
-
-  // Collapsed spine: bare book back, letters only, one count for matters waiting.
-  const spine = $("desk-spine");
-  spine.innerHTML = `<button class="spine-open" data-spine-open title="Vis loggboken">›</button>`
-    + scene.settlements.map((s, i) => `<a href="#" class="spine-key${desk.selectedCiv === s.civilizationId ? " sel" : ""}" data-civ="${s.civilizationId}">${i + 1}</a>`).join("")
-    + `<a href="#" class="spine-key${desk.selectedCiv === "__capital" ? " sel" : ""}" data-civ="__capital">C</a>`
-    + (openMatters ? `<span class="spine-count">${openMatters}</span>` : "");
-
-  // Side/collapsed mode shows one page: the left slot carries whatever is active.
-  // Full mode is the book open: left is always the log, right is the other page —
-  // literal pages of a book, never panels that change size.
-  const left = $("desk-left"), right = $("desk-right");
-  const full = desk.mode === "full";
-  const activeBody = desk.view === "log" ? renderLog(scene, desk) : pageBody(desk.view);
-  left.innerHTML = full ? renderLog(scene, desk) : activeBody;
-  right.innerHTML = full ? pageBody(desk.lastPage) : "";
-  wireBody(left); if (full) wireBody(right);
-  if (desk.view === "log") scrollToSection(desk.section, false);
-}
-
-/** Jump inside the one document — never a view change. Smooth unless `first`. */
-function scrollToSection(id: Section, smooth = true) {
-  desk.section = id;
-  const target = $("desk-left").querySelector<HTMLElement>(`#sec-${id}`);
-  if (target) target.scrollIntoView({ block: "start", behavior: smooth ? "smooth" : "auto" });
-}
-
-let lastOpenMode: DeskMode = "side";
-function setMode(mode: DeskMode) {
-  desk.mode = mode; if (mode !== "collapsed") lastOpenMode = mode;
-  app.classList.toggle("collapsed", mode === "collapsed");
-  app.classList.toggle("full", mode === "full");
-  app.querySelectorAll<HTMLElement>("[data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
-  renderDocket();
-  if (mode !== "full") { requestAnimationFrame(() => chart.resize()); setTimeout(() => chart.resize(), 200); }
-}
-function goSection(id: Section) {
-  desk.view = "log";
-  if (desk.mode === "collapsed") setMode(lastOpenMode);
-  renderDocket();
-  scrollToSection(id);
-}
-function goPage(id: Page) {
-  desk.view = id; desk.lastPage = id;
-  if (desk.mode === "collapsed") setMode(lastOpenMode);
-  renderDocket();
-}
-$("desk-toc").addEventListener("click", (e) => {
-  const t = (e.target as HTMLElement).closest<HTMLElement>("[data-anchor],[data-page]");
-  if (!t) return;
-  e.preventDefault();
-  if (t.dataset.anchor) goSection(t.dataset.anchor as Section);
-  else if (t.dataset.page) goPage(t.dataset.page as Page);
-});
-$("desk-spine").addEventListener("click", (e) => {
-  const el = e.target as HTMLElement;
-  if (el.closest("[data-spine-open]")) { e.preventDefault(); setMode(lastOpenMode); return; }
-  const t = el.closest<HTMLElement>("[data-civ]");
-  if (!t) return;
-  e.preventDefault();
-  if (t.dataset.civ === "__capital") { select({ kind: "capital", label: "Capital" }); return; }
-  const s = scene.settlements.find((x) => x.civilizationId === t.dataset.civ)!;
-  select({ kind: "settlement", settlementId: s.civilizationId, label: s.name });
-});
-app.querySelectorAll<HTMLElement>("[data-mode]").forEach((b) => b.addEventListener("click", () => {
-  const m = b.dataset.mode as DeskMode;
-  setMode(desk.mode === m && m === "collapsed" ? lastOpenMode : m);
-  b.closest("details")?.removeAttribute("open");
-}));
-app.querySelector<HTMLElement>("[data-open-settings]")?.addEventListener("click", (e) => {
-  e.preventDefault();
-  goPage("innstillinger");
-  (e.currentTarget as HTMLElement).closest("details")?.removeAttribute("open");
-});
 function deskClick(e: Event) {
   const t = (e.target as HTMLElement).closest<HTMLElement>("[data-decide],[data-undo],[data-civ],[data-go],[data-talk-civ],[data-talk-council]");
   if (!t) return;
   e.preventDefault();
   if (t.dataset.decide) { desk.decisions[t.dataset.id!] = { decision: t.dataset.decide as Decision, at: Date.now() }; renderDocket(); return; }
   if (t.dataset.undo) { delete desk.decisions[t.dataset.undo]; renderDocket(); return; }
-  if (t.dataset.go) { const s = scene.settlements.find((x) => x.civilizationId === t.dataset.go)!; select({ kind: "settlement", settlementId: s.civilizationId, label: s.name }); return; }
+  const civId = t.dataset.go ?? t.dataset.civ;
+  if (civId === "__capital") { select({ kind: "capital", label: "Capital" }); return; }
+  if (civId) { const s = scene.settlements.find((x) => x.civilizationId === civId)!; select({ kind: "settlement", settlementId: s.civilizationId, label: s.name }); return; }
   if (t.dataset.talkCiv) { const s = scene.settlements.find((x) => x.civilizationId === t.dataset.talkCiv)!; focus({ kind: "seat", settlement: s }); return; }
   if (t.dataset.talkCouncil) { focus({ kind: "council" }); return; }
-  if (t.dataset.civ === "__capital") { select({ kind: "capital", label: "Capital" }); return; }
-  if (t.dataset.civ) { const s = scene.settlements.find((x) => x.civilizationId === t.dataset.civ)!; desk.selectedCiv = s.civilizationId; renderDocket(); flyTo(s.ground.x, s.ground.y, Math.max(chart.camera.zoom, 1.2)); }
 }
-$("desk-left").addEventListener("click", deskClick);
-$("desk-right").addEventListener("click", deskClick);
+$("sheet-body").addEventListener("click", deskClick);
+$("sheet-close").addEventListener("click", () => { desk.selectedCiv = null; show(null); });
+$("strip").addEventListener("click", (e) => {
+  const t = (e.target as HTMLElement).closest<HTMLElement>("[data-sheet]");
+  if (!t) return;
+  e.preventDefault();
+  const s = t.dataset.sheet as Open;
+  show(openSheet === s ? null : s);
+  t.closest("details")?.removeAttribute("open");
+});
+
+// ---- the command line ----------------------------------------------------------
+const cmdInput = $<HTMLInputElement>("cmd-input"), cmdList = $("cmd-suggest");
+let sugIndex = -1;
+function renderSuggest() {
+  const items = suggest(scene, desk, cmdInput.value);
+  sugIndex = Math.min(sugIndex, items.length - 1);
+  cmdList.hidden = document.activeElement !== cmdInput || items.length === 0;
+  cmdList.innerHTML = items.map((s, i) => `<li data-text="${s.text}" class="${i === sugIndex ? "on" : ""}"><span>${s.text}</span><span class="hint">${s.hint}</span></li>`).join("");
+}
+function runCommand(raw: string) {
+  const c = parse(scene, desk, raw);
+  switch (c.kind) {
+    case "decide": desk.decisions[c.matterId] = { decision: c.decision, at: Date.now() }; if (!openSheet) show("raadet"); else renderDocket(); break;
+    case "go": if (c.civ === "__capital") select({ kind: "capital", label: "Capital" }); else { const s = scene.settlements.find((x) => x.civilizationId === c.civ)!; select({ kind: "settlement", settlementId: s.civilizationId, label: s.name }); } break;
+    case "sheet": show(c.sheet); break;
+    case "talk":
+      if (c.target === "council") focus({ kind: "council" });
+      else { const tgt = c.target; const s = scene.settlements.find((x) => x.civilizationId === tgt.civ)!; const rid = "runId" in tgt ? tgt.runId : undefined; const a = rid ? s.inhabitants.find((i) => i.runId === rid) : undefined; focus(a ? { kind: "agent", settlement: s, agent: a } : { kind: "seat", settlement: s }); }
+      break;
+    case "help": show("innstillinger"); break;
+    case "unknown": if (c.text) { cmdInput.value = ""; cmdInput.placeholder = c.text; setTimeout(() => { cmdInput.placeholder = "/ for å skrive: ja · nei · spør · snakk curia · roma"; }, 2200); return; } break;
+  }
+  cmdInput.value = ""; cmdInput.blur(); cmdList.hidden = true;
+}
+$("cmd").addEventListener("submit", (e) => { e.preventDefault(); const pick = cmdList.querySelector<HTMLElement>("li.on"); runCommand(pick && !cmdList.hidden ? pick.dataset.text! : cmdInput.value); });
+cmdInput.addEventListener("input", () => { sugIndex = -1; renderSuggest(); });
+cmdInput.addEventListener("focus", renderSuggest);
+cmdInput.addEventListener("blur", () => setTimeout(() => { cmdList.hidden = true; }, 120));
+cmdInput.addEventListener("keydown", (e) => {
+  const n = cmdList.children.length;
+  if (e.key === "ArrowUp") { e.preventDefault(); sugIndex = (sugIndex - 1 + n) % n; renderSuggest(); }
+  else if (e.key === "ArrowDown") { e.preventDefault(); sugIndex = (sugIndex + 1) % n; renderSuggest(); }
+  else if (e.key === "Escape") { cmdInput.value = ""; cmdInput.blur(); }
+  e.stopPropagation();
+});
+cmdList.addEventListener("mousedown", (e) => { const li = (e.target as HTMLElement).closest<HTMLElement>("li"); if (li) { e.preventDefault(); runCommand(li.dataset.text!); } });
+
+// keyboard: digits pick a civilization in order, C the Capital, / the command line, Esc closes
 window.addEventListener("keydown", (e) => {
   if ((e.target as HTMLElement).tagName === "INPUT") return;
-  if (e.altKey && (e.key === "b" || e.key === "∫")) { setMode(desk.mode === "collapsed" ? lastOpenMode : "collapsed"); return; }
-  if (e.altKey && (e.key === "f" || e.key === "ƒ")) { setMode(desk.mode === "full" ? "side" : "full"); return; }
-  if (!e.altKey && !e.metaKey && !e.ctrlKey) {
-    const sec = SECTIONS.find((s) => s.key.toLowerCase() === e.key.toLowerCase());
-    if (sec) { goSection(sec.id); return; }
-    const pg = PAGES.find((p) => p.key.toLowerCase() === e.key.toLowerCase());
-    if (pg) { goPage(pg.id); return; }
-    if (e.key.toLowerCase() === "i") { goPage("innstillinger"); return; }
-  }
-  // Digits select a civilization in declaration order; 0 is the tenth. No upper bound.
+  if (e.altKey || e.metaKey || e.ctrlKey) return;
+  if (e.key === "/") { e.preventDefault(); cmdInput.focus(); return; }
   const n = e.key === "0" ? 10 : Number(e.key);
   if (Number.isInteger(n) && n >= 1) { const s = civByIndex(scene, n); if (s) select({ kind: "settlement", settlementId: s.civilizationId, label: s.name }); }
   if (e.key === "c" || e.key === "C") select({ kind: "capital", label: "Capital" });
@@ -177,7 +148,6 @@ let target = { ...chart.camera };
 let flying = false;
 
 function flyTo(x: number, y: number, zoom: number) {
-  if (desk.mode === "full") setMode("side");
   target = { x, y, zoom: Math.min(ZOOM_MAX, Math.max(minZoom(), zoom)) };
   flying = true;
   if (reduced) { chart.camera = { ...target }; flying = false; }
@@ -218,33 +188,25 @@ canvas.addEventListener("wheel", (e) => {
   target = { ...chart.camera }; flying = false;
 }, { passive: false });
 window.addEventListener("resize", () => chart.resize());
-app.addEventListener("transitionend", () => chart.resize());
-window.addEventListener("keydown", (e) => { if (e.key === "Escape") select(null); });
+window.addEventListener("keydown", (e) => { if (e.key === "Escape" && !current && (e.target as HTMLElement).tagName !== "INPUT") { desk.selectedCiv = null; show(null); } });
 
 // ---- selection & sheet -----------------------------------------------------
 let selected: Hit | null = null;
 
 function select(h: Hit | null) {
-  // The map is the place: a click goes there or starts a conversation.
-  // Facts live on the desk; there is no card on top of the painting.
+  // The map is the navigation. A place opens its sheet; a person or seat opens a conversation.
   selected = h;
   if (!h) return;
   const s = h.settlementId ? scene.settlements.find((x) => x.civilizationId === h.settlementId) : undefined;
   switch (h.kind) {
     case "settlement":
       if (!s) return;
-      desk.selectedCiv = s.civilizationId;
-      // P0 (two blind reviewers hit it): choosing a place must never land you on a
-      // page where the place has no actions. Facts and "snakk med" live in Oversikt.
-      desk.view = "log"; desk.section = "oversikt";
-      renderDocket();
+      desk.selectedCiv = s.civilizationId; show("place");
       if (s.epistemic === "observed") flyTo(s.ground.x, s.ground.y - 30, Math.max(chart.camera.zoom, 2.4));
       else flyTo(s.ground.x, s.ground.y, Math.max(chart.camera.zoom, 1.2));
       return;
     case "capital":
-      desk.selectedCiv = "__capital";
-      desk.view = "log"; desk.section = "oversikt";
-      renderDocket();
+      desk.selectedCiv = "__capital"; show("place");
       flyTo(770, 410, Math.max(chart.camera.zoom, 1.7));
       return;
     case "seat":
@@ -254,11 +216,11 @@ function select(h: Hit | null) {
       if (!s) return;
       const agent = s.inhabitants.find((i) => i.runId === h.runId);
       if (agent) focus({ kind: "agent", settlement: s, agent });
-      else { desk.selectedCiv = s.civilizationId; renderDocket(); }
+      else { desk.selectedCiv = s.civilizationId; show("place"); }
       return;
     }
     case "letter":
-      desk.selectedCiv = "__capital"; renderDocket();
+      show("petisjoner");
       return;
   }
 }
@@ -295,7 +257,6 @@ function push(lines: Line[], record = true) {
 }
 
 function focus(t: Target) {
-  if (desk.mode === "full") setMode("side");
   current = t;
   select(null);
   app.classList.add("focused"); focusEl.hidden = false; thread.innerHTML = "";
@@ -325,7 +286,7 @@ function focus(t: Target) {
   else push(opening(scene, t));
   setTimeout(() => input.focus(), 50);
 }
-function unfocus() { current = null; currentThreadId = null; app.classList.remove("focused"); focusEl.hidden = true; if (desk.view === "samtaler") renderDocket(); }
+function unfocus() { current = null; currentThreadId = null; app.classList.remove("focused"); focusEl.hidden = true; renderDocket(); }
 $("focus-back").addEventListener("click", unfocus);
 $("focus-form").addEventListener("submit", (e) => {
   e.preventDefault();
@@ -355,7 +316,7 @@ function frame(now: number) {
     chart.camera.y = Math.min(Math.max(chart.camera.y, Math.min(hh, 512)), Math.max(1024 - hh, 512)); }
   stepWalkers(walkers, dt, reduced || motionOff);
   if (canvas.clientWidth > 0) chart.draw(scene, walkers, selected);
-  $("hint").textContent = chart.camera.zoom >= SETTLEMENT_ZOOM ? "scroll ut til kartet · klikk en person eller setet for å snakke" : "scroll for å gå ned · klikk et sted · dra for å panorere";
+  // no hint bar: the strip's placeholder carries the one line of help
   requestAnimationFrame(frame);
 }
 applySettings();
@@ -363,4 +324,4 @@ renderDocket();
 requestAnimationFrame(frame);
 
 // test hook
-(window as unknown as { __ecosym: unknown }).__ecosym = { scene, chart, select, flyTo, focus, unfocus };
+(window as unknown as { __ecosym: unknown }).__ecosym = { scene, chart, select, flyTo, focus, unfocus, show, runCommand, desk };
