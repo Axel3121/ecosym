@@ -27,7 +27,7 @@ export const PLATES: Record<string, { img: string; aspect: number; seat: P; well
 };
 type P = { x: number; y: number };
 import { plateKeyFor } from "./looks.ts";
-const CAPITAL = { x: 770, y: 400, r: 130 };
+import { CAPITAL_GROUND as CAPITAL } from "./ground.ts";
 
 // sprite sheet cells
 export const WCOLS = [100, 400, 660, 960], WROWS = [60, 360, 660, 940], WCELL = { w: 200, h: 240 };

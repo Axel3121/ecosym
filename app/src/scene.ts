@@ -1,3 +1,5 @@
+import { placeSettlements } from "./ground.ts";
+
 // Scene contract: observations in, a deterministic scene description out.
 // The renderer reads only this. Nothing here touches a source or decides
 // authority; it only gives observed and declared state a form.
@@ -13,8 +15,8 @@ export interface CivilizationDeclared {
   /** How the seat speaks. Flavour only; never a source of fact. */
   voice?: string;
   mandate: { alone: string[]; council: string[] };
-  /** Position on the chart, in world units. Declared by the user at founding. */
-  ground: { x: number; y: number };
+  /** Position on the chart, in world units. Optional: undeclared civilizations take the next free clearing. */
+  ground?: { x: number; y: number };
 }
 
 export interface RunObserved {
@@ -181,6 +183,7 @@ function ms(a: Instant): number {
 
 export function deriveScene(obs: Observations): Scene {
   const now = ms(obs.observedAt);
+  const placed = placeSettlements(obs.civilizations);
   const settlements: Settlement[] = obs.civilizations.map((civ) => {
     const lastSeen = obs.lastSeen[civ.id];
     const epistemic: Epistemic = lastSeen ? "observed" : "unobserved";
@@ -255,7 +258,9 @@ export function deriveScene(obs: Observations): Scene {
       .filter((t) => t.freshness > 0);
 
     const volume = roots.length + traces.length * 0.5;
-    const radius = epistemic === "observed" ? 140 + Math.min(volume, 8) * 8 : 140;
+    const ground = placed.get(civ.id)!;
+    // footprint follows the clearing, and breathes a little with work volume
+    const radius = ground.r * (epistemic === "observed" ? 1 + Math.min(volume, 8) * 0.03 : 1);
 
     const s: Settlement = {
       civilizationId: civ.id,
@@ -263,7 +268,7 @@ export function deriveScene(obs: Observations): Scene {
       domain: civ.domain,
       seatName: civ.seatName,
       epistemic,
-      ground: civ.ground,
+      ground: { x: ground.x, y: ground.y },
       radius,
       live: inhabitants.length > 0,
       buildings,
