@@ -2096,6 +2096,87 @@ test("a task name that escapes the specification directory is refused at registr
   }
 });
 
+test("a landed run recorded before declarations existed still satisfies a need", () => {
+  // Backfilled runs carry base_commit: null — `backfill` writes it that way
+  // for logs that predate the declaration format. The audited path needs a
+  // base commit to diff against, so refusing those records outright made
+  // every historical task permanently unlanded: measured against the real
+  // ledger, zero of 22 landed tasks were recognised, `needs` could never be
+  // satisfied by anything older than the scheduler, and `ready` offered
+  // finished work as startable. This is the shape the fixtures elsewhere in
+  // this file never produce, which is why it survived.
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-legacy-"));
+  const repository = join(directory, "repository");
+  const scripts = join(repository, "scripts");
+  const tasks = join(repository, "docs", "tasks");
+  const dataHome = join(directory, "data");
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(tasks, { recursive: true });
+  copyFileSync(runLedger, join(scripts, "run-ledger"));
+  chmodSync(join(scripts, "run-ledger"), 0o700);
+  writeFileSync(join(tasks, "ancient.md"), taskSpec("ancient", ["src/ancient.ts"]));
+  writeFileSync(join(tasks, "successor.md"), taskSpec("successor", ["src/successor.ts"], ["ancient"]));
+
+  try {
+    git(repository, ["init", "-b", "main"]);
+    git(repository, ["add", "."]);
+    commit(repository, "fixture");
+    const head = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: repository,
+      encoding: "utf8",
+    }).stdout.trim();
+
+    // Exactly what `backfill` writes for a pre-declaration run: a started
+    // record with no base_commit and no frozen territory, then a landed close.
+    const ledgerDirectory = join(dataHome, "ecosym");
+    mkdirSync(ledgerDirectory, { recursive: true });
+    writeFileSync(
+      join(ledgerDirectory, "ledger.jsonl"),
+      [
+        JSON.stringify({
+          event: "started",
+          unit: "ecosym-task-ancient-1",
+          task: "ancient",
+          branch: null,
+          worktree: null,
+          base_commit: null,
+          backfilled: true,
+          ts: 1,
+        }),
+        JSON.stringify({
+          event: "closed",
+          unit: "ecosym-task-ancient-1",
+          task: "ancient",
+          outcome: "landed",
+          result_commit: head,
+          evidence: "merged before declarations existed",
+          ts: 2,
+        }),
+      ].join("\n") + "\n",
+    );
+
+    const environment = { ...process.env, XDG_DATA_HOME: dataHome };
+    const startable = spawnSync(join(scripts, "run-ledger"), ["can-start", "successor"], {
+      cwd: repository,
+      encoding: "utf8",
+      env: environment,
+    });
+    assert.equal(startable.status, 0, `successor must be startable: ${startable.stderr}`);
+
+    // The control: the landed task must not itself be offered as startable,
+    // and a need whose task never landed must still be refused.
+    const ready = spawnSync(join(scripts, "run-ledger"), ["ready"], {
+      cwd: repository,
+      encoding: "utf8",
+      env: environment,
+    });
+    assert.equal(ready.status, 0, ready.stderr);
+    assert.doesNotMatch(ready.stdout, /^ancient$/mu, "a landed task is not startable");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }

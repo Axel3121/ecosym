@@ -473,6 +473,24 @@ def git_backed_landed_results(records: list[dict]) -> dict[str, set[str]]:
             and in_main(result_commit) is True
         ):
             landed.setdefault(task, set()).add(result_commit)
+            continue
+        # A run that predates the declaration format has no base_commit and no
+        # frozen territory, so the diff above cannot be audited. That is a
+        # missing territory audit, not a missing landing: `in_main` is itself
+        # Git's answer to whether the work arrived. Refusing these entirely
+        # made every historical task unlandable — measured 2026-09-02, zero of
+        # 22 landed tasks were recognised, so `needs` could never be satisfied
+        # by anything older than the scheduler and `ready` offered finished
+        # work as startable. Trust the weaker claim, and only the weaker claim.
+        if (
+            record.get("event") == "closed"
+            and record.get("outcome") == "landed"
+            and isinstance(task, str)
+            and base_commit is None
+            and isinstance(result_commit, str)
+            and in_main(result_commit) is True
+        ):
+            landed.setdefault(task, set()).add(result_commit)
     return landed
 
 
