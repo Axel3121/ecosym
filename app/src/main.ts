@@ -3,8 +3,8 @@ import type { Scene } from "./scene.ts";
 import { fixture } from "./fixture.ts";
 import { Chart, makeWalkers, stepWalkers, ZOOM_MIN, ZOOM_MAX, SETTLEMENT_ZOOM, coverZoom } from "./chart.ts";
 import type { Hit } from "./chart.ts";
-import { renderDesk, renderTabs, civByIndex, TABS, DEFAULT_SETTINGS } from "./desk.ts";
-import type { DeskState, Decision, Tab, Settings, Thread, DeskMode } from "./desk.ts";
+import { renderLog, renderSamtaler, renderInnstillinger, civByIndex, SECTIONS, PAGES, DEFAULT_SETTINGS, SEAT_FACES, TOOL_FACES } from "./desk.ts";
+import type { DeskState, Decision, Section, Page, Settings, Thread, DeskMode } from "./desk.ts";
 import { PLATES, PLATE_OF } from "./chart.ts";
 import { opening, reply } from "./dialogue.ts";
 import type { Target, Line } from "./dialogue.ts";
@@ -21,11 +21,11 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 $("observed-at").textContent = new Date(scene.observedAt).toLocaleString("nb-NO", { dateStyle: "long", timeStyle: "short" });
 if (scene.synthetic) $("synthetic").hidden = false;
 
-// ---- desk -------------------------------------------------------------------
+// ---- the desk: a logbook you page through --------------------------------
 const app = $("app");
 const SETTINGS_KEY = "ecosym.settings";
 function loadSettings(): Settings { try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") }; } catch { return { ...DEFAULT_SETTINGS }; } }
-const desk: DeskState = { decisions: {}, selectedCiv: null, tab: "oversikt", mode: "side", threads: {}, settings: loadSettings() };
+const desk: DeskState = { decisions: {}, selectedCiv: null, view: "log", section: "oversikt", lastPage: "samtaler", mode: "side", threads: {}, settings: loadSettings() };
 function applySettings() {
   const s = desk.settings;
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
@@ -33,48 +33,109 @@ function applySettings() {
   app.classList.toggle("wide-desk", s.deskWidth >= 400);
   const dark = s.theme === "dark" || (s.theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
   document.documentElement.dataset.theme = dark ? "dark" : "light";
-  // unchanged when collapsed: the settings pane cannot be seen there
   chart.showLabels = s.labels;
   motionOff = !s.smoke;
   requestAnimationFrame(() => chart.resize()); setTimeout(() => chart.resize(), 200);
 }
-function renderDocket() {
-  $("desk-tabs").innerHTML = renderTabs(desk);
-  const cur = TABS.find((t) => t.id === desk.tab); $("tab-hint").textContent = cur ? `${cur.label} — ${cur.hint}` : "";
-  $("desk-body").innerHTML = renderDesk(scene, desk);
-  const open = scene.capital.matters.filter((m) => !desk.decisions[m.id]).length;
-  const rt = $("desk-tabs").querySelector<HTMLElement>('[data-tab="raadet"] .lbl');
-  if (rt && open) rt.insertAdjacentHTML("afterend", `<span class="count">${open}</span>`);
-  const nThreads = Object.keys(desk.threads).length;
-  const st = $("desk-tabs").querySelector<HTMLElement>('[data-tab="samtaler"] .lbl');
-  if (st && nThreads) st.insertAdjacentHTML("afterend", `<span class="count dim">${nThreads}</span>`);
-  // settings + thread resume live inside the body; wire after render
-  $("desk-body").querySelectorAll<HTMLInputElement>("[data-set]").forEach((el) => el.addEventListener("change", () => {
-    (desk.settings as unknown as Record<string, unknown>)[el.dataset.set!] = el.checked; applySettings();
-  }));
-  $("desk-body").querySelectorAll<HTMLElement>("[data-seg]").forEach((el) => el.addEventListener("click", () => {
-    const k = el.dataset.seg!, v = el.dataset.val!;
-    (desk.settings as unknown as Record<string, unknown>)[k] = k === "language" || k === "theme" ? v : Number(v); applySettings(); renderDocket();
-  }));
-  $("desk-body").querySelectorAll<HTMLElement>("[data-resume]").forEach((el) => el.addEventListener("click", () => resumeThread(el.dataset.resume!)));
+
+function pageBody(page: Page): string {
+  return page === "samtaler" ? renderSamtaler(scene, desk) : renderInnstillinger(scene, desk);
 }
+function wireBody(el: HTMLElement) {
+  el.querySelectorAll<HTMLElement>("[data-set]").forEach((e) => e.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    const key = e.dataset.set! as keyof Settings;
+    (desk.settings as unknown as Record<string, unknown>)[key] = !(desk.settings as unknown as Record<string, unknown>)[key];
+    applySettings(); renderDocket();
+  }));
+  el.querySelectorAll<HTMLElement>("[data-seg]").forEach((e) => e.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    const k = e.dataset.seg!, v = e.dataset.val!;
+    (desk.settings as unknown as Record<string, unknown>)[k] = k === "language" || k === "theme" ? v : Number(v);
+    applySettings(); renderDocket();
+  }));
+  el.querySelectorAll<HTMLElement>("[data-resume]").forEach((e) => e.addEventListener("click", (ev) => { ev.preventDefault(); resumeThread(e.dataset.resume!); }));
+}
+
+function renderDocket() {
+  // Table of contents: sticky, scrolls the one document to an anchor; never a page change.
+  const toc = $("desk-toc");
+  const openMatters = scene.capital.matters.filter((m) => !desk.decisions[m.id]).length;
+  const nThreads = Object.keys(desk.threads).length;
+  const secItem = (t: { id: Section; label: string; key: string }) =>
+    `<a href="#" class="toc-item${desk.view === "log" && desk.section === t.id ? " on" : ""}" data-anchor="${t.id}"><b>${t.key}</b><span class="tlabel">${t.label}</span>${t.id === "raadet" && openMatters ? `<span class="n seal">${openMatters}</span>` : ""}</a>`;
+  const pageItem = (t: { id: Page; label: string; key: string }) =>
+    `<a href="#" class="toc-item${desk.view === t.id ? " on" : ""}" data-page="${t.id}"><b>${t.key}</b><span class="tlabel">${t.label}</span>${t.id === "samtaler" && nThreads ? `<span class="n dim">${nThreads}</span>` : ""}</a>`;
+  toc.innerHTML = SECTIONS.map(secItem).join("") + `<span class="toc-rule"></span>` + PAGES.map(pageItem).join("");
+
+  // Collapsed spine: bare book back, letters only, one count for matters waiting.
+  const spine = $("desk-spine");
+  spine.innerHTML = scene.settlements.map((s, i) => `<a href="#" class="spine-key${desk.selectedCiv === s.civilizationId ? " sel" : ""}" data-civ="${s.civilizationId}">${i + 1}</a>`).join("")
+    + `<a href="#" class="spine-key${desk.selectedCiv === "__capital" ? " sel" : ""}" data-civ="__capital">C</a>`
+    + (openMatters ? `<span class="spine-count">${openMatters}</span>` : "");
+
+  // Side/collapsed mode shows one page: the left slot carries whatever is active.
+  // Full mode is the book open: left is always the log, right is the other page —
+  // literal pages of a book, never panels that change size.
+  const left = $("desk-left"), right = $("desk-right");
+  const full = desk.mode === "full";
+  const activeBody = desk.view === "log" ? renderLog(scene, desk) : pageBody(desk.view);
+  left.innerHTML = full ? renderLog(scene, desk) : activeBody;
+  right.innerHTML = full ? pageBody(desk.lastPage) : "";
+  wireBody(left); if (full) wireBody(right);
+  if (desk.view === "log") scrollToSection(desk.section, false);
+}
+
+/** Jump inside the one document — never a view change. Smooth unless `first`. */
+function scrollToSection(id: Section, smooth = true) {
+  desk.section = id;
+  const target = $("desk-left").querySelector<HTMLElement>(`#sec-${id}`);
+  if (target) target.scrollIntoView({ block: "start", behavior: smooth ? "smooth" : "auto" });
+}
+
 let lastOpenMode: DeskMode = "side";
-function setTab(t: Tab) { desk.tab = t; if (desk.mode === "collapsed") setMode(lastOpenMode); renderDocket(); }
 function setMode(mode: DeskMode) {
   desk.mode = mode; if (mode !== "collapsed") lastOpenMode = mode;
   app.classList.toggle("collapsed", mode === "collapsed");
   app.classList.toggle("full", mode === "full");
   app.querySelectorAll<HTMLElement>("[data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
+  renderDocket();
   if (mode !== "full") { requestAnimationFrame(() => chart.resize()); setTimeout(() => chart.resize(), 200); }
 }
-$("desk-tabs").addEventListener("click", (e) => { const t = (e.target as HTMLElement).closest<HTMLElement>("[data-tab]"); if (t) setTab(t.dataset.tab as Tab); });
+function goSection(id: Section) {
+  desk.view = "log";
+  if (desk.mode === "collapsed") setMode(lastOpenMode);
+  renderDocket();
+  scrollToSection(id);
+}
+function goPage(id: Page) {
+  desk.view = id; desk.lastPage = id;
+  if (desk.mode === "collapsed") setMode(lastOpenMode);
+  renderDocket();
+}
+$("desk-toc").addEventListener("click", (e) => {
+  const t = (e.target as HTMLElement).closest<HTMLElement>("[data-anchor],[data-page]");
+  if (!t) return;
+  e.preventDefault();
+  if (t.dataset.anchor) goSection(t.dataset.anchor as Section);
+  else if (t.dataset.page) goPage(t.dataset.page as Page);
+});
+$("desk-spine").addEventListener("click", (e) => {
+  const t = (e.target as HTMLElement).closest<HTMLElement>("[data-civ]");
+  if (!t) return;
+  e.preventDefault();
+  if (t.dataset.civ === "__capital") { select({ kind: "capital", label: "Capital" }); return; }
+  const s = scene.settlements.find((x) => x.civilizationId === t.dataset.civ)!;
+  select({ kind: "settlement", settlementId: s.civilizationId, label: s.name });
+});
 app.querySelectorAll<HTMLElement>("[data-mode]").forEach((b) => b.addEventListener("click", () => {
   const m = b.dataset.mode as DeskMode;
   setMode(desk.mode === m && m === "collapsed" ? lastOpenMode : m);
 }));
-$("desk-body").addEventListener("click", (e) => {
+function deskClick(e: Event) {
   const t = (e.target as HTMLElement).closest<HTMLElement>("[data-decide],[data-undo],[data-civ],[data-go],[data-talk-civ],[data-talk-council]");
   if (!t) return;
+  e.preventDefault();
   if (t.dataset.decide) { desk.decisions[t.dataset.id!] = { decision: t.dataset.decide as Decision, at: Date.now() }; renderDocket(); return; }
   if (t.dataset.undo) { delete desk.decisions[t.dataset.undo]; renderDocket(); return; }
   if (t.dataset.go) { const s = scene.settlements.find((x) => x.civilizationId === t.dataset.go)!; select({ kind: "settlement", settlementId: s.civilizationId, label: s.name }); return; }
@@ -82,20 +143,23 @@ $("desk-body").addEventListener("click", (e) => {
   if (t.dataset.talkCouncil) { focus({ kind: "council" }); return; }
   if (t.dataset.civ === "__capital") { select({ kind: "capital", label: "Capital" }); return; }
   if (t.dataset.civ) { const s = scene.settlements.find((x) => x.civilizationId === t.dataset.civ)!; desk.selectedCiv = s.civilizationId; renderDocket(); flyTo(s.ground.x, s.ground.y, Math.max(chart.camera.zoom, 1.2)); }
-});
+}
+$("desk-left").addEventListener("click", deskClick);
+$("desk-right").addEventListener("click", deskClick);
 window.addEventListener("keydown", (e) => {
   if ((e.target as HTMLElement).tagName === "INPUT") return;
   if (e.altKey && (e.key === "b" || e.key === "∫")) { setMode(desk.mode === "collapsed" ? lastOpenMode : "collapsed"); return; }
   if (e.altKey && (e.key === "f" || e.key === "ƒ")) { setMode(desk.mode === "full" ? "side" : "full"); return; }
-  if (!e.altKey && !e.metaKey && !e.ctrlKey) { const tab = TABS.find((t) => t.key.toLowerCase() === e.key.toLowerCase()); if (tab) { setTab(tab.id); return; } }
+  if (!e.altKey && !e.metaKey && !e.ctrlKey) {
+    const sec = SECTIONS.find((s) => s.key.toLowerCase() === e.key.toLowerCase());
+    if (sec) { goSection(sec.id); return; }
+    const pg = PAGES.find((p) => p.key.toLowerCase() === e.key.toLowerCase());
+    if (pg) { goPage(pg.id); return; }
+  }
   const n = Number(e.key);
   if (n >= 1 && n <= 4) { const s = civByIndex(scene, n); if (s) select({ kind: "settlement", settlementId: s.civilizationId, label: s.name }); }
   if (e.key === "c" || e.key === "C") select({ kind: "capital", label: "Capital" });
 });
-function ago(iso: string) {
-  const m = Math.round((Date.parse(scene.observedAt) - Date.parse(iso)) / 60000);
-  return m < 1 ? "nå nettopp" : m < 60 ? `${m} min siden` : `${Math.round(m / 60)} t siden`;
-}
 
 // ---- camera -----------------------------------------------------------------
 let target = { ...chart.camera };
@@ -159,16 +223,16 @@ function select(h: Hit | null) {
     case "settlement":
       if (!s) return;
       desk.selectedCiv = s.civilizationId;
-      // P0 (two blind reviewers hit it): choosing a place must never land you on a tab
-      // where the place has no actions. Facts and "snakk med" live on Oversikt.
-      if (desk.tab === "innstillinger" || desk.tab === "petisjoner") desk.tab = "oversikt";
+      // P0 (two blind reviewers hit it): choosing a place must never land you on a
+      // page where the place has no actions. Facts and "snakk med" live in Oversikt.
+      desk.view = "log"; desk.section = "oversikt";
       renderDocket();
       if (s.epistemic === "observed") flyTo(s.ground.x, s.ground.y - 30, Math.max(chart.camera.zoom, 2.4));
       else flyTo(s.ground.x, s.ground.y, Math.max(chart.camera.zoom, 1.2));
       return;
     case "capital":
       desk.selectedCiv = "__capital";
-      if (desk.tab === "innstillinger" || desk.tab === "petisjoner") desk.tab = "oversikt";
+      desk.view = "log"; desk.section = "oversikt";
       renderDocket();
       flyTo(770, 410, Math.max(chart.camera.zoom, 1.7));
       return;
@@ -227,19 +291,19 @@ function focus(t: Target) {
   const portrait = $("focus-portrait"); portrait.className = "portrait";
   if (t.kind === "council") {
     $("focus-name").textContent = "Rådet"; $("focus-kind").textContent = "Capital · verdens hovedkvarter";
-    portrait.style.backgroundImage = `url(/art/capital.png)`; portrait.style.backgroundPosition = "50% 30%";
+    portrait.className = "portrait face-big"; portrait.style.backgroundImage = `url(/art/faces/0.png)`; portrait.style.backgroundPosition = "50% 50%";
     $("focus-facts").innerHTML = `<b>Saker</b>${scene.capital.matters.map((m) => `${m.summary}<br>`).join("") || "ingen"}<b>Haller</b>${scene.capital.halls.map((h) => `${h.name} · ${h.epistemic === "observed" ? (h.live ? "i arbeid" : "stille") : "aldri sett"}<br>`).join("")}`;
     flyTo(770, 410, 2.2);
   } else {
     const s = t.settlement; const plate = PLATES[PLATE_OF[s.civilizationId] ?? "lake"]!;
     if (t.kind === "seat") {
       $("focus-name").textContent = s.seatName; $("focus-kind").textContent = `setet i ${s.name} · ${s.domain}`;
-      portrait.style.backgroundImage = `url(${plate.img})`; portrait.style.backgroundPosition = "50% 8%";
+      portrait.className = "portrait face-big"; portrait.style.backgroundImage = `url(/art/faces/${SEAT_FACES[s.civilizationId] ?? 3}.png)`; portrait.style.backgroundPosition = "50% 50%";
       $("focus-facts").innerHTML = `<b>Kan alene</b>${s.mandate.alone.join("<br>")}<b>Må til rådet</b>${s.mandate.council.join("<br>")}<b>Nå</b>${s.inhabitants.length} i arbeid · ${s.traces.length} spor · ${s.openMatters} hos rådet`;
     } else {
       const a = t.agent;
       $("focus-name").textContent = a.label; $("focus-kind").textContent = `forbipasserende arbeid i ${s.name}`;
-      portrait.className = "portrait agent"; portrait.style.backgroundImage = `url(/art/walkers.png)`; portrait.style.backgroundPosition = a.depth === 0 ? "8% 6%" : "8% 98%";
+      portrait.className = "portrait face-big"; portrait.style.backgroundImage = `url(/art/faces/${TOOL_FACES[a.tool ?? ""] ?? 6}.png)`; portrait.style.backgroundPosition = "50% 50%";
       $("focus-facts").innerHTML = `<b>Verktøy</b>${a.tool ?? "—"}<b>Under</b>${a.parentRunId ? s.inhabitants.find((p) => p.runId === a.parentRunId)?.label ?? a.parentRunId : "ingen (rot)"}<b>Har delegert</b>${s.inhabitants.filter((c) => c.parentRunId === a.runId).map((c) => c.label).join("<br>") || "ingenting"}`;
     }
     flyTo(s.ground.x, s.ground.y - 30, 2.4);
@@ -249,7 +313,7 @@ function focus(t: Target) {
   else push(opening(scene, t));
   setTimeout(() => input.focus(), 50);
 }
-function unfocus() { current = null; currentThreadId = null; app.classList.remove("focused"); focusEl.hidden = true; if (desk.tab === "samtaler") renderDocket(); }
+function unfocus() { current = null; currentThreadId = null; app.classList.remove("focused"); focusEl.hidden = true; if (desk.view === "samtaler") renderDocket(); }
 $("focus-back").addEventListener("click", unfocus);
 $("focus-form").addEventListener("submit", (e) => {
   e.preventDefault();

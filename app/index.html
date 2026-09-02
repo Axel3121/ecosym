@@ -16,14 +16,20 @@ FORM: Treasure chart fused with Civitates engraving and the byōbu's cloud-as-un
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
 -->
   <div id="app">
-    <aside id="desk" class="desk" aria-label="Arbeidsbord">
+    <aside id="desk" class="desk" aria-label="Loggbok">
       <header class="desk-head">
-        <div class="desk-title"><h1>Ecosym</h1><span class="modes" role="group" aria-label="Bordets modus"><button class="toggle" data-mode="collapsed" title="Skjul bordet (⌥B)"><span class="glyph">«</span><span class="mlbl">skjul</span></button><button class="toggle" data-mode="side" title="Ved siden av kartet"><span class="glyph">▯▮</span><span class="mlbl">side</span></button><button class="toggle" data-mode="full" title="Fullskjerm (⌥F)"><span class="glyph">⛶</span><span class="mlbl">full</span></button></span><button class="show-map" data-mode="side">‹ vis kart</button></div>
-        <p class="sub">observert <span id="observed-at"></span></p>
+        <div class="brand">
+          <span class="brand-name">ECOSYM</span>
+        </div>
+        <div class="desk-title"><p class="sub">observert <span id="observed-at"></span></p><span class="modes" role="group" aria-label="Bordets modus"><button class="toggle" data-mode="collapsed" title="Skjul boken (⌥B)"><span class="glyph">«</span><span class="mlbl">lukk</span></button><button class="toggle" data-mode="side" title="Boken ved siden av kartet"><span class="glyph">▯▮</span><span class="mlbl">side</span></button><button class="toggle" data-mode="full" title="Slå boken opp (⌥F)"><span class="glyph">⛶</span><span class="mlbl">full</span></button></span><button class="show-map" data-mode="side">‹ vis kart</button></div>
         <p class="synthetic" id="synthetic" hidden>syntetisk fixture — ingenting her er observert</p>
       </header>
-      <nav id="desk-tabs" class="tabs" aria-label="Faner"></nav><p id="tab-hint" class="tab-hint"></p>
-      <div id="desk-body"></div>
+      <nav id="desk-spine" class="spine" aria-label="Sivilisasjoner" hidden></nav>
+      <nav id="desk-toc" class="toc" aria-label="Innhold"></nav>
+      <div id="desk-spread">
+        <div id="desk-left" class="page page-left"></div>
+        <div id="desk-right" class="page page-right"></div>
+      </div>
     </aside>
     <main id="stage">
     <canvas id="chart" tabindex="0" aria-label="Verdenskart"></canvas>
