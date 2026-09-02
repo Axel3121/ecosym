@@ -80,7 +80,7 @@ export class Chart {
   private img = new Map<string, HTMLImageElement>();
   private t0 = performance.now();
 
-  constructor(private canvas: HTMLCanvasElement, public camera: Camera = { x: 768, y: 512, zoom: 1 }) {
+  constructor(private canvas: HTMLCanvasElement, public camera: Camera = { x: 700, y: 512, zoom: 1 }) {
     this.ctx = canvas.getContext("2d")!;
     for (const src of ["/art/world.png", "/art/capital.png", "/art/walkers.png", "/art/smoke.png", "/art/fog.png", ...Object.values(PLATES).map((p) => p.img)]) {
       const im = new Image(); im.src = src; this.img.set(src, im);

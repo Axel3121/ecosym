@@ -13,20 +13,18 @@ export const TOOL_FACES: Record<string, number> = { browser: 4, python: 5, openc
 export type Decision = "ja" | "nei" | "spør";
 
 /** Anchors inside the one scrolling document. Adding one = a row here + a case in renderLog. */
-export type Section = "oversikt" | "raadet" | "arbeid" | "petisjoner" | "folk";
+export type Section = "oversikt" | "raadet" | "arbeid" | "petisjoner";
 export const SECTIONS: Array<{ id: Section; label: string; key: string; hint: string }> = [
   { id: "oversikt", label: "Oversikt", key: "O", hint: "hva trenger deg nå" },
   { id: "raadet", label: "Rådet", key: "R", hint: "saker som krysser en grense — du avgjør" },
   { id: "arbeid", label: "Arbeid", key: "A", hint: "alt som kjører nå, alle sivilisasjoner" },
   { id: "petisjoner", label: "Petisjoner", key: "P", hint: "det du har bedt om, og hvor det står" },
-  { id: "folk", label: "Folk", key: "F", hint: "hvem du kan snakke med" },
 ];
 
 /** The two exceptions that leave the document, like Focus leaves the map. */
 export type Page = "samtaler" | "innstillinger";
 export const PAGES: Array<{ id: Page; label: string; key: string; hint: string }> = [
-  { id: "samtaler", label: "Samtaler", key: "S", hint: "tråder du har" },
-  { id: "innstillinger", label: "Innstillinger", key: "I", hint: "flaten, aldri sannheten" },
+  { id: "samtaler", label: "Samtaler", key: "S", hint: "alle du kan snakke med" },
 ];
 
 export interface ThreadLine { who: "you" | "them" | "note"; text: string; at: number }
@@ -211,14 +209,12 @@ export function renderLog(scene: Scene, state: DeskState): string {
     <p class="dim note">Noe som ble bedt om. Vises aldri som noe som skjedde.</p>
   </section>`;
 
-  const folk = `<section id="sec-folk" class="logsec">${folkSection(scene, state)}</section>`;
-
   const observert = `<section id="sec-observert" class="logsec">
     <p class="label">Observert</p>
     ${observedLog(scene, state.settings.logLimit)}
   </section>`;
 
-  return [oversikt, raadet, arbeid, petisjoner, folk, observert].join('<hr class="chapter">');
+  return [oversikt, raadet, arbeid, petisjoner, observert].join('<hr class="chapter">');
 }
 
 /** Samtaler: the one page-exception that is a roster of faces, Stardew-journal style.

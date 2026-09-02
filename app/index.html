@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Ecosym — orbis</title>
   <link rel="stylesheet" href="/src/style.css" />
+  <link rel="stylesheet" href="/src/quiet-menu.css" />
 </head>
 <body>
 <!--
@@ -21,8 +22,19 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
         <div class="brand">
           <span class="brand-name">ECOSYM</span>
         </div>
-        <div class="desk-title"><p class="sub">observert <span id="observed-at"></span></p><span class="modes" role="group" aria-label="Bordets modus"><button class="toggle" data-mode="collapsed" title="Skjul boken (⌥B)"><span class="glyph">«</span><span class="mlbl">lukk</span></button><button class="toggle" data-mode="side" title="Boken ved siden av kartet"><span class="glyph">▯▮</span><span class="mlbl">side</span></button><button class="toggle" data-mode="full" title="Slå boken opp (⌥F)"><span class="glyph">⛶</span><span class="mlbl">full</span></button></span><button class="show-map" data-mode="side">‹ vis kart</button></div>
-        <p class="synthetic" id="synthetic" hidden>syntetisk fixture — ingenting her er observert</p>
+        <div class="desk-title">
+          <p class="sub">eksempeldata · <span id="observed-at"></span></p>
+          <details class="more">
+            <summary aria-label="Flere valg">•••</summary>
+            <div class="more-menu">
+              <button data-mode="collapsed">Skjul sidefeltet</button>
+              <button data-mode="side">Kart og loggbok</button>
+              <button data-mode="full">Bare loggbok</button>
+              <hr>
+              <button data-open-settings>Innstillinger</button>
+            </div>
+          </details>
+        </div>
       </header>
       <nav id="desk-spine" class="spine" aria-label="Sivilisasjoner" hidden></nav>
       <nav id="desk-toc" class="toc" aria-label="Innhold"></nav>

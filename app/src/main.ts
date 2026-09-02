@@ -19,7 +19,6 @@ let motionOff = false;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 $("observed-at").textContent = new Date(scene.observedAt).toLocaleString("nb-NO", { dateStyle: "long", timeStyle: "short" });
-if (scene.synthetic) $("synthetic").hidden = false;
 
 // ---- the desk: a logbook you page through --------------------------------
 const app = $("app");
@@ -63,14 +62,15 @@ function renderDocket() {
   const openMatters = scene.capital.matters.filter((m) => !desk.decisions[m.id]).length;
   const nThreads = Object.keys(desk.threads).length;
   const secItem = (t: { id: Section; label: string; key: string }) =>
-    `<a href="#" class="toc-item${desk.view === "log" && desk.section === t.id ? " on" : ""}" data-anchor="${t.id}"><b>${t.key}</b><span class="tlabel">${t.label}</span>${t.id === "raadet" && openMatters ? `<span class="n seal">${openMatters}</span>` : ""}</a>`;
+    `<a href="#" class="toc-item${desk.view === "log" && desk.section === t.id ? " on" : ""}" data-anchor="${t.id}" title="${t.key}"><span class="tlabel">${t.label}</span></a>`;
   const pageItem = (t: { id: Page; label: string; key: string }) =>
-    `<a href="#" class="toc-item${desk.view === t.id ? " on" : ""}" data-page="${t.id}"><b>${t.key}</b><span class="tlabel">${t.label}</span>${t.id === "samtaler" && nThreads ? `<span class="n dim">${nThreads}</span>` : ""}</a>`;
+    `<a href="#" class="toc-item${desk.view === t.id ? " on" : ""}" data-page="${t.id}" title="${t.key}"><span class="tlabel">${t.label}</span></a>`;
   toc.innerHTML = SECTIONS.map(secItem).join("") + `<span class="toc-rule"></span>` + PAGES.map(pageItem).join("");
 
   // Collapsed spine: bare book back, letters only, one count for matters waiting.
   const spine = $("desk-spine");
-  spine.innerHTML = scene.settlements.map((s, i) => `<a href="#" class="spine-key${desk.selectedCiv === s.civilizationId ? " sel" : ""}" data-civ="${s.civilizationId}">${i + 1}</a>`).join("")
+  spine.innerHTML = `<button class="spine-open" data-spine-open title="Vis loggboken">›</button>`
+    + scene.settlements.map((s, i) => `<a href="#" class="spine-key${desk.selectedCiv === s.civilizationId ? " sel" : ""}" data-civ="${s.civilizationId}">${i + 1}</a>`).join("")
     + `<a href="#" class="spine-key${desk.selectedCiv === "__capital" ? " sel" : ""}" data-civ="__capital">C</a>`
     + (openMatters ? `<span class="spine-count">${openMatters}</span>` : "");
 
@@ -121,7 +121,9 @@ $("desk-toc").addEventListener("click", (e) => {
   else if (t.dataset.page) goPage(t.dataset.page as Page);
 });
 $("desk-spine").addEventListener("click", (e) => {
-  const t = (e.target as HTMLElement).closest<HTMLElement>("[data-civ]");
+  const el = e.target as HTMLElement;
+  if (el.closest("[data-spine-open]")) { e.preventDefault(); setMode(lastOpenMode); return; }
+  const t = el.closest<HTMLElement>("[data-civ]");
   if (!t) return;
   e.preventDefault();
   if (t.dataset.civ === "__capital") { select({ kind: "capital", label: "Capital" }); return; }
@@ -131,7 +133,13 @@ $("desk-spine").addEventListener("click", (e) => {
 app.querySelectorAll<HTMLElement>("[data-mode]").forEach((b) => b.addEventListener("click", () => {
   const m = b.dataset.mode as DeskMode;
   setMode(desk.mode === m && m === "collapsed" ? lastOpenMode : m);
+  b.closest("details")?.removeAttribute("open");
 }));
+app.querySelector<HTMLElement>("[data-open-settings]")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  goPage("innstillinger");
+  (e.currentTarget as HTMLElement).closest("details")?.removeAttribute("open");
+});
 function deskClick(e: Event) {
   const t = (e.target as HTMLElement).closest<HTMLElement>("[data-decide],[data-undo],[data-civ],[data-go],[data-talk-civ],[data-talk-council]");
   if (!t) return;
@@ -155,6 +163,7 @@ window.addEventListener("keydown", (e) => {
     if (sec) { goSection(sec.id); return; }
     const pg = PAGES.find((p) => p.key.toLowerCase() === e.key.toLowerCase());
     if (pg) { goPage(pg.id); return; }
+    if (e.key.toLowerCase() === "i") { goPage("innstillinger"); return; }
   }
   const n = Number(e.key);
   if (n >= 1 && n <= 4) { const s = civByIndex(scene, n); if (s) select({ kind: "settlement", settlementId: s.civilizationId, label: s.name }); }

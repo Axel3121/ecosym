@@ -57,6 +57,8 @@ kbd { font-family: var(--mono); }
 /* ---- the collapsed spine: bare book back, letters vertical, no icons ---- */
 .spine { display: none; }
 #app.collapsed .spine { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 14px 0; flex: 1; font-family: var(--mono); }
+.spine-open { border: 0; background: transparent; color: var(--fg-dim); font: 16px var(--mono); cursor: pointer; padding: 0 8px 6px; }
+.spine-open:hover { color: var(--fg); }
 .spine-key { color: var(--fg-dim); text-decoration: none; font-size: 13px; padding: 2px 0; cursor: pointer; }
 .spine-key:hover, .spine-key.sel { color: var(--fg); }
 .spine-count { color: var(--seal); font-size: 12px; margin-top: 4px; }
