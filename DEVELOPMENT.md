@@ -64,11 +64,26 @@ Ordered. Where two disagree, the higher one is right and is corrected before
 the lower one merges — a pull request description never quietly becomes new
 product policy.
 
+The repository holds the product and the evidence that it works. It is not a
+log of how it was built, and it is not a workspace for the process that builds
+it. This project is intended to be public: a reader arriving at it should find
+software and the proof it behaves, not instructions written to the agents that
+produced it. Anything whose audience is us rather than a reader of this project
+belongs outside the tree, and the burden is on keeping it in, not on taking it
+out.
+
 - Canonical documents own reusable current normative meaning.
-- Task specifications under `docs/tasks/` own the contract for one piece of
-  work: the outcome, the constraints that would be expensive to get wrong, and
-  what would prove it worked. They live in the repository because an agent
-  reads them as context and they are reviewed before work starts.
+- Task specifications own the contract for one piece of work: the outcome, the
+  constraints that would be expensive to get wrong, and what would prove it
+  worked. They are process — instructions to an implementer — so they live
+  outside the repository, at the specification root the scheduler is configured
+  with. Keeping them in-tree cost measurably: 2,500 lines of agent instructions
+  against roughly 5,600 lines of `src/`, automated review spending its budget
+  on them, and findings landing on specifications belonging to unrelated pull
+  requests.
+- Findings and evidence documents produced *by* the work stay in the
+  repository. A measurement someone can re-run is part of the product's proof;
+  the instruction that caused it is not.
 - Issues own a bounded slice of that work and its current state: what is in
   progress, what is blocked, what was found. An issue links its specification
   rather than restating it; two copies of a requirement is one too many.
