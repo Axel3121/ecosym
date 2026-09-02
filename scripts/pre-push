@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Refuse a push whose commit message claims a verified result.
+#
+# Installed as .git/hooks/pre-push. The claim in a commit message is a
+# statement about a check that ran; when the check was red, the claim is
+# false and no reader can tell. On 2026-09-02 a `npm run check ... ;
+# git commit && git push` chain reported CHECK_EXIT=1 and pushed anyway --
+# the `&&` gated the commit, not the check, because a `;` had already ended
+# that command. The message said 254/254.
+#
+# This hook does not trust the message. It re-runs the check and compares.
+# A claim that survives is a claim that was true at push time.
+set -u
+
+# git exports GIT_DIR (and friends) to hooks. Any `git` the suite runs then
+# targets THIS repository instead of the fixture repository it just created --
+# measured: 290/290 from a shell, 271/290 from the hook, and the real
+# repository left with core.bare=true and dead worktree registrations.
+# Clear them so the suite sees the same environment a developer does.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+      GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_PREFIX \
+      GIT_CONFIG_PARAMETERS 2>/dev/null || true
+
+claims=$(git log --format='%B' @{push}..HEAD 2>/dev/null ||
+         git log --format='%B' -5)
+
+if ! printf '%s' "$claims" | grep -qiE 'npm run check|tests pass|all green|tsc clean|mutations (caught|killed)'; then
+  exit 0  # nothing claimed; nothing to verify
+fi
+
+echo "pre-push: a commit claims a verified result — re-running the check" >&2
+if ! npm run check >/tmp/pre-push-check.log 2>&1; then
+  echo "" >&2
+  echo "REFUSED: a commit message claims the suite passed, and it does not." >&2
+  tail -20 /tmp/pre-push-check.log >&2
+  echo "" >&2
+  echo "Fix the suite, or remove the claim from the message." >&2
+  exit 1
+fi
+echo "pre-push: claim verified" >&2
