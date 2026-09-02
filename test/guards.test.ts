@@ -35,28 +35,28 @@ function validConfig(): unknown {
 
 async function readCsv(contents: string): Promise<unknown[]> {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-csv-guard-"));
-  const path = join(directory, "source.csv");
-  writeFileSync(path, contents);
-  const { config } = parseConnectionConfig({
-    schemaVersion: 1,
-    id: "csv-guard-source",
-    factOwner: "source-owner",
-    reader: { type: "csv", path, delimiter: "," },
-    sourceRecord: {
-      identity: [{ scope: "record", path: "id" }],
-      retention: "history",
-      recordedAt: { unavailable: true },
-    },
-    facts: [
-      {
-        epistemicStatus: "observation",
-        kind: "example.value",
-        subject: { scope: "record", path: "subject" },
-        payload: { value: { scope: "record", path: "value" } },
-      },
-    ],
-  });
   try {
+    const path = join(directory, "source.csv");
+    writeFileSync(path, contents);
+    const { config } = parseConnectionConfig({
+      schemaVersion: 1,
+      id: "csv-guard-source",
+      factOwner: "source-owner",
+      reader: { type: "csv", path, delimiter: "," },
+      sourceRecord: {
+        identity: [{ scope: "record", path: "id" }],
+        retention: "history",
+        recordedAt: { unavailable: true },
+      },
+      facts: [
+        {
+          epistemicStatus: "observation",
+          kind: "example.value",
+          subject: { scope: "record", path: "subject" },
+          payload: { value: { scope: "record", path: "value" } },
+        },
+      ],
+    });
     const records: unknown[] = [];
     for await (const record of readSource(config)) {
       records.push(record);
@@ -231,6 +231,12 @@ test("invalid date and time components remain unrepresentable", () => {
     "2026-01-15T25:30:30Z",
   ]) {
     assert.equal(utcInstantOrderingKey(value), null, value);
+  }
+});
+
+test("calendar dates reject out-of-range months and zero days", () => {
+  for (const value of ["0001-00-01", "0001-13-01", "0001-01-00"]) {
+    assert.equal(parseCalendarInstant(value), null, value);
   }
 });
 

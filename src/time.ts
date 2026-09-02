@@ -6,6 +6,9 @@ export function parseCalendarInstant(value: string): null | number {
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1) {
+    return null;
+  }
   const daysInMonth =
     month === 2
       ? year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
