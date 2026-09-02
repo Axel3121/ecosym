@@ -36,6 +36,54 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
+      # The sandbox tests are the only ones that exercise real enforcement --
+      # that an agent shell cannot write outside its worktree, cannot read
+      # another tool's credentials, and has no route to the network. They skip
+      # themselves when bwrap is absent, which on a bare runner means the
+      # security properties this project is built around are never checked in
+      # CI. Measured on PR #24: 11 tests skipped, and the job reported a pass.
+      #
+      # They also need a node the sandbox can reach. bwrap binds /usr
+      # read-only, and setup-node installs into /opt/hostedtoolcache, so the
+      # runner's node is invisible inside the sandbox. Link the pinned node
+      # into /usr/bin so the child runs the same version the suite does.
+      - name: install the sandbox runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          # The sandbox binds /usr read-only, so the child can only run a node
+          # that physically lives under /usr. setup-node installs into
+          # /opt/hostedtoolcache, and a symlink there resolves to a path the
+          # sandbox never mounts -- measured: `/usr/bin/node: No such file or
+          # directory` inside the namespace, while the link looked fine on the
+          # host. Copy the binary instead of linking it.
+          sudo cp "$(command -v node)" /usr/bin/node
+          # Ubuntu 24.04 restricts unprivileged user namespaces through
+          # AppArmor, so bwrap fails with "setting up uid map: Permission
+          # denied" on a stock runner. Measured on this workflow's first run
+          # with bwrap installed: both enforcement tests failed on exactly
+          # that. Lifting the restriction is an operation on the CI host, not
+          # a change to what the sandbox itself must prove.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --version
+          /usr/bin/node --version
+          # Prove the runtime works before the suite depends on it, so a
+          # environment failure is named here rather than as a test failure.
+          bwrap --ro-bind / / --dev /dev --proc /proc -- true
+          echo "bwrap can create a namespace on this runner"
+          # And that the node the sandbox will actually reach exists INSIDE
+          # it. A host-side `/usr/bin/node --version` passes for a symlink the
+          # namespace cannot follow, which is how that failure reached the
+          # suite instead of this step. Bind the loader paths too: node is
+          # dynamically linked, so /usr alone gives `execvp: No such file or
+          # directory` for a binary that is plainly there.
+          bwrap --ro-bind /usr /usr --ro-bind /lib /lib --ro-bind /lib64 /lib64 \
+            --dev /dev --proc /proc --tmpfs /tmp \
+            -- /usr/bin/node --version
+          echo "the sandbox can reach a working node"
+
       # npm ci fails when package-lock.json disagrees with package.json, so a
       # lockfile that drifted is caught here rather than at somebody's install.
       - name: install
@@ -68,15 +116,23 @@ jobs:
       # The suite is the evidence, so a suite that quietly stops running is a
       # silent failure. Node reports a count; require it to be non-zero.
       #
-      # node --test exits non-zero when tests are skipped as well as when they
-      # fail, and `bash -e` would kill this step before the count is read —
-      # reporting "no tests ran" about a suite that ran and passed. Keep its
-      # status, then judge on what the TAP output actually says.
+      # Keep node's exit status rather than letting `bash -e` kill the step,
+      # then judge on what the TAP output actually says. A count is read from
+      # the summary; a non-zero status is treated as a runner problem outright.
+      #
+      # An earlier version of this step excused a non-zero status whenever any
+      # test had been skipped, on the belief that node --test exits non-zero
+      # for skips. Measured on node v24.19.0 (the version .nvmrc pins, so the
+      # version CI runs): a suite with one pass and one skip exits 0. The
+      # belief was false, the branch could never fire for its stated reason,
+      # and it was a live hole -- a genuine runner crash was excusable as long
+      # as one test somewhere had been skipped.
       - name: tests actually ran
         run: |
+          # Exercised as a complete shell block by check-workflow.test.ts: gate.
           set -o pipefail
           node --test --test-reporter=tap test/*.test.ts > tap.txt && status=0 || status=$?
-          for field in pass fail cancelled; do
+          for field in pass fail cancelled skipped; do
             grep -qE "^# $field [0-9]+$" tap.txt || {
               echo "TAP output has no '# $field' line — the run did not finish" >&2
               exit 1
@@ -85,9 +141,15 @@ jobs:
           count=$(awk '/^# pass [0-9]+$/ { p=$3 } END { print p + 0 }' tap.txt)
           failed=$(awk '/^# fail [0-9]+$/ { f=$3 } END { print f + 0 }' tap.txt)
           cancelled=$(awk '/^# cancelled [0-9]+$/ { c=$3 } END { print c + 0 }' tap.txt)
-          skipped=$(awk '/^# skip [0-9]+$/ { s=$3 } END { print s + 0 }' tap.txt)
+          # node reports "# skipped", not "# skip". Matching the wrong word made
+          # this always zero, which disarmed the runner-problem check below.
+          skipped=$(awk '/^# skipped [0-9]+$/ { s=$3 } END { print s + 0 }' tap.txt)
           echo "pass $count, fail $failed, cancelled $cancelled, skipped $skipped (node exit $status)"
           if [ "$failed" -ne 0 ] || [ "$cancelled" -ne 0 ]; then
+            # A count cannot be acted on. Name the tests and keep their
+            # diagnostics, or the log says "1 failed" and nothing else.
+            grep -E "^ *not ok " tap.txt >&2 || true
+            cat tap.txt
             echo "$failed failed and $cancelled cancelled" >&2
             exit 1
           fi
@@ -95,8 +157,10 @@ jobs:
             echo "no tests ran — the check suite proves nothing" >&2
             exit 1
           fi
-          # Anything else non-zero is a runner problem, not a skip.
-          if [ "$status" -ne 0 ] && [ "$skipped" -eq 0 ]; then
-            echo "node --test exited $status with nothing skipped to explain it" >&2
+          # A non-zero status is a runner problem. Skips do not excuse it:
+          # node exits 0 for a skipped test, so a non-zero status always means
+          # something else went wrong.
+          if [ "$status" -ne 0 ]; then
+            echo "node --test exited $status; the suite did not run cleanly" >&2
             exit 1
           fi
