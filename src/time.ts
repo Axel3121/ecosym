@@ -6,9 +6,6 @@ export function parseCalendarInstant(value: string): null | number {
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
-  if (month < 1 || month > 12 || day < 1) {
-    return null;
-  }
   const daysInMonth =
     month === 2
       ? year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
@@ -40,11 +37,7 @@ export function utcInstantOrderingKey(value: unknown): null | string {
     /^\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(?:Z|\+00:00)$/.exec(
       value,
     );
-  if (match === null || Number(match[1]) > 24 || Number(match[2]) > 59) {
-    return null;
-  }
-  // Leap seconds are deliberately refused: Date cannot represent, order, or compare them.
-  if (Number(match[3]) > 59) {
+  if (match === null) {
     return null;
   }
   const milliseconds = parseCalendarInstant(value);
