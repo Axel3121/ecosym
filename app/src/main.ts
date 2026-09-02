@@ -182,12 +182,11 @@ function threadFor(t: Target): Thread {
   return desk.threads[id] ??= {
     id,
     title: t.kind === "council" ? "Rådet" : t.kind === "seat" ? t.settlement.seatName : t.agent.label,
-    where: t.kind === "council" ? "Capital" : t.settlement.name,
+    where: t.kind === "council" ? "Hovedkvarter" : t.settlement.name,
     lines: [], lastAt: Date.now(),
   };
 }
 function resumeThread(id: string) {
-  const t = desk.threads[id]; if (!t) return;
   const [kind, key] = id.split(":");
   if (kind === "council") return focus({ kind: "council" });
   if (kind === "seat") { const s = scene.settlements.find((x) => x.civilizationId === key); if (s) focus({ kind: "seat", settlement: s }); return; }

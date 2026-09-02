@@ -178,18 +178,41 @@ function tabPetisjoner(scene: Scene) {
   return `<p class="muted">Noe som ble bedt om. Vises aldri som noe som skjedde.</p><ol class="queue">${rows.join("") || '<li class="muted">Ingen petisjoner.</li>'}</ol>`;
 }
 
-/** Samtaler tab: every conversation, resumable. Facts in a thread came from observed state at the time. */
+/** Samtaler tab: grouped like projects. Capital is the global chat; each civilization holds its own
+ *  threads — the seat, and any agent you have spoken to or that is running now. */
 function tabSamtaler(scene: Scene, state: DeskState) {
-  const ts = Object.values(state.threads).sort((a, b) => b.lastAt - a.lastAt);
-  if (!ts.length) return `<p class="muted">Ingen samtaler ennå. Klikk en person eller et sete på kartet, eller «snakk med …» på Oversikt.</p>`;
-  const rows = ts.map((t) => {
-    const last = t.lines.filter((l) => l.who !== "note").at(-1);
-    const n = t.lines.filter((l) => l.who === "you").length;
-    return `<li class="thr" data-thread="${esc(t.id)}"><div class="q-head"><span class="q-who">${esc(t.title)} · ${esc(t.where)}</span><span class="q-when">${agoMs(scene, t.lastAt)}</span></div><div class="thr-last">${last ? `<span class="dim">${last.who === "you" ? "du" : esc(t.title)}:</span> ${esc(last.text.slice(0, 90))}${last.text.length > 90 ? "…" : ""}` : '<span class="dim">tom</span>'}</div><div class="thr-meta"><span class="dim">${n} ${n === 1 ? "melding" : "meldinger"} fra deg</span><button data-resume="${esc(t.id)}">fortsett ›</button></div></li>`;
-  });
-  return `<ol class="queue">${rows.join("")}</ol><p class="desk-note">Svar er skriptet fra observert tilstand. Ikke koblet til en runtime i prototypen.</p>`;
+  const th = (id: string) => state.threads[id];
+  const row = (id: string, title: string, sub: string, live: boolean, startLabel: string, nested = false) => {
+    const t = th(id);
+    const last = t?.lines.filter((l) => l.who !== "note").at(-1);
+    const n = t?.lines.filter((l) => l.who === "you").length ?? 0;
+    return `<li class="thr ${t ? "" : "thr-new"} ${nested ? "thr-nested" : ""}">
+      <div class="q-head"><span class="q-who">${live ? '<span class="live">●</span> ' : ""}${esc(title)} <span class="dim">${esc(sub)}</span></span><span class="q-when">${t ? agoMs(t.lastAt) : ""}</span></div>
+      ${last ? `<div class="thr-last"><span class="dim">${last.who === "you" ? "du" : esc(title)}:</span> ${esc(last.text.slice(0, 90))}${last.text.length > 90 ? "…" : ""}</div>` : ""}
+      <div class="thr-meta"><span class="dim">${t ? `${n} ${n === 1 ? "melding" : "meldinger"} fra deg` : ""}</span><button data-resume="${esc(id)}" class="${t ? "" : "ghost"}">${t ? "fortsett ›" : startLabel}</button></div>
+    </li>`;
+  };
+  const global = `<section class="desk-sec"><h3><span>Hovedkvarter</span><span class="muted">global</span></h3><ol class="queue">${row("council", "Rådet", "alle sivilisasjoner · " + scene.capital.matters.length + " saker", false, "åpne ›")}</ol></section>`;
+  const civs = scene.settlements.map((s) => {
+    if (s.epistemic !== "observed") return `<section class="desk-sec"><h3><span>${esc(s.name)}</span><span class="dim">aldri sett — ingen å snakke med</span></h3></section>`;
+    const seat = row(`seat:${s.civilizationId}`, s.seatName, "setet", false, `snakk med ${esc(s.seatName)} ›`);
+    // agents: those with a thread, plus those running now
+    const ids = new Set<string>();
+    for (const t of Object.values(state.threads)) if (t.id.startsWith("agent:")) ids.add(t.id.slice(6));
+    for (const i of s.inhabitants) ids.add(i.runId);
+    const agents = [...ids].map((runId) => {
+      const inh = s.inhabitants.find((i) => i.runId === runId);
+      const t = th(`agent:${runId}`);
+      if (!inh && !t) return "";
+      if (!inh && t && t.where !== s.name) return "";
+      return row(`agent:${runId}`, inh?.label ?? t!.title, inh ? `agent · ${inh.tool ?? "—"}` : "agent · ferdig", !!inh, "spør ›", true);
+    }).join("");
+    const n = Object.values(state.threads).filter((t) => t.where === s.name).length;
+    return `<section class="desk-sec"><h3><span>${esc(s.name)}</span><span class="muted">${n ? `${n} ${n === 1 ? "samtale" : "samtaler"}` : ""}</span></h3><ol class="queue">${seat}${agents}</ol></section>`;
+  }).join("");
+  return global + civs + `<p class="desk-note">Svar er skriptet fra observert tilstand. Ikke koblet til en runtime i prototypen.</p>`;
 }
-function agoMs(scene: Scene, at: number) {
+function agoMs(at: number) {
   const m = Math.round((Date.now() - at) / 60000);
   return m < 1 ? "nå" : m < 60 ? `${m} min` : `${Math.round(m / 60)} t`;
 }
