@@ -205,6 +205,10 @@ export const DELETE_GIT_BRANCH_REQUEST_DEFINITION = deepFreeze({
         "recoverability.evidence.digest",
         "recoverability.evidence.observedAt",
         "recoverability.evidence.currentness",
+        "recoverability.evidence.scope.repositoryId",
+        "recoverability.evidence.scope.branchReference",
+        "recoverability.evidence.scope.expectedObjectId",
+        "recoverability.evidence.scope.preservedReference",
       ],
       userText: "not admitted",
     },
@@ -279,6 +283,38 @@ export const DELETE_GIT_BRANCH_REQUEST_DEFINITION = deepFreeze({
       limits: { maximumReferencesDeleted: 1 },
       consequenceClassification: "destructive",
     },
+    expectedTransactionView: {
+      format: "ecosym.git.delete-branch.transaction-view.v1",
+      operation: DELETE_GIT_BRANCH_OPERATION,
+      target: {
+        sourceOwner: "git.example",
+        repositoryId: "repo:alpha",
+        branchReference: "refs/heads/topic",
+        expectedObjectId: VECTOR_OBJECT_ID,
+      },
+      limit: { maximumReferencesDeleted: 1 },
+      consequence: {
+        classification: "destructive",
+        summary: DELETE_GIT_BRANCH_CONSEQUENCE_SUMMARY,
+      },
+      recoverability: {
+        classification: "recoverable-from-preserved-tag",
+        preservedReference: "refs/tags/topic_recovery",
+        evidence: {
+          owner: "git.example",
+          sourceRecordId: "git-ref-state:alpha-topic",
+          digest: VECTOR_EVIDENCE_DIGEST,
+          observedAt: "2026-09-02T12:00:00.000Z",
+          currentness: "current",
+          scope: {
+            repositoryId: "repo:alpha",
+            branchReference: "refs/heads/topic",
+            expectedObjectId: VECTOR_OBJECT_ID,
+            preservedReference: "refs/tags/topic_recovery",
+          },
+        },
+      },
+    },
     refusals: [
       { mutation: "add an undeclared field", rule: "closed_schema" },
       { mutation: "change type.id", rule: "unknown_request_type" },
@@ -329,6 +365,7 @@ export interface DeleteGitBranchRecoverabilityEvidence {
   sourceRecordId: string;
   digest: string;
   observedAt: string;
+  // This is the signed source marker; admission and enforcement establish actual currentness.
   currentness: "current";
   scope: {
     repositoryId: string;

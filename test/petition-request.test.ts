@@ -112,38 +112,12 @@ test("canonical request and projection do not depend on input property order", (
 test("derives the transaction view from the same validated request", () => {
   const view = requestTransactionView(validRequest());
 
-  assert.deepEqual(view, {
-    format: "ecosym.git.delete-branch.transaction-view.v1",
-    operation: DELETE_GIT_BRANCH_OPERATION,
-    target: {
-      sourceOwner: "git.example",
-      repositoryId: "repo:alpha",
-      branchReference: "refs/heads/topic",
-      expectedObjectId: `sha256:${"a".repeat(64)}`,
-    },
-    limit: { maximumReferencesDeleted: 1 },
-    consequence: {
-      classification: "destructive",
-      summary: DELETE_GIT_BRANCH_CONSEQUENCE_SUMMARY,
-    },
-    recoverability: {
-      classification: "recoverable-from-preserved-tag",
-      preservedReference: "refs/tags/topic_recovery",
-      evidence: {
-        owner: "git.example",
-        sourceRecordId: "git-ref-state:alpha-topic",
-        digest: `sha256:${"b".repeat(64)}`,
-        observedAt: "2026-09-02T12:00:00.000Z",
-        currentness: "current",
-        scope: {
-          repositoryId: "repo:alpha",
-          branchReference: "refs/heads/topic",
-          expectedObjectId: `sha256:${"a".repeat(64)}`,
-          preservedReference: "refs/tags/topic_recovery",
-        },
-      },
-    },
-  });
+  assert.deepEqual(
+    view,
+    DELETE_GIT_BRANCH_REQUEST_DEFINITION.conformanceVectors.expectedTransactionView,
+  );
+  assert.equal(view.target.branchReference, "refs/heads/topic");
+  assert.equal(view.recoverability.evidence.scope.expectedObjectId, view.target.expectedObjectId);
 });
 
 test("content-addresses the closed definition with the specified domain and its own identity", () => {
@@ -158,7 +132,7 @@ test("content-addresses the closed definition with the specified domain and its 
   );
   assert.equal(
     DELETE_GIT_BRANCH_REQUEST_DEFINITION_DIGEST,
-    "sha256:919636f3bc9165bfdc60dd941fe886659c98552229a4989ed0a3c2be9088d35c",
+    "sha256:7cb2ac78547b1037e88ac8e2f6fb0c541951c87f304a95bc21d6ff685ebb87db",
   );
   assert.equal(DELETE_GIT_BRANCH_REQUEST_DEFINITION.id, DELETE_GIT_BRANCH_REQUEST_ID);
   assert.equal(
@@ -223,6 +197,11 @@ const refusalCases: RefusalCase[] = [
     name: "value outside the closed resource schema",
     rule: "schema_value",
     mutate: (request) => setAt(request, ["resources", "branchReference"], "refs/heads/a/b"),
+  },
+  {
+    name: "non-I-JSON surrogate in a dynamic string",
+    rule: "schema_value",
+    mutate: (request) => setAt(request, ["resources", "repositoryId"], "\ud800"),
   },
   {
     name: "missing required request field",
@@ -307,6 +286,36 @@ const refusalCases: RefusalCase[] = [
         request,
         ["consequence", "recoverability", "evidence", "scope", "branchReference"],
         "refs/heads/other",
+      ),
+  },
+  {
+    name: "evidence scoped to another repository",
+    rule: "evidence_mismatch",
+    mutate: (request) =>
+      setAt(
+        request,
+        ["consequence", "recoverability", "evidence", "scope", "repositoryId"],
+        "repo:other",
+      ),
+  },
+  {
+    name: "evidence scoped to another expected object",
+    rule: "evidence_mismatch",
+    mutate: (request) =>
+      setAt(
+        request,
+        ["consequence", "recoverability", "evidence", "scope", "expectedObjectId"],
+        OTHER_DIGEST,
+      ),
+  },
+  {
+    name: "evidence scoped to another recovery tag",
+    rule: "evidence_mismatch",
+    mutate: (request) =>
+      setAt(
+        request,
+        ["consequence", "recoverability", "evidence", "scope", "preservedReference"],
+        "refs/tags/other",
       ),
   },
 ];
