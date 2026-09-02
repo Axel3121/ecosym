@@ -51,6 +51,8 @@ if [ ! -f "$SPEC" ] && [ -f "docs/tasks/${TASK}.md" ]; then
   SPEC="docs/tasks/${TASK}.md"
 fi
 [ -f "$SPEC" ] || { echo "no spec at $SPEC" >&2; exit 1; }
+# Where the copy lives inside the worktree, and what the run is told to read.
+SPEC_IN_TREE="docs/tasks/${TASK}.md"
 
 # Every linked worktree needs the main repository's Git directory to commit.
 if [ -z "${ECOSYM_PROJECT:-}" ]; then
@@ -127,7 +129,10 @@ fi
 # parsed needs and touches below, so edits made during the run cannot shrink the
 # territory it holds and the shared branch is never consulted for a live run.
 mkdir -p "$WORKTREE/docs/tasks"
-cp "$SPEC_SNAPSHOT" "$WORKTREE/$SPEC"
+# The source may sit outside the repository, but the copy must land on
+# the in-tree path: run-ledger's territory audit sees docs/tasks/<task>.md,
+# and every specification declares that path.
+cp "$SPEC_SNAPSHOT" "$WORKTREE/$SPEC_IN_TREE"
 rm -f "$SPEC_SNAPSHOT"
 trap - EXIT
 export ECOSYM_WORKTREE="$WORKTREE"
@@ -205,7 +210,7 @@ systemd-run --user --unit="$UNIT" --collect \
   --property=StandardError="append:$LOG" \
   "$REPO/scripts/ecosym-sandbox" run --variant max --port "$PORT" \
   "Follow the instructions in the attached files." \
-  -f "$SPEC" -f scripts/run-instruction.md
+  -f "$SPEC_IN_TREE" -f scripts/run-instruction.md
 
 # The run is now the ledger's business. A launch that is not recorded is a run
 # nobody will account for later. It also has no territory other launchers can
@@ -213,7 +218,7 @@ systemd-run --user --unit="$UNIT" --collect \
 if ! "$REPO/scripts/run-ledger" start "$TASK" "$UNIT" \
   --branch "$BRANCH" \
   --worktree "$WORKTREE" \
-  --spec "$WORKTREE/$SPEC" \
+  --spec "$WORKTREE/$SPEC_IN_TREE" \
   --declaration "$DECLARATION_JSON" \
   --commit "$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null || true)"; then
   systemctl --user stop "$UNIT.service" >/dev/null 2>&1 || true
