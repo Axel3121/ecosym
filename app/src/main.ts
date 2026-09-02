@@ -3,8 +3,8 @@ import type { Scene } from "./scene.ts";
 import { fixture } from "./fixture.ts";
 import { Chart, makeWalkers, stepWalkers, ZOOM_MIN, ZOOM_MAX, SETTLEMENT_ZOOM, coverZoom } from "./chart.ts";
 import type { Hit } from "./chart.ts";
-import { renderDesk, civByIndex } from "./desk.ts";
-import type { DeskState, Decision } from "./desk.ts";
+import { renderDesk, renderTabs, civByIndex, TABS } from "./desk.ts";
+import type { DeskState, Decision, Tab } from "./desk.ts";
 import { PLATES, PLATE_OF } from "./chart.ts";
 import { opening, reply } from "./dialogue.ts";
 import type { Target, Line } from "./dialogue.ts";
@@ -21,8 +21,23 @@ $("observed-at").textContent = new Date(scene.observedAt).toLocaleString("nb-NO"
 if (scene.synthetic) $("synthetic").hidden = false;
 
 // ---- desk -------------------------------------------------------------------
-const desk: DeskState = { decisions: {}, selectedCiv: null };
-function renderDocket() { $("desk-body").innerHTML = renderDesk(scene, desk); }
+const app = $("app");
+const desk: DeskState = { decisions: {}, selectedCiv: null, tab: "oversikt", collapsed: false };
+function renderDocket() {
+  $("desk-tabs").innerHTML = renderTabs(desk);
+  $("desk-body").innerHTML = renderDesk(scene, desk);
+  const open = scene.capital.matters.filter((m) => !desk.decisions[m.id]).length;
+  const rt = $("desk-tabs").querySelector<HTMLElement>('[data-tab="raadet"] .lbl');
+  if (rt && open) rt.insertAdjacentHTML("afterend", `<span class="count">${open}</span>`);
+}
+function setTab(t: Tab) { desk.tab = t; if (desk.collapsed) setCollapsed(false); renderDocket(); }
+function setCollapsed(c: boolean) {
+  desk.collapsed = c; app.classList.toggle("collapsed", c);
+  $("desk-toggle").textContent = c ? "»" : "«";
+  requestAnimationFrame(() => chart.resize()); setTimeout(() => chart.resize(), 200);
+}
+$("desk-tabs").addEventListener("click", (e) => { const t = (e.target as HTMLElement).closest<HTMLElement>("[data-tab]"); if (t) setTab(t.dataset.tab as Tab); });
+$("desk-toggle").addEventListener("click", () => setCollapsed(!desk.collapsed));
 $("desk-body").addEventListener("click", (e) => {
   const t = (e.target as HTMLElement).closest<HTMLElement>("[data-decide],[data-undo],[data-civ],[data-go],[data-talk-civ],[data-talk-council]");
   if (!t) return;
@@ -36,6 +51,8 @@ $("desk-body").addEventListener("click", (e) => {
 });
 window.addEventListener("keydown", (e) => {
   if ((e.target as HTMLElement).tagName === "INPUT") return;
+  if (e.altKey && (e.key === "b" || e.key === "∫")) { setCollapsed(!desk.collapsed); return; }
+  if (!e.altKey && !e.metaKey && !e.ctrlKey) { const tab = TABS.find((t) => t.key.toLowerCase() === e.key.toLowerCase()); if (tab) { setTab(tab.id); return; } }
   const n = Number(e.key);
   if (n >= 1 && n <= 4) { const s = civByIndex(scene, n); if (s) select({ kind: "settlement", settlementId: s.civilizationId, label: s.name }); }
   if (e.key === "c" || e.key === "C") select({ kind: "capital", label: "Capital" });
@@ -90,6 +107,7 @@ canvas.addEventListener("wheel", (e) => {
   target = { ...chart.camera }; flying = false;
 }, { passive: false });
 window.addEventListener("resize", () => chart.resize());
+app.addEventListener("transitionend", () => chart.resize());
 window.addEventListener("keydown", (e) => { if (e.key === "Escape") select(null); });
 
 // ---- selection & sheet -----------------------------------------------------
@@ -130,7 +148,7 @@ function select(h: Hit | null) {
 
 // ---- focus mode: leave the world, talk ---------------------------------------
 let current: Target | null = null;
-const app = $("app"), focusEl = $("focus"), thread = $("focus-thread");
+const focusEl = $("focus"), thread = $("focus-thread");
 const input = $<HTMLInputElement>("focus-input");
 
 function push(lines: Line[]) {

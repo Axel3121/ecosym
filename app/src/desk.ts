@@ -3,9 +3,18 @@
 import type { Scene, Settlement } from "./scene.ts";
 
 export type Decision = "ja" | "nei" | "spør";
+export type Tab = "oversikt" | "raadet" | "arbeid" | "petisjoner";
+export const TABS: Array<{ id: Tab; label: string; glyph: string; key: string }> = [
+  { id: "oversikt", label: "Oversikt", glyph: "◫", key: "O" },
+  { id: "raadet", label: "Rådet", glyph: "⚑", key: "R" },
+  { id: "arbeid", label: "Arbeid", glyph: "●", key: "A" },
+  { id: "petisjoner", label: "Petisjoner", glyph: "✉", key: "P" },
+];
 export interface DeskState {
   decisions: Record<string, { decision: Decision; at: number }>;
   selectedCiv: string | null;
+  tab: Tab;
+  collapsed: boolean;
 }
 
 function esc(s: string) { return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!)); }
@@ -77,11 +86,7 @@ function log(scene: Scene) {
   return `<section class="desk-sec"><h3><span>Siste observert</span></h3><ul class="log">${rows}</ul></section>`;
 }
 
-function work(scene: Scene, state: DeskState) {
-  if (state.selectedCiv === "__capital") return capital(scene);
-  const s = scene.settlements.find((x) => x.civilizationId === state.selectedCiv);
-  if (!s) return "";
-  if (s.epistemic !== "observed") return `<section class="desk-sec"><h3>${esc(s.name)}</h3><p class="muted">Aldri observert. Koble en kilde for å se noe her.</p></section>`;
+function workTree(s: Settlement) {
   const roots = s.inhabitants.filter((i) => i.depth === 0);
   const kids = (parent: string): string => {
     const cs = s.inhabitants.filter((i) => i.parentRunId === parent);
@@ -92,11 +97,74 @@ function work(scene: Scene, state: DeskState) {
   const tree = (_p: undefined, _d: number) => roots.map(node).join("");
   const running = roots.length ? `<ul class="work">${tree(undefined, 0)}</ul>` : `<p class="muted">Ingen i arbeid.</p>`;
   const traces = s.traces.length ? `<ul class="work traces">${s.traces.map((t) => `<li><span class="muted">○</span> ${esc(t.label)} <span class="muted">${Math.round(t.freshness * 100)}%</span></li>`).join("")}</ul>` : "";
+  return { running, traces };
+}
+
+function work(scene: Scene, state: DeskState) {
+  if (state.selectedCiv === "__capital") return capital(scene);
+  const s = scene.settlements.find((x) => x.civilizationId === state.selectedCiv);
+  if (!s) return "";
+  if (s.epistemic !== "observed") return `<section class="desk-sec"><h3>${esc(s.name)}</h3><p class="muted">Aldri observert. Koble en kilde for å se noe her.</p></section>`;
+  const { running, traces } = workTree(s);
   return `<section class="desk-sec"><h3><span>${esc(s.name)}</span><span class="muted domain">${esc(s.domain)}</span></h3><p class="muted">sist sett ${ago(scene, s.lastSeen!)} siden</p><h4>I arbeid</h4>${running}${traces ? `<h4>Nylig ferdig</h4>${traces}` : ""}<div class="desk-actions"><button data-go="${esc(s.civilizationId)}">gå dit</button><button data-talk-civ="${esc(s.civilizationId)}" class="primary">snakk med ${esc(s.seatName)}</button></div></section>`;
 }
 
+/** Rådet tab: the whole queue, open first, decided below, with the seat's mandate for context. */
+function tabRaadet(scene: Scene, state: DeskState) {
+  const items = scene.capital.matters.slice().sort((a, b) => Date.parse(b.raisedAt) - Date.parse(a.raisedAt));
+  const open = items.filter((m) => !state.decisions[m.id]);
+  const done = items.filter((m) => state.decisions[m.id]);
+  const card = (m: typeof items[number]) => {
+    const s = scene.settlements.find((x) => x.civilizationId === m.raisedBy);
+    const d = state.decisions[m.id];
+    const [what, crosses] = m.summary.split(" (crosses: ");
+    const rule = crosses?.replace(/\)$/, "");
+    return `<li class="q big ${d ? "decided" : ""}">
+      <div class="q-head"><span class="q-who">${esc(s?.name ?? m.raisedBy)} · ${esc(s?.seatName ?? "")}</span><span class="q-when">${ago(scene, m.raisedAt)}</span></div>
+      <div class="q-what">${esc((what ?? m.summary).replace(/^\w+ asks to /, ""))}</div>
+      ${rule ? `<div class="q-cross">${esc(rule)} <span class="dim">— utenfor mandatet «${esc(s?.mandate.alone.join(", ") ?? "")}»</span></div>` : `<div class="dim">ingen regel navngitt i saken</div>`}
+      ${d ? `<span class="q-done ${d.decision}">${d.decision === "ja" ? "✓ ja" : d.decision === "nei" ? "✗ nei" : "? spurt tilbake"} <button data-undo="${m.id}" title="angre">↶</button></span>`
+          : `<span class="q-act"><button data-decide="ja" data-id="${m.id}">ja</button><button data-decide="nei" data-id="${m.id}">nei</button><button data-decide="spør" data-id="${m.id}">spør tilbake</button>${s ? `<button data-go="${esc(s.civilizationId)}" class="ghost">se ${esc(s.name)}</button>` : ""}</span>`}
+    </li>`;
+  };
+  return `<section class="desk-sec"><h3><span>Åpne</span><span class="muted">${open.length}</span></h3><ol class="queue">${open.map(card).join("") || '<li class="muted">Ingenting venter.</li>'}</ol></section>
+  ${done.length ? `<section class="desk-sec"><h3><span>Avgjort denne økten</span><span class="muted">${done.length}</span></h3><ol class="queue">${done.map(card).join("")}</ol></section>` : ""}
+  <p class="desk-note">Avgjørelser blir petisjoner. Ikke koblet i prototypen.</p>`;
+}
+
+/** Arbeid tab: everything running, every civilization, one screen. */
+function tabArbeid(scene: Scene) {
+  const secs = scene.settlements.map((s) => {
+    if (s.epistemic !== "observed") return `<section class="desk-sec"><h3><span>${esc(s.name)}</span><span class="dim">aldri sett</span></h3></section>`;
+    const { running, traces } = workTree(s);
+    return `<section class="desk-sec"><h3><span>${esc(s.name)}</span><span class="muted">${s.inhabitants.length ? `<span class="live">● ${s.inhabitants.length}</span>` : "stille"} · ${ago(scene, s.lastSeen!)}</span></h3>${running}${traces ? `<h4>Nylig ferdig</h4>${traces}` : ""}</section>`;
+  });
+  const total = scene.settlements.reduce((n, s) => n + s.inhabitants.length, 0);
+  return `<p class="muted">${total} i arbeid på tvers av ${scene.settlements.filter((s) => s.epistemic === "observed").length} observerte sivilisasjoner.</p>${secs.join("")}`;
+}
+
+/** Petisjoner tab: every letter and where it stands. A petition is never a result. */
+function tabPetisjoner(scene: Scene) {
+  const order: Record<string, number> = { sent: 0, accepted: 1, queued: 2, "in-progress": 3, refused: 4 };
+  const rows = scene.letters.slice().sort((a, b) => Date.parse(b.sentAt) - Date.parse(a.sentAt)).map((l) => {
+    const s = scene.settlements.find((x) => x.civilizationId === l.toCivilizationId);
+    const steps = ["sent", "accepted", "queued", "in-progress"].map((st, i) => `<i class="${i <= (order[l.state] ?? 0) && l.state !== "refused" ? "on" : ""}"></i>`).join("");
+    return `<li class="pet"><div class="q-head"><span class="q-who">til ${esc(s?.seatName ?? l.toCivilizationId)} · ${esc(s?.name ?? "")}</span><span class="q-when">${ago(scene, l.sentAt)}</span></div><div class="q-what">${esc(l.text)}</div><div class="pet-state"><span class="steps">${steps}</span><span class="${l.state === "refused" ? "seal" : "muted"}">${esc(l.state)}</span></div></li>`;
+  });
+  return `<p class="muted">Noe som ble bedt om. Vises aldri som noe som skjedde.</p><ol class="queue">${rows.join("") || '<li class="muted">Ingen petisjoner.</li>'}</ol>`;
+}
+
+export function renderTabs(state: DeskState): string {
+  return TABS.map((t) => `<button class="tab ${state.tab === t.id ? "on" : ""}" data-tab="${t.id}" title="${t.label} (${t.key})"><span class="glyph">${t.glyph}</span><span class="lbl">${t.label}</span></button>`).join("");
+}
+
 export function renderDesk(scene: Scene, state: DeskState): string {
-  return attention(scene, state) + roster(scene, state) + work(scene, state) + queue(scene, state) + log(scene);
+  switch (state.tab) {
+    case "raadet": return tabRaadet(scene, state);
+    case "arbeid": return tabArbeid(scene);
+    case "petisjoner": return tabPetisjoner(scene);
+    default: return attention(scene, state) + roster(scene, state) + work(scene, state) + queue(scene, state) + log(scene);
+  }
 }
 
 export function civByIndex(scene: Scene, n: number): Settlement | undefined { return scene.settlements[n - 1]; }

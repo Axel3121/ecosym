@@ -12,7 +12,32 @@ button, input { font: inherit; }
 h1, h2, h3, h4 { margin: 0; font-weight: 500; }
 
 /* ---- layout ------------------------------------------------------------- */
-#app { display: grid; grid-template-columns: 340px 1fr; width: 100vw; height: 100vh; }
+#app { display: grid; grid-template-columns: 340px 1fr; width: 100vw; height: 100vh; transition: grid-template-columns 180ms ease; }
+#app.collapsed { grid-template-columns: 44px 1fr; }
+#app.collapsed .desk-head .sub, #app.collapsed .desk-head .synthetic, #app.collapsed .desk-head h1, #app.collapsed #desk-body, #app.collapsed .tab .lbl { display: none; }
+#app.collapsed .desk-title { justify-content: center; }
+#app.collapsed .tabs { flex-direction: column; }
+#app.collapsed .tab { justify-content: center; padding: 10px 0; }
+#app.collapsed .tab .count { position: absolute; top: 4px; right: 6px; }
+.desk-title { display: flex; justify-content: space-between; align-items: center; }
+.toggle { background: transparent; color: var(--fg-dim); border: 1px solid var(--line-2); padding: 1px 7px; cursor: pointer; font-size: 13px; }
+.toggle:hover { color: var(--fg); border-color: var(--fg-dim); }
+.tabs { display: flex; border-bottom: 1px solid var(--line); }
+.tab { position: relative; flex: 1; display: flex; gap: 6px; align-items: center; justify-content: center; padding: 8px 4px; background: transparent; color: var(--fg-dim); border: 0; border-bottom: 2px solid transparent; cursor: pointer; font-size: 12px; }
+.tab:hover { color: var(--fg); }
+.tab.on { color: var(--fg); border-bottom-color: var(--fg); }
+.tab .glyph { font-size: 13px; }
+.tab .count { background: var(--seal-dim); color: var(--bg); font-size: 10px; padding: 0 5px; border-radius: 2px; margin-left: 2px; }
+.queue .q.big { display: block; padding: 10px 0; }
+.q-head { display: flex; justify-content: space-between; }
+.q.big .q-what { font-size: 14px; margin: 3px 0; }
+.queue .q.big .q-act, .queue .q.big .q-done { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; grid-column: auto; grid-row: auto; }
+.q-act button.ghost { border-color: var(--line); color: var(--fg-dim); margin-left: auto; }
+.pet { display: block; padding: 10px 0; border-bottom: 1px dashed var(--line); }
+.pet-state { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; font-size: 12px; }
+.steps { display: inline-flex; gap: 4px; }
+.steps i { width: 22px; height: 4px; background: var(--line-2); }
+.steps i.on { background: var(--fg-dim); }
 #stage { position: relative; min-width: 0; }
 
 /* ---- desk --------------------------------------------------------------- */

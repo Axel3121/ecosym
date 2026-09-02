@@ -18,10 +18,11 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   <div id="app">
     <aside id="desk" class="desk" aria-label="Arbeidsbord">
       <header class="desk-head">
-        <h1>Ecosym</h1>
+        <div class="desk-title"><h1>Ecosym</h1><button id="desk-toggle" class="toggle" title="Skjul bordet (⌥B)" aria-label="Skjul bordet">«</button></div>
         <p class="sub">observert <span id="observed-at"></span></p>
         <p class="synthetic" id="synthetic" hidden>syntetisk fixture — ingenting her er observert</p>
       </header>
+      <nav id="desk-tabs" class="tabs" aria-label="Faner"></nav>
       <div id="desk-body"></div>
     </aside>
     <main id="stage">
