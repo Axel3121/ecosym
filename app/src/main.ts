@@ -31,6 +31,8 @@ function applySettings() {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
   document.documentElement.style.setProperty("--desk-w", `${s.deskWidth}px`);
   app.classList.toggle("wide-desk", s.deskWidth >= 400);
+  const dark = s.theme === "dark" || (s.theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
   // unchanged when collapsed: the settings pane cannot be seen there
   chart.showLabels = s.labels;
   motionOff = !s.smoke;
@@ -38,6 +40,7 @@ function applySettings() {
 }
 function renderDocket() {
   $("desk-tabs").innerHTML = renderTabs(desk);
+  const cur = TABS.find((t) => t.id === desk.tab); $("tab-hint").textContent = cur ? `${cur.label} — ${cur.hint}` : "";
   $("desk-body").innerHTML = renderDesk(scene, desk);
   const open = scene.capital.matters.filter((m) => !desk.decisions[m.id]).length;
   const rt = $("desk-tabs").querySelector<HTMLElement>('[data-tab="raadet"] .lbl');
@@ -51,7 +54,7 @@ function renderDocket() {
   }));
   $("desk-body").querySelectorAll<HTMLElement>("[data-seg]").forEach((el) => el.addEventListener("click", () => {
     const k = el.dataset.seg!, v = el.dataset.val!;
-    (desk.settings as unknown as Record<string, unknown>)[k] = k === "language" ? v : Number(v); applySettings(); renderDocket();
+    (desk.settings as unknown as Record<string, unknown>)[k] = k === "language" || k === "theme" ? v : Number(v); applySettings(); renderDocket();
   }));
   $("desk-body").querySelectorAll<HTMLElement>("[data-resume]").forEach((el) => el.addEventListener("click", () => resumeThread(el.dataset.resume!)));
 }

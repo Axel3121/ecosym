@@ -3,15 +3,16 @@
 import type { Scene, Settlement } from "./scene.ts";
 
 export type Decision = "ja" | "nei" | "spør";
-export type Tab = "oversikt" | "raadet" | "arbeid" | "petisjoner" | "samtaler" | "innstillinger";
+export type Tab = "oversikt" | "raadet" | "arbeid" | "petisjoner" | "samtaler" | "folk" | "innstillinger";
 /** Adding a tab = one row here + one case in renderDesk. Keys are single letters; keep them unique. */
-export const TABS: Array<{ id: Tab; label: string; glyph: string; key: string }> = [
-  { id: "oversikt", label: "Oversikt", glyph: "◫", key: "O" },
-  { id: "raadet", label: "Rådet", glyph: "⚑", key: "R" },
-  { id: "arbeid", label: "Arbeid", glyph: "●", key: "A" },
-  { id: "petisjoner", label: "Petisjoner", glyph: "✉", key: "P" },
-  { id: "samtaler", label: "Samtaler", glyph: "›", key: "S" },
-  { id: "innstillinger", label: "Innstillinger", glyph: "⚙", key: "I" },
+export const TABS: Array<{ id: Tab; label: string; glyph: string; key: string; hint: string }> = [
+  { id: "oversikt", label: "Oversikt", glyph: "⌂", key: "O", hint: "hva trenger deg nå" },
+  { id: "raadet", label: "Rådet", glyph: "⚑", key: "R", hint: "saker som krysser en grense — du avgjør" },
+  { id: "arbeid", label: "Arbeid", glyph: "⟳", key: "A", hint: "alt som kjører nå, alle sivilisasjoner" },
+  { id: "petisjoner", label: "Petisjoner", glyph: "✉", key: "P", hint: "det du har bedt om, og hvor det står" },
+  { id: "samtaler", label: "Samtaler", glyph: "☰", key: "S", hint: "tråder du har" },
+  { id: "folk", label: "Folk", glyph: "☺", key: "F", hint: "hvem du kan snakke med" },
+  { id: "innstillinger", label: "Innstillinger", glyph: "⚙", key: "I", hint: "flaten, aldri sannheten" },
 ];
 export interface ThreadLine { who: "you" | "them" | "note"; text: string; at: number }
 export interface Thread {
@@ -28,8 +29,9 @@ export interface Settings {
   logLimit: number;        // rows in the observed-activity log
   deskWidth: 300 | 340 | 400;
   language: "nb" | "en";   // shell language; source text is never translated
+  theme: "dark" | "light" | "system";
 }
-export const DEFAULT_SETTINGS: Settings = { labels: true, smoke: true, logLimit: 30, deskWidth: 340, language: "nb" };
+export const DEFAULT_SETTINGS: Settings = { labels: true, smoke: true, logLimit: 30, deskWidth: 340, language: "nb", theme: "dark" };
 export type DeskMode = "collapsed" | "side" | "full";
 export interface DeskState {
   decisions: Record<string, { decision: Decision; at: number }>;
@@ -180,39 +182,33 @@ function tabPetisjoner(scene: Scene) {
   return `<p class="muted">Noe som ble bedt om. Vises aldri som noe som skjedde.</p><ol class="queue">${rows.join("") || '<li class="muted">Ingen petisjoner.</li>'}</ol>`;
 }
 
-/** Samtaler tab: grouped like projects. Capital is the global chat; each civilization holds its own
- *  threads — the seat, and any agent you have spoken to or that is running now. */
+/** Samtaler: only threads you actually have, newest first, grouped by where. Nothing else. */
 function tabSamtaler(scene: Scene, state: DeskState) {
-  const th = (id: string) => state.threads[id];
-  const row = (id: string, title: string, sub: string, live: boolean, startLabel: string, nested = false) => {
-    const t = th(id);
-    const last = t?.lines.filter((l) => l.who !== "note").at(-1);
-    const n = t?.lines.filter((l) => l.who === "you").length ?? 0;
-    return `<li class="thr ${t ? "" : "thr-new"} ${nested ? "thr-nested" : ""}">
-      <div class="q-head"><span class="q-who">${live ? '<span class="live">●</span> ' : ""}${esc(title)} <span class="dim">${esc(sub)}</span></span><span class="q-when">${t ? agoMs(t.lastAt) : ""}</span></div>
-      ${last ? `<div class="thr-last"><span class="dim">${last.who === "you" ? "du" : esc(title)}:</span> ${esc(last.text.slice(0, 90))}${last.text.length > 90 ? "…" : ""}</div>` : ""}
-      <div class="thr-meta"><span class="dim">${t ? `${n} ${n === 1 ? "melding" : "meldinger"} fra deg` : ""}</span><button data-resume="${esc(id)}" class="${t ? "" : "ghost"}">${t ? "fortsett ›" : startLabel}</button></div>
-    </li>`;
-  };
-  const global = `<section class="desk-sec"><h3><span>Hovedkvarter</span><span class="muted">global</span></h3><ol class="queue">${row("council", "Rådet", "alle sivilisasjoner · " + scene.capital.matters.length + " saker", false, "åpne ›")}</ol></section>`;
+  const ts = Object.values(state.threads).sort((a, b) => b.lastAt - a.lastAt);
+  if (!ts.length) return `<p class="muted">Ingen samtaler ennå.</p><p class="desk-note">Finn noen å snakke med under <b>Folk</b> (F), eller klikk en person eller et sete på kartet.</p>`;
+  const groups = new Map<string, typeof ts>();
+  for (const t of ts) { const k = t.id === "council" ? "Hovedkvarter" : t.where; groups.set(k, [...(groups.get(k) ?? []), t]); }
+  const secs = [...groups].map(([where, list]) => `<section class="desk-sec"><h3><span>${esc(where)}</span><span class="muted">${list.length}</span></h3><ol class="queue">${list.map((t) => {
+    const last = t.lines.filter((l) => l.who !== "note").at(-1);
+    const n = t.lines.filter((l) => l.who === "you").length;
+    return `<li class="thr"><div class="q-head"><span class="q-who">${esc(t.title)}</span><span class="q-when">${agoMs(t.lastAt)}</span></div>${last ? `<div class="thr-last"><span class="dim">${last.who === "you" ? "du" : esc(t.title)}:</span> ${esc(last.text.slice(0, 90))}${last.text.length > 90 ? "…" : ""}</div>` : ""}<div class="thr-meta"><span class="dim">${n} ${n === 1 ? "melding" : "meldinger"} fra deg</span><button data-resume="${esc(t.id)}">fortsett ›</button></div></li>`;
+  }).join("")}</ol></section>`).join("");
+  return secs + `<p class="desk-note">Svar er skriptet fra observert tilstand. Ikke koblet til en runtime i prototypen.</p>`;
+}
+
+/** Folk: who exists and can be addressed. Capital first, then each civilization's seat and its agents. */
+function tabFolk(scene: Scene, state: DeskState) {
+  const has = (id: string) => !!state.threads[id];
+  const person = (id: string, title: string, sub: string, live: boolean, action: string, nested = false) =>
+    `<li class="who ${nested ? "who-nested" : ""}"><span class="who-name">${live ? '<span class="live">●</span> ' : ""}${esc(title)}</span><span class="dim">${esc(sub)}</span><button data-resume="${esc(id)}" class="${has(id) ? "" : "ghost"}">${has(id) ? "fortsett ›" : action}</button></li>`;
+  const global = `<section class="desk-sec"><h3><span>Hovedkvarter</span><span class="muted">global</span></h3><ul class="people">${person("council", "Rådet", `${scene.capital.matters.length} saker`, false, "åpne ›")}</ul></section>`;
   const civs = scene.settlements.map((s) => {
-    if (s.epistemic !== "observed") return `<section class="desk-sec"><h3><span>${esc(s.name)}</span><span class="dim">aldri sett — ingen å snakke med</span></h3></section>`;
-    const seat = row(`seat:${s.civilizationId}`, s.seatName, "setet", false, `snakk med ${esc(s.seatName)} ›`);
-    // agents: those with a thread, plus those running now
-    const ids = new Set<string>();
-    for (const t of Object.values(state.threads)) if (t.id.startsWith("agent:")) ids.add(t.id.slice(6));
-    for (const i of s.inhabitants) ids.add(i.runId);
-    const agents = [...ids].map((runId) => {
-      const inh = s.inhabitants.find((i) => i.runId === runId);
-      const t = th(`agent:${runId}`);
-      if (!inh && !t) return "";
-      if (!inh && t && t.where !== s.name) return "";
-      return row(`agent:${runId}`, inh?.label ?? t!.title, inh ? `agent · ${inh.tool ?? "—"}` : "agent · ferdig", !!inh, "spør ›", true);
-    }).join("");
-    const n = Object.values(state.threads).filter((t) => t.where === s.name).length;
-    return `<section class="desk-sec"><h3><span>${esc(s.name)}</span><span class="muted">${n ? `${n} ${n === 1 ? "samtale" : "samtaler"}` : ""}</span></h3><ol class="queue">${seat}${agents}</ol></section>`;
+    if (s.epistemic !== "observed") return `<section class="desk-sec"><h3><span>${esc(s.name)}</span><span class="dim">aldri sett</span></h3></section>`;
+    const seat = person(`seat:${s.civilizationId}`, s.seatName, "setet", false, "snakk ›");
+    const agents = s.inhabitants.map((i) => person(`agent:${i.runId}`, i.label, i.tool ?? "agent", true, "spør ›", true)).join("");
+    return `<section class="desk-sec"><h3><span>${esc(s.name)}</span><span class="muted domain">${esc(s.domain)}</span></h3><ul class="people">${seat}${agents}</ul></section>`;
   }).join("");
-  return global + civs + `<p class="desk-note">Svar er skriptet fra observert tilstand. Ikke koblet til en runtime i prototypen.</p>`;
+  return global + civs + `<p class="desk-note">Agenter tar ikke ordre — de svarer på spørsmål. Ordre går til setet.</p>`;
 }
 function agoMs(at: number) {
   const m = Math.round((Date.now() - at) / 60000);
@@ -235,6 +231,7 @@ function tabInnstillinger(state: DeskState, scene: Scene) {
   <section class="desk-sec"><h3>Bordet</h3><ul class="sets">
     ${seg("deskWidth", "Bredde", [["300", "smal"], ["340", "normal"], ["400", "bred"]], String(s.deskWidth))}
     ${seg("logLimit", "Logg", [["10", "10"], ["30", "30"], ["100", "100"]], String(s.logLimit))}
+    ${seg("theme", "Tema", [["dark", "mørk"], ["light", "lys"], ["system", "system"]], s.theme)}
     ${seg("language", "Skallspråk", [["nb", "norsk"], ["en", "english"]], s.language)}
   </ul><p class="desk-note">Kildetekst (saker, petisjoner, kjøringer) oversettes aldri.</p></section>
   <section class="desk-sec"><h3><span>Sivilisasjoner</span><span class="muted">${scene.settlements.length}</span></h3><ul class="sets">${civs}</ul>
@@ -258,6 +255,7 @@ export function renderDesk(scene: Scene, state: DeskState): string {
     case "arbeid": return tabArbeid(scene);
     case "petisjoner": return tabPetisjoner(scene);
     case "samtaler": return tabSamtaler(scene, state);
+    case "folk": return tabFolk(scene, state);
     case "innstillinger": return tabInnstillinger(state, scene);
     default: return attention(scene, state) + roster(scene, state) + work(scene, state) + queue(scene, state) + log(scene, state.settings.logLimit);
   }

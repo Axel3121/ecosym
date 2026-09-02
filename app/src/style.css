@@ -159,7 +159,7 @@ h1, h2, h3, h4 { margin: 0; font-weight: 500; }
 #chart.pointing { cursor: pointer; }
 #chart:focus-visible { outline: 2px solid var(--live-dim); outline-offset: -2px; }
 
-.panel { background: rgba(29, 26, 21, 0.94); color: var(--fg); border: 1px solid var(--line-2); box-shadow: 0 8px 24px rgba(0,0,0,0.45); font-size: 13px; line-height: 1.45; }
+.panel { background: var(--panel-bg, rgba(29, 26, 21, 0.94)); color: var(--fg); border: 1px solid var(--line-2); box-shadow: 0 8px 24px rgba(0,0,0,0.45); font-size: 13px; line-height: 1.45; }
 .cartouche, .docket { display: none; }
 
 .hover { position: absolute; pointer-events: none; transform: translate(14px, -50%); padding: 4px 10px; white-space: nowrap; font-size: 12px; }
@@ -232,3 +232,35 @@ h1, h2, h3, h4 { margin: 0; font-weight: 500; }
 #app.full .show-map { display: inline-block; }
 /* tab bar never overflows: drop labels once the desk is under 420px */
 @container desk (max-width: 420px) { .tab .lbl { display: none; } }
+
+/* ---- light theme: a real palette, not an inversion. Paper, iron-gall ink, same two accents. */
+:root[data-theme="light"] { --panel-bg: rgba(244, 239, 228, 0.95);
+  --bg: #f4efe4; --bg-2: #eae3d3; --bg-3: #e0d7c3; --line: #d6ccb6; --line-2: #b8ab90;
+  --fg: #2a2318; --fg-dim: #5f553f; --fg-faint: #7a6f58;
+  --seal: #b8432e; --seal-dim: #d0705d; --live: #3f7d2a; --live-dim: #6fa657;
+}
+:root[data-theme="light"] .desk { border-right-color: var(--line-2); }
+:root[data-theme="light"] .hint, :root[data-theme="light"] .hover { background: rgba(244,239,228,0.92); color: var(--fg); border: 1px solid var(--line-2); }
+:root[data-theme="light"] .focus { background: var(--bg); }
+:root[data-theme="light"] .msg.them { background: var(--bg-2); }
+:root[data-theme="light"] .msg.you { background: var(--bg-3); }
+:root[data-theme="light"] .count { color: #fff; }
+
+/* ---- mode buttons say what they are */
+.modes .toggle { display: inline-flex; flex-direction: column; align-items: center; gap: 1px; min-width: 40px; padding: 3px 6px; }
+.modes .toggle .glyph { font-size: 13px; line-height: 1; }
+.modes .toggle .mlbl { font-size: 10px; color: var(--fg-dim); letter-spacing: 0.04em; }
+.modes .toggle.on .mlbl { color: var(--fg); }
+#app.collapsed .modes .toggle .mlbl { display: none; }
+
+/* ---- one line under the tab bar says what the tab is for */
+.tab-hint { margin: 0; padding: 5px 14px 6px; font-size: 12px; color: var(--fg-dim); border-bottom: 1px solid var(--line); }
+#app.collapsed .tab-hint { display: none; }
+
+/* ---- Folk: a directory, one line per person */
+.people { list-style: none; margin: 0; padding: 0; }
+.who { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+.who-nested { padding-left: 14px; }
+.who-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.who button { font-size: 12px; padding: 3px 8px; background: transparent; color: var(--fg); border: 1px solid var(--line-2); cursor: pointer; }
+.who button.ghost { color: var(--fg-dim); border-color: var(--line); }
