@@ -156,6 +156,18 @@ enforces it and how that enforcement can be verified. Where no enforcing owner
 exists, the boundary is unenforced and must be reported as such — a documented
 obligation with nothing implementing it is not compliance.
 
+A boundary is proven by an attempt to cross it, not by reading the code that
+draws it. Until something has tried and been refused, what exists is a boundary
+in the diff and an assumption in the world. The attempt belongs in the suite, so
+the refusal keeps being true.
+
+Two boundaries in this repository were written correctly and did not hold: a
+shell could rewrite the sandbox definition that governed it, and an agent
+declaring `write: false` was handed a writable worktree because only one
+hardcoded name was checked. Both were found by running an attack, and neither
+by review of the code alone. A third, where a `--tmpfs` was re-exposed by a
+later bind that overlaid it, was found the same way and fixed.
+
 ## Destructive changes to owned history
 
 Deleting or semantically reinterpreting historical Ecosym-owned state requires:
