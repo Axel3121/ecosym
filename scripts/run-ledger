@@ -410,17 +410,26 @@ def record_declaration(record: dict) -> dict | None:
 
 
 def started_record(records: list[dict]) -> dict | None:
-    return next((record for record in reversed(records) if record.get("event") == "started"), None)
+    started = [record for record in records if record.get("event") == "started"]
+    return next(
+        (record for record in reversed(started) if not record.get("backfilled")),
+        started[-1] if started else None,
+    )
 
 
 def current_lifecycle_record(records: list[dict]) -> dict | None:
+    lifecycle = [
+        record
+        for record in records
+        if record.get("event") in ("started", "closed")
+    ]
     return next(
         (
             record
-            for record in reversed(records)
-            if record.get("event") in ("started", "closed")
+            for record in reversed(lifecycle)
+            if record.get("event") == "closed" or not record.get("backfilled")
         ),
-        None,
+        lifecycle[-1] if lifecycle else None,
     )
 
 

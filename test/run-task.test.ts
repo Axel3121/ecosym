@@ -1278,6 +1278,105 @@ test("backfill preserves a valid frozen declaration for an unrecorded live run",
   }
 });
 
+test("a racing backfill cannot supersede a complete start or close record", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-backfill-race-"));
+  const repository = join(directory, "repository");
+  const scripts = join(repository, "scripts");
+  const dataHome = join(directory, "data");
+  const bin = join(directory, "bin");
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(bin);
+  copyFileSync(runLedger, join(scripts, "run-ledger"));
+  chmodSync(join(scripts, "run-ledger"), 0o700);
+  writeFileSync(join(bin, "systemctl"), "#!/bin/sh\necho inactive\n", { mode: 0o700 });
+
+  const ledger = (arguments_: string[]) =>
+    spawnSync(join(scripts, "run-ledger"), arguments_, {
+      cwd: repository,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        XDG_DATA_HOME: dataHome,
+      },
+    });
+
+  try {
+    git(repository, ["init", "-b", "main"]);
+    writeFileSync(join(repository, "result.txt"), "before\n");
+    git(repository, ["add", "."]);
+    commit(repository, "base");
+    const base = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: repository,
+      encoding: "utf8",
+    }).stdout.trim();
+    writeFileSync(join(repository, "result.txt"), "after\n");
+    git(repository, ["add", "."]);
+    commit(repository, "result");
+    const resultCommit = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: repository,
+      encoding: "utf8",
+    }).stdout.trim();
+    const declaration = {
+      autonomous: true,
+      needs: [],
+      touches: ["docs/tasks/example.md", "result.txt"],
+    };
+
+    const started = ledger([
+      "start",
+      "example",
+      "unit-example",
+      "--branch",
+      "main",
+      "--worktree",
+      repository,
+      "--commit",
+      base,
+      "--declaration",
+      JSON.stringify(declaration),
+    ]);
+    assert.equal(started.status, 0, started.stderr);
+    const ledgerFile = join(dataHome, "ecosym", "ledger.jsonl");
+    const appendBackfill = () =>
+      appendFileSync(
+        ledgerFile,
+        `${JSON.stringify({
+          ...declaration,
+          backfilled: true,
+          base_commit: null,
+          branch: null,
+          event: "started",
+          task: "example",
+          unit: "unit-example",
+          worktree: null,
+        })}\n`,
+      );
+
+    // backfill took its known-unit snapshot first, then complete registration
+    // won the append race before backfill wrote its weaker synthetic record.
+    appendBackfill();
+    const closed = ledger([
+      "close",
+      "unit-example",
+      "--outcome",
+      "landed",
+      "--commit",
+      resultCommit,
+    ]);
+    assert.equal(closed.status, 0, closed.stderr);
+
+    // The same stale backfill append must not reopen an already closed run.
+    appendBackfill();
+    const listed = ledger(["list"]);
+    assert.equal(listed.status, 0, listed.stderr);
+    assert.match(listed.stdout, /example\s+landed\s+in-main/u);
+    assert.doesNotMatch(listed.stdout, /\bOPEN\b/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("ready derives landed needs and conflicts from frozen run declarations", () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-run-ready-"));
   const repository = join(directory, "repository");
