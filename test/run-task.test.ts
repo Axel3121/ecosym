@@ -2177,6 +2177,95 @@ test("a landed run recorded before declarations existed still satisfies a need",
   }
 });
 
+test("a stale local main does not make landed work startable again", () => {
+  // `in_main` decides whether work reached the shared branch. Asking a local
+  // `main` answers only where this checkout last pulled, and a checkout that
+  // is merely behind is the ordinary case, not an exotic one: measured against
+  // a clone twenty commits behind, a task that landed days earlier was offered
+  // as startable. The remote-tracking ref is the shared answer.
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-stale-"));
+  const upstream = join(directory, "upstream");
+  const repository = join(directory, "repository");
+  const dataHome = join(directory, "data");
+  mkdirSync(upstream, { recursive: true });
+
+  try {
+    // An upstream whose main carries the landed commit.
+    git(upstream, ["init", "-b", "main"]);
+    mkdirSync(join(upstream, "docs", "tasks"), { recursive: true });
+    mkdirSync(join(upstream, "scripts"), { recursive: true });
+    writeFileSync(join(upstream, "docs", "tasks", "ancient.md"), taskSpec("ancient", ["src/a.ts"]));
+    writeFileSync(
+      join(upstream, "docs", "tasks", "successor.md"),
+      taskSpec("successor", ["src/b.ts"], ["ancient"]),
+    );
+    copyFileSync(runLedger, join(upstream, "scripts", "run-ledger"));
+    chmodSync(join(upstream, "scripts", "run-ledger"), 0o700);
+    git(upstream, ["add", "."]);
+    commit(upstream, "first");
+    const stale = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: upstream,
+      encoding: "utf8",
+    }).stdout.trim();
+    writeFileSync(join(upstream, "landed.txt"), "the work\n");
+    git(upstream, ["add", "."]);
+    commit(upstream, "the landed work");
+    const landed = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: upstream,
+      encoding: "utf8",
+    }).stdout.trim();
+
+    // A clone whose local main sits at the older commit — behind, not broken.
+    spawnSync("git", ["clone", "-q", upstream, repository], { encoding: "utf8" });
+    git(repository, ["checkout", "-q", "-b", "work"]);
+    git(repository, ["branch", "-f", "main", stale]);
+
+    const ledgerDirectory = join(dataHome, "ecosym");
+    mkdirSync(ledgerDirectory, { recursive: true });
+    writeFileSync(
+      join(ledgerDirectory, "ledger.jsonl"),
+      [
+        JSON.stringify({
+          event: "started",
+          unit: "unit-ancient",
+          task: "ancient",
+          base_commit: null,
+          backfilled: true,
+          ts: 1,
+        }),
+        JSON.stringify({
+          event: "closed",
+          unit: "unit-ancient",
+          task: "ancient",
+          outcome: "landed",
+          result_commit: landed,
+          ts: 2,
+        }),
+      ].join("\n") + "\n",
+    );
+
+    const environment = { ...process.env, XDG_DATA_HOME: dataHome };
+    const alreadyLanded = spawnSync(join(repository, "scripts", "run-ledger"), [
+      "can-start",
+      "ancient",
+    ], { cwd: repository, encoding: "utf8", env: environment });
+    assert.notEqual(alreadyLanded.status, 0, "a landed task must not be startable");
+    assert.match(alreadyLanded.stderr, /already landed/u);
+
+    // The control: a task that genuinely has not landed is still startable,
+    // so the guard refuses landed work rather than refusing everything.
+    const notLanded = spawnSync(join(repository, "scripts", "run-ledger"), [
+      "can-start",
+      "successor",
+      "--commit",
+      landed,
+    ], { cwd: repository, encoding: "utf8", env: environment });
+    assert.equal(notLanded.status, 0, notLanded.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }

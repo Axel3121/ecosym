@@ -246,20 +246,27 @@ def in_main(commit: str | None) -> bool | None:
         return None
     if resolves(commit) is not True:
         return None
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(repo_root()), "merge-base", "--is-ancestor", commit, "main"],
-            capture_output=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    # 0 is yes and 1 is no; anything else is Git failing to answer at all —
-    # commonly 128 when there is no local main to compare against. Reading
-    # that as "no" would accuse a landed run on the strength of a missing ref.
-    if out.returncode not in (0, 1):
-        return None
-    return out.returncode == 0
+    # `origin/main` first: the question is whether the work reached the shared
+    # branch, and a local `main` answers only where this checkout last pulled.
+    # A checkout twenty commits behind reported a landed task as startable —
+    # measured 2026-09-02. Fall back to local `main` for a repository with no
+    # remote, and let a missing ref stay unanswered rather than become "no".
+    for reference in ("origin/main", "main"):
+        try:
+            out = subprocess.run(
+                ["git", "-C", str(repo_root()), "merge-base", "--is-ancestor", commit, reference],
+                capture_output=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        # 0 is yes and 1 is no; anything else is Git failing to answer at all —
+        # commonly 128 when the ref does not exist here. Reading that as "no"
+        # would accuse a landed run on the strength of a missing ref, so try
+        # the next reference instead.
+        if out.returncode in (0, 1):
+            return out.returncode == 0
+    return None
 
 
 def resolves(commit: str | None) -> bool | None:
