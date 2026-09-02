@@ -83,7 +83,13 @@ out.
   requests.
 - Findings and evidence documents produced *by* the work stay in the
   repository. A measurement someone can re-run is part of the product's proof;
-  the instruction that caused it is not.
+  the instruction that caused it is not. When a specification moves out of the
+  repository, its in-tree copy is the stale one: a branch opened before the move
+  can still carry review findings written into `docs/tasks/`, and resolving that
+  conflict by deleting the tree silently discards them. Split the content before
+  deleting: instructions go to the specification root, findings and evidence go
+  to a repository-owned document, because that half is exactly what this rule
+  says must stay in-tree.
 - Issues own a bounded slice of that work and its current state: what is in
   progress, what is blocked, what was found. An issue links its specification
   rather than restating it; two copies of a requirement is one too many.
