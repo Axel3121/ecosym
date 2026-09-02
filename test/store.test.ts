@@ -2018,3 +2018,75 @@ test("stored configuration that no longer matches its identity is refused", asyn
     reopened.close();
   }
 });
+
+test("payload values that cannot be persisted exactly are refused", async () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+
+    // NaN and the infinities have no JSON spelling, and negative zero does not
+    // survive a round trip distinguishably from zero. Storing any of them would
+    // record a value the store cannot return. Collection wraps the rejection,
+    // so assert on the failure code rather than the message.
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -0]) {
+      await assert.rejects(
+        store.collect(active, (sink) => {
+          sink.recordSourceRecord(() => [fact({ payload: { value } })]);
+        }),
+        (error: unknown) =>
+          error instanceof CollectionFailedError && error.code === "internal_error",
+        String(value),
+      );
+      assert.equal(store.countFacts(), 0, String(value));
+    }
+
+    // Ordinary finite numbers, including positive zero and a negative value,
+    // are still accepted, so the guard is not rejecting every number.
+    for (const value of [0, -1.5, 7]) {
+      await store.collect(active, (sink) => {
+        sink.recordSourceRecord(() => [fact({ payload: { value } })]);
+      });
+    }
+    assert.deepEqual(
+      store.queryObservations().map((record) => record.payload.value).sort(),
+      [-1.5, 0, 7],
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("a retirement actor must be a bounded machine identifier", async () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+
+    // The bound is part of the grammar: an actor is recorded in an audit trail,
+    // so an unbounded string is not an identifier. Validation happens before
+    // the confirmation token is examined, so an unused token is enough.
+    for (const actor of ["a".repeat(129), "a".repeat(200), "a".repeat(1024)]) {
+      assert.throws(
+        () => store.retireCollectionAttempt("absent-attempt", actor, "unused-token"),
+        /stable machine identifier/,
+        `length ${actor.length}`,
+      );
+    }
+    // The longest permitted identifier passes the grammar, so the assertions
+    // above are about the bound rather than rejecting everything. It fails for
+    // the unrelated reason that no such confirmation exists.
+    assert.throws(
+      () =>
+        store.retireCollectionAttempt(
+          "absent-attempt",
+          `a${"b".repeat(127)}`,
+          "unused-token",
+        ),
+      (error: Error) => !/stable machine identifier/.test(error.message),
+    );
+  } finally {
+    store.close();
+  }
+});

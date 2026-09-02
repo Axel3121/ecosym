@@ -599,3 +599,42 @@ test("a collected source-version conflict is unknown in queries", async () => {
     store.close();
   }
 });
+
+test("an equal source time is not an advancement over stored history", async () => {
+  const { parsed, sourcePath, store } = setup();
+  try {
+    await collectConnection(store, parsed.config.id);
+
+    // A different source record, carrying the same instant as the fact already
+    // stored. It is a version the store has never seen, but it does not follow
+    // the stored one in time, so nothing has advanced.
+    writeFileSync(
+      sourcePath,
+      '{"record_id":"record-2","subject":"subject-1","recorded_at":"2026-08-30T00:00:00.000Z","value":9}\n',
+    );
+    const equal = await verifyConnection(store, store.getConnection(parsed.config.id));
+    assert.equal(equal.counts.advanced, 0);
+    assert.equal(equal.counts.uncollected, 1);
+
+    // The same shape one instant later is an advancement, so the assertion
+    // above distinguishes equal from newer rather than refusing both.
+    writeFileSync(
+      sourcePath,
+      '{"record_id":"record-2","subject":"subject-1","recorded_at":"2026-08-30T00:00:00.001Z","value":9}\n',
+    );
+    const newer = await verifyConnection(store, store.getConnection(parsed.config.id));
+    assert.equal(newer.counts.advanced, 1);
+    assert.equal(newer.counts.uncollected, 0);
+
+    // And earlier is not an advancement either.
+    writeFileSync(
+      sourcePath,
+      '{"record_id":"record-2","subject":"subject-1","recorded_at":"2026-08-29T00:00:00.000Z","value":9}\n',
+    );
+    const older = await verifyConnection(store, store.getConnection(parsed.config.id));
+    assert.equal(older.counts.advanced, 0);
+    assert.equal(older.counts.uncollected, 1);
+  } finally {
+    store.close();
+  }
+});
