@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -7,6 +8,7 @@ import { after, test } from "node:test";
 import { parseConnectionConfig } from "../src/config.ts";
 import {
   jsonlSourceMatchesRevision,
+  readJsonlSourceWithRecordIndexModes,
   readSource,
   SourceReadError,
 } from "../src/readers.ts";
@@ -112,9 +114,23 @@ test("a JSON records path may not traverse a property that is absent", async () 
   writeFileSync(path, JSON.stringify({ different: { records: [] } }));
   assert.equal(await readError(config(reader)), "source_malformed");
 
-  // An inherited property is not an own property either.
-  writeFileSync(path, JSON.stringify({ payload: { constructor: [] } }));
-  assert.equal(await readError(config(reader)), "source_malformed");
+  // A polluted prototype must not supply records for a source that omitted
+  // them. JSON.parse creates ordinary objects, so this exercises the exact
+  // missing-own-property branch rather than adding a similarly named field.
+  const inheritedRecords = "__ecosym_inherited_records__";
+  Object.defineProperty(Object.prototype, inheritedRecords, {
+    configurable: true,
+    value: [],
+  });
+  try {
+    writeFileSync(path, JSON.stringify({ payload: {} }));
+    assert.equal(
+      await readError(config({ ...reader, recordsPath: `payload.${inheritedRecords}` })),
+      "source_malformed",
+    );
+  } finally {
+    Reflect.deleteProperty(Object.prototype, inheritedRecords);
+  }
 
   // The declared path present and holding records still reads.
   writeFileSync(
@@ -281,6 +297,46 @@ test("a JSONL revision is identified by size and ctime as well as inode", () => 
   assert.equal(jsonlSourceMatchesRevision(join(directory, "absent.jsonl"), revision), false);
 });
 
+test("JSONL index-mode reading refuses source metadata that changes during the read", async (t) => {
+  const directory = workspace();
+  const path = join(directory, "source.jsonl");
+  const original = '{"id":"r1","subject":"s","at":"2026-08-30T00:00:00.000Z","value":7}\n';
+  const replacement = '{"id":"r2","subject":"s","at":"2026-08-30T00:00:00.000Z","value":7}\n';
+  const parsed = config({ type: "jsonl", path });
+
+  for (const changedField of ["mtimeNs", "ctimeNs"] as const) {
+    writeFileSync(path, original);
+    const before = statSync(path, { bigint: true });
+    const handle = await open(path, "r");
+    const fileHandlePrototype = Object.getPrototypeOf(handle) as {
+      stat(options: { bigint: true }): Promise<typeof before>;
+    };
+    await handle.close();
+    let statCalls = 0;
+
+    // Change the source immediately after the first snapshot. The second
+    // snapshot models an otherwise-identical source whose only observable
+    // change is the field under test, so neither check can borrow coverage
+    // from the other.
+    t.mock.method(fileHandlePrototype, "stat", async () => {
+      statCalls += 1;
+      if (statCalls === 1) {
+        writeFileSync(path, replacement);
+        return before;
+      }
+      return { ...before, [changedField]: before[changedField] + 1n };
+    });
+
+    await assert.rejects(
+      readJsonlSourceWithRecordIndexModes(parsed),
+      (error: unknown) => error instanceof SourceReadError && error.code === "source_changed",
+      changedField,
+    );
+    assert.equal(statCalls, 2, changedField);
+    t.mock.restoreAll();
+  }
+});
+
 test("an unescaped quote inside an unquoted CSV field is malformed", async () => {
   const directory = workspace();
   const path = join(directory, "source.csv");
@@ -292,6 +348,9 @@ test("an unescaped quote inside an unquoted CSV field is malformed", async () =>
   for (const body of [
     'id,subject,at,value\r\nr1,su"bject,2026-08-30T00:00:00.000Z,7\r\n',
     'id,subject,at,value\r\nr1,subject",2026-08-30T00:00:00.000Z,7\r\n',
+    // This quote pair is balanced. If the first quote is allowed to open a
+    // quoted span mid-field, the mutated parser accepts the row as "subject".
+    'id,subject,at,value\r\nr1,su"bject",2026-08-30T00:00:00.000Z,7\r\n',
   ]) {
     writeFileSync(path, body);
     assert.equal(await readError(config(reader)), "source_malformed", body);
