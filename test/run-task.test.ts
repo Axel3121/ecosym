@@ -180,10 +180,11 @@ test("a launch is registered with its territory, and registration failure stops 
   writeFileSync(join(scripts, "run-instruction.md"), "Test instruction\n");
   writeFileSync(join(tasks, "example.md"), taskSpec(["src/example.ts"]));
   writeFileSync(join(tasks, "unrecorded.md"), taskSpec(["src/other.ts"]));
+  writeFileSync(join(tasks, "unstoppable.md"), taskSpec(["src/third.ts"]));
   writeFileSync(join(bin, "systemd-run"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   writeFileSync(
     join(bin, "systemctl"),
-    '#!/bin/sh\nif [ "$2" = "is-active" ]; then echo inactive; exit 3; fi\nexit 0\n',
+    '#!/bin/sh\nif [ "$2" = "is-active" ]; then echo "${SYSTEMCTL_STATE:-inactive}"; [ "${SYSTEMCTL_STATE:-inactive}" != active ]; exit; fi\nif [ "$2" = "stop" ] && [ "${SYSTEMCTL_STATE:-inactive}" = active ]; then exit 1; fi\nexit 0\n',
     { mode: 0o700 },
   );
 
@@ -242,7 +243,7 @@ test("a launch is registered with its territory, and registration failure stops 
     copyFileSync(join(scripts, "run-ledger"), join(scripts, "run-ledger-real"));
     writeFileSync(
       join(scripts, "run-ledger"),
-      '#!/bin/sh\nif [ "$1" = "can-start" ]; then exec "$(dirname "$0")/run-ledger-real" "$@"; fi\nexit 1\n',
+      '#!/bin/sh\ncase "$1" in can-start|declaration) exec "$(dirname "$0")/run-ledger-real" "$@";; esac\nexit 1\n',
       { mode: 0o700 },
     );
     const unrecorded = spawnSync(join(scripts, "run-task"), ["unrecorded"], {
@@ -258,6 +259,15 @@ test("a launch is registered with its territory, and registration failure stops 
         .filter((line) => line.trim() !== "").length,
       1,
     );
+
+    const unstoppable = spawnSync(join(scripts, "run-task"), ["unstoppable"], {
+      cwd: repository,
+      encoding: "utf8",
+      env: { ...environment, SYSTEMCTL_STATE: "active" },
+    });
+    assert.equal(unstoppable.status, 1);
+    assert.match(unstoppable.stderr, /remains active without a ledger record/u);
+    assert.doesNotMatch(unstoppable.stderr, /run stopped because/u);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -919,6 +929,30 @@ test("ready derives landed needs and conflicts from frozen run declarations", ()
       ledger(["close", "unit-base", "--outcome", "landed", "--commit", head]).status,
       0,
     );
+    const unchanged = ledger(["can-start", "dependent"]);
+    assert.equal(unchanged.status, 1);
+    assert.match(unchanged.stderr, /base/u, "a zero-change result cannot satisfy a dependency");
+
+    mkdirSync(join(repository, "src"), { recursive: true });
+    writeFileSync(join(repository, "src", "base.ts"), "export {};\n");
+    git(repository, ["add", "."]);
+    commit(repository, "land base task");
+    const landedHead = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: repository,
+      encoding: "utf8",
+    }).stdout.trim();
+    assert.equal(
+      ledger([
+        "close",
+        "unit-base",
+        "--outcome",
+        "landed",
+        "--commit",
+        landedHead,
+        "--reopen",
+      ]).status,
+      0,
+    );
     assert.equal(
       ledger([
         "start",
@@ -945,6 +979,11 @@ test("ready derives landed needs and conflicts from frozen run declarations", ()
     assert.equal(contested.status, 1);
     assert.match(contested.stderr, /running/u);
     assert.match(contested.stderr, /src\/shared/u);
+
+    assert.equal(ledger(["close", "unit-running", "--outcome", "failed"]).status, 0);
+    const stillActive = ledger(["can-start", "contested"]);
+    assert.equal(stillActive.status, 1);
+    assert.match(stillActive.stderr, /running/u, "a closed active unit must keep its territory");
 
     const invalid = ledger(["can-start", "missing"]);
     assert.equal(invalid.status, 1);
@@ -991,7 +1030,7 @@ test("run-task refuses contested ground in a worktree, and starts if that check 
   writeFileSync(join(tasks, "second.md"), taskSpec(["src/shared/file.ts"]));
   writeFileSync(
     join(bin, "systemd-run"),
-    '#!/bin/sh\nfor a in "$@"; do case "$a" in --unit=*) unit=${a#--unit=};; esac; done\nprintf "%s\\n" "$@" >> "$SYSTEMD_CAPTURE"\ncase "$unit" in *-watchdog) ;; *) printf "%s.service\\n" "$unit" > "$ACTIVE_UNIT";; esac\n',
+    '#!/bin/sh\nfor a in "$@"; do case "$a" in --unit=*) unit=${a#--unit=};; --working-directory=*) tree=${a#--working-directory=};; esac; done\nprintf "%s\\n" "$@" >> "$SYSTEMD_CAPTURE"\ncase "$unit" in *-watchdog) ;; *-first-*) printf "%s\\n" "---" "needs: []" "touches:" "  - src/not-shared.ts" "---" "# Mutated after launch" > "$tree/docs/tasks/first.md"; printf "%s.service\\n" "$unit" > "$ACTIVE_UNIT";; *) printf "%s.service\\n" "$unit" > "$ACTIVE_UNIT";; esac\n',
     { mode: 0o700 },
   );
   writeFileSync(
@@ -1023,6 +1062,14 @@ test("run-task refuses contested ground in a worktree, and starts if that check 
     });
     assert.equal(first.status, 0, first.stderr);
     const managedWorktree = join(dataHome, "ecosym", "worktrees", "first");
+    const firstRecord = JSON.parse(
+      readFileSync(join(dataHome, "ecosym", "ledger.jsonl"), "utf8").trim(),
+    ) as Record<string, unknown>;
+    assert.deepEqual(
+      firstRecord.touches,
+      ["src/shared"],
+      "the declaration must be frozen before the run can edit its own spec",
+    );
     const launched = readFileSync(capture, "utf8");
     assert.match(launched, new RegExp(`--working-directory=${escapeRegExp(managedWorktree)}`));
     assert.doesNotMatch(launched, new RegExp(`--working-directory=${escapeRegExp(repository)}(?:\\n|$)`));
@@ -1103,6 +1150,14 @@ test("a landed close is refused and records paths outside the launch declaration
       0,
     );
 
+    writeFileSync(join(source, "allowed.ts"), "export const allowed = true;\n");
+    git(repository, ["add", "."]);
+    commit(repository, "edit declared territory");
+    const earlierCommit = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: repository,
+      encoding: "utf8",
+    }).stdout.trim();
+
     writeFileSync(join(source, "outside.ts"), "export {};\n");
     git(repository, ["add", "."]);
     commit(repository, "edit outside declared territory");
@@ -1110,6 +1165,17 @@ test("a landed close is refused and records paths outside the launch declaration
       cwd: repository,
       encoding: "utf8",
     }).stdout.trim();
+
+    const staleResult = ledger([
+      "close",
+      "unit-bounded",
+      "--outcome",
+      "landed",
+      "--commit",
+      earlierCommit,
+    ]);
+    assert.equal(staleResult.status, 1);
+    assert.match(staleResult.stderr, /not worktree HEAD/u);
 
     const refused = ledger([
       "close",
@@ -1136,6 +1202,7 @@ test("a landed close is refused and records paths outside the launch declaration
 
 test("every repository task specification has a valid scheduling declaration", () => {
   const repository = fileURLToPath(new URL("..", import.meta.url));
+  const dataHome = mkdtempSync(join(tmpdir(), "ecosym-run-validate-"));
   const specifications = readdirSync(join(repository, "docs", "tasks"))
     .filter((name) => name.endsWith(".md"))
     .map((name) => join(repository, "docs", "tasks", name));
@@ -1144,6 +1211,18 @@ test("every repository task specification has a valid scheduling declaration", (
     encoding: "utf8",
   });
   assert.equal(validated.status, 0, validated.stderr);
+
+  try {
+    const supervised = spawnSync(runLedger, ["can-start", "014-agent-shell-source-boundary"], {
+      cwd: repository,
+      encoding: "utf8",
+      env: { ...process.env, XDG_DATA_HOME: dataHome },
+    });
+    assert.equal(supervised.status, 1);
+    assert.match(supervised.stderr, /supervised or human run/u);
+  } finally {
+    rmSync(dataHome, { recursive: true, force: true });
+  }
 });
 
 function escapeRegExp(value: string): string {

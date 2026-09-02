@@ -68,46 +68,17 @@ class DeclarationError(ValueError):
     pass
 
 
-def read_declaration(path: Path) -> dict[str, list[str]]:
-    """Read the strict YAML subset used at the start of every task spec."""
-    try:
-        lines = path.read_text().splitlines()
-    except OSError as error:
-        raise DeclarationError(f"cannot read declaration: {error}") from error
-
-    if not lines or lines[0] != "---":
-        raise DeclarationError("missing scheduling declaration at the start of the file")
-    try:
-        end = lines.index("---", 1)
-    except ValueError as error:
-        raise DeclarationError("scheduling declaration has no closing '---'") from error
-
-    values: dict[str, list[str] | None] = {"needs": None, "touches": None}
-    current: str | None = None
-    for lineno, line in enumerate(lines[1:end], 2):
-        if not line.strip():
-            continue
-        header = re.fullmatch(r"(needs|touches):(?: (\[\]))?", line)
-        if header:
-            name = header.group(1)
-            if values[name] is not None:
-                raise DeclarationError(f"line {lineno}: duplicate '{name}' field")
-            values[name] = []
-            current = None if header.group(2) else name
-            continue
-        item = re.fullmatch(r"  - (\S(?:.*\S)?)", line)
-        if item and current:
-            assert values[current] is not None
-            values[current].append(item.group(1))
-            continue
-        raise DeclarationError(f"line {lineno}: invalid scheduling declaration syntax")
-
-    for name in ("needs", "touches"):
-        if values[name] is None:
-            raise DeclarationError(f"missing '{name}' field")
-
-    needs = values["needs"] or []
-    touches = values["touches"] or []
+def validate_declaration_values(
+    needs: object,
+    touches: object,
+    autonomous: object = True,
+) -> dict:
+    if not isinstance(needs, list) or not all(isinstance(value, str) for value in needs):
+        raise DeclarationError("'needs' must be a list of task names")
+    if not isinstance(touches, list) or not all(isinstance(value, str) for value in touches):
+        raise DeclarationError("'touches' must be a list of repository paths")
+    if not isinstance(autonomous, bool):
+        raise DeclarationError("'autonomous' must be true or false")
     if not touches:
         raise DeclarationError("'touches' must name at least one repository path")
     if len(needs) != len(set(needs)):
@@ -130,8 +101,62 @@ def read_declaration(path: Path) -> dict[str, list[str]]:
             or PurePosixPath(stripped).as_posix() != stripped
         ):
             raise DeclarationError(f"invalid repository path in 'touches': {touch!r}")
+    return {"needs": needs, "touches": touches, "autonomous": autonomous}
 
-    return {"needs": needs, "touches": touches}
+
+def read_declaration(path: Path) -> dict:
+    """Read the strict YAML subset used at the start of every task spec."""
+    try:
+        lines = path.read_text().splitlines()
+    except OSError as error:
+        raise DeclarationError(f"cannot read declaration: {error}") from error
+
+    if not lines or lines[0] != "---":
+        raise DeclarationError("missing scheduling declaration at the start of the file")
+    try:
+        end = lines.index("---", 1)
+    except ValueError as error:
+        raise DeclarationError("scheduling declaration has no closing '---'") from error
+
+    values: dict[str, list[str] | None] = {"needs": None, "touches": None}
+    autonomous = True
+    autonomous_seen = False
+    current: str | None = None
+    for lineno, line in enumerate(lines[1:end], 2):
+        if not line.strip():
+            continue
+        header = re.fullmatch(r"(needs|touches):(?: (\[\]))?", line)
+        if header:
+            name = header.group(1)
+            if values[name] is not None:
+                raise DeclarationError(f"line {lineno}: duplicate '{name}' field")
+            values[name] = []
+            current = None if header.group(2) else name
+            continue
+        mode = re.fullmatch(r"autonomous: (true|false)", line)
+        if mode:
+            if autonomous_seen:
+                raise DeclarationError(f"line {lineno}: duplicate 'autonomous' field")
+            autonomous = mode.group(1) == "true"
+            autonomous_seen = True
+            current = None
+            continue
+        item = re.fullmatch(r"  - (\S(?:.*\S)?)", line)
+        if item and current:
+            assert values[current] is not None
+            values[current].append(item.group(1))
+            continue
+        raise DeclarationError(f"line {lineno}: invalid scheduling declaration syntax")
+
+    for name in ("needs", "touches"):
+        if values[name] is None:
+            raise DeclarationError(f"missing '{name}' field")
+
+    return validate_declaration_values(
+        values["needs"] or [],
+        values["touches"] or [],
+        autonomous,
+    )
 
 
 def git(*args: str) -> str:
@@ -358,14 +383,15 @@ def paths_overlap(left: str, right: str) -> bool:
     return left_parts[:shorter] == right_parts[:shorter]
 
 
-def record_declaration(record: dict) -> dict[str, list[str]] | None:
-    needs = record.get("needs")
-    touches = record.get("touches")
-    if not isinstance(needs, list) or not isinstance(touches, list):
+def record_declaration(record: dict) -> dict | None:
+    try:
+        return validate_declaration_values(
+            record.get("needs"),
+            record.get("touches"),
+            record.get("autonomous", True),
+        )
+    except DeclarationError:
         return None
-    if not all(isinstance(value, str) for value in needs + touches) or not touches:
-        return None
-    return {"needs": needs, "touches": touches}
 
 
 def started_record(records: list[dict]) -> dict | None:
@@ -373,16 +399,43 @@ def started_record(records: list[dict]) -> dict | None:
 
 
 def landed_tasks(records: list[dict]) -> set[str]:
-    """Tasks with a recorded result commit that Git still places in main."""
+    """Tasks whose non-empty, declared result diff Git still places in main."""
     landed: set[str] = set()
     for unit_records in by_unit(records).values():
         record = unit_records[-1]
+        started = started_record(unit_records)
         task = record.get("task")
+        declaration = record_declaration(started or {})
+        base_commit = (started or {}).get("base_commit")
+        result_commit = record.get("result_commit")
+        changed = None
+        if (
+            isinstance(base_commit, str)
+            and isinstance(result_commit, str)
+            and base_commit != result_commit
+        ):
+            changed = git_paths(
+                repo_root(),
+                "diff",
+                "--name-only",
+                "--no-renames",
+                "-z",
+                base_commit,
+                result_commit,
+                "--",
+            )
         if (
             record.get("event") == "closed"
             and record.get("outcome") == "landed"
             and isinstance(task, str)
-            and in_main(record.get("result_commit")) is True
+            and declaration is not None
+            and changed
+            and all(
+                any(paths_overlap(path, declared) for declared in declaration["touches"])
+                for path in changed
+            )
+            and is_ancestor(base_commit, result_commit) is True
+            and in_main(result_commit) is True
         ):
             landed.add(task)
     return landed
@@ -394,8 +447,6 @@ def running_runs(records: list[dict]) -> tuple[list[dict], list[str]]:
     running: list[dict] = []
     unknown: list[str] = []
     for unit, unit_records in grouped.items():
-        if unit_records[-1].get("event") == "closed":
-            continue
         activity = unit_activity(unit)
         if activity is None:
             unknown.append(f"cannot determine whether run {unit} is active")
@@ -419,22 +470,21 @@ def running_runs(records: list[dict]) -> tuple[list[dict], list[str]]:
         if activity is None:
             unknown.append(f"cannot determine whether unrecorded run {unit} is active")
         elif activity:
+            declaration = frozen_declaration(runs_dir() / f"{unit}.declaration.json")
             running.append(
                 {
                     "unit": unit,
                     "task": parse_unit(unit)[1],
-                    "touches": None,
+                    "touches": declaration["touches"] if declaration else None,
                 }
             )
     return running, unknown
 
 
-def start_reasons(
-    task: str,
-    declaration: dict[str, list[str]],
-    records: list[dict],
-) -> list[str]:
+def start_reasons(task: str, declaration: dict, records: list[dict]) -> list[str]:
     reasons: list[str] = []
+    if declaration["autonomous"] is False:
+        reasons.append("requires a supervised or human run; ordinary run-task is not permitted")
     landed = landed_tasks(records)
     if task in landed:
         reasons.append(f"task {task} already landed")
@@ -476,7 +526,22 @@ def cmd_start(args: argparse.Namespace) -> int:
         "worktree": args.worktree,
         "base_commit": args.commit or git("rev-parse", "HEAD"),
     }
-    if args.spec:
+    if args.declaration:
+        try:
+            value = json.loads(args.declaration)
+            if not isinstance(value, dict):
+                raise DeclarationError("frozen declaration is not an object")
+            declaration = validate_declaration_values(
+                value.get("needs"),
+                value.get("touches"),
+                value.get("autonomous", True),
+            )
+        except (json.JSONDecodeError, DeclarationError) as error:
+            print(f"invalid frozen declaration: {error}", file=sys.stderr)
+            return 1
+        record.update(declaration)
+        record["spec"] = str(Path(args.spec).resolve()) if args.spec else None
+    elif args.spec:
         try:
             declaration = read_declaration(Path(args.spec))
         except DeclarationError as error:
@@ -485,6 +550,30 @@ def cmd_start(args: argparse.Namespace) -> int:
         record.update(declaration)
         record["spec"] = str(Path(args.spec).resolve())
     append(record)
+    return 0
+
+
+def frozen_declaration(path: Path) -> dict | None:
+    try:
+        value = json.loads(path.read_text())
+        if not isinstance(value, dict):
+            return None
+        return validate_declaration_values(
+            value.get("needs"),
+            value.get("touches"),
+            value.get("autonomous", True),
+        )
+    except (OSError, json.JSONDecodeError, DeclarationError):
+        return None
+
+
+def cmd_declaration(args: argparse.Namespace) -> int:
+    try:
+        declaration = read_declaration(Path(args.spec))
+    except DeclarationError as error:
+        print(f"{args.spec}: {error}", file=sys.stderr)
+        return 1
+    print(json.dumps(declaration, separators=(",", ":"), sort_keys=True))
     return 0
 
 
@@ -506,6 +595,33 @@ def git_paths(worktree: Path, *args: str) -> set[str] | None:
     }
 
 
+def git_value(worktree: Path, *args: str) -> str | None:
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(worktree), *args],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
+def is_ancestor(base: str, result: str) -> bool | None:
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root()), "merge-base", "--is-ancestor", base, result],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode not in (0, 1):
+        return None
+    return out.returncode == 0
+
+
 def changed_paths(started: dict, result_commit: str | None) -> tuple[set[str] | None, str | None]:
     worktree_value = started.get("worktree")
     base_commit = started.get("base_commit")
@@ -518,6 +634,13 @@ def changed_paths(started: dict, result_commit: str | None) -> tuple[set[str] | 
         return None, f"the recorded worktree does not exist: {worktree}"
 
     target = result_commit or "HEAD"
+    if result_commit:
+        head_commit = git_value(worktree, "rev-parse", "HEAD^{commit}")
+        target_commit = git_value(worktree, "rev-parse", f"{result_commit}^{{commit}}")
+        if not head_commit or not target_commit:
+            return None, "Git could not resolve the result commit and worktree HEAD"
+        if head_commit != target_commit:
+            return None, f"result commit {target_commit} is not worktree HEAD {head_commit}"
     committed = git_paths(
         worktree,
         "diff",
@@ -877,6 +1000,7 @@ def main() -> int:
     s.add_argument("--worktree")
     s.add_argument("--commit")
     s.add_argument("--spec", help="launch-time task specification to snapshot")
+    s.add_argument("--declaration", help="frozen declaration JSON captured before launch")
     s.set_defaults(fn=cmd_start)
 
     s = sub.add_parser("close", help="record what a run came to")
@@ -898,6 +1022,10 @@ def main() -> int:
     s = sub.add_parser("validate", help="validate task scheduling declarations")
     s.add_argument("specs", nargs="+")
     s.set_defaults(fn=cmd_validate)
+
+    s = sub.add_parser("declaration", help="read one task declaration as JSON")
+    s.add_argument("spec")
+    s.set_defaults(fn=cmd_declaration)
 
     s = sub.add_parser("can-start", help="refuse a task whose needs or territory are blocked")
     s.add_argument("task")

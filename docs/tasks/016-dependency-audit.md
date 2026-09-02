@@ -4,7 +4,9 @@ touches:
   - .github/dependabot.yml
   - .github/workflows/check.yml
   - package.json
+  - package-lock.json
   - test/check-workflow.test.ts
+  - test/fixtures/dependency-audit/
 ---
 # Task 016 — The dependency check examines dependencies that exist
 

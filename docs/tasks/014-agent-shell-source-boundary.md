@@ -1,5 +1,6 @@
 ---
 needs: []
+autonomous: false
 touches:
   - src/agent-shell.ts
   - src/sandbox.ts

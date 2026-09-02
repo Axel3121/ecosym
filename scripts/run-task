@@ -134,7 +134,17 @@ while ! mkdir "$RUNS/${UNIT}.lock" 2>"$MKDIR_ERR"; do
 done
 rm -f "$MKDIR_ERR"
 LOG="$RUNS/${UNIT}.log"
-PORT="${ECOSYM_PORT:-$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")}"
+if [ -n "${ECOSYM_PORT:-}" ]; then
+  PORT="$ECOSYM_PORT"
+else
+  PORT="$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")"
+fi
+
+# Parse the worktree copy before execution begins. The JSON is kept in this
+# process and in a fallback marker outside the worktree, so an agent that edits
+# its own specification cannot change the territory later registered for it.
+DECLARATION_JSON="$("$REPO/scripts/run-ledger" declaration "$WORKTREE/$SPEC")"
+printf '%s\n' "$DECLARATION_JSON" > "$RUNS/${UNIT}.declaration.json"
 
 echo "$PORT" > "$RUNS/${UNIT}.port"
 
@@ -172,9 +182,18 @@ if ! "$REPO/scripts/run-ledger" start "$TASK" "$UNIT" \
   --branch "$BRANCH" \
   --worktree "$WORKTREE" \
   --spec "$WORKTREE/$SPEC" \
+  --declaration "$DECLARATION_JSON" \
   --commit "$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null || true)"; then
   systemctl --user stop "$UNIT.service" >/dev/null 2>&1 || true
-  echo "run stopped because the ledger did not record its territory: $UNIT" >&2
+  STOP_STATE="$(systemctl --user is-active "$UNIT.service" 2>/dev/null || true)"
+  case "$STOP_STATE" in
+    inactive|failed|unknown|not-found)
+      echo "run stopped because the ledger did not record its territory: $UNIT" >&2
+      ;;
+    *)
+      echo "run remains active without a ledger record: $UNIT (state: ${STOP_STATE:-unavailable})" >&2
+      ;;
+  esac
   exit 1
 fi
 
