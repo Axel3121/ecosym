@@ -18,8 +18,19 @@ BRANCH=""
 while [ $# -gt 0 ]; do
   case "$1" in
     # Kept as a harmless spelling for callers written before worktrees became
-    # mandatory. It no longer changes launch behaviour.
-    --worktree) shift ;;
+    # mandatory. It no longer changes launch behaviour. A caller from that
+    # era wrote `--worktree <path>`; silently accepting the path here would
+    # leave it in $@ to be misread as TASK (or trip "one task at a time"),
+    # so a following non-flag argument is rejected rather than swallowed.
+    --worktree)
+      shift
+      if [ $# -gt 0 ]; then
+        case "$1" in
+          -*) ;;
+          *)  echo "--worktree no longer takes a path: $1" >&2; exit 2 ;;
+        esac
+      fi
+      ;;
     --branch)   BRANCH="${2:?--branch needs a name}"; shift 2 ;;
     -*)         echo "unknown option: $1" >&2; exit 2 ;;
     *)          [ -z "$TASK" ] || { echo "one task at a time" >&2; exit 2; }

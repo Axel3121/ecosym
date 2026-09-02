@@ -2099,10 +2099,18 @@ test("a landed run recorded before declarations existed still satisfies a need",
   const scripts = join(repository, "scripts");
   const tasks = join(repository, "docs", "tasks");
   const dataHome = join(directory, "data");
+  const bin = join(directory, "bin");
   mkdirSync(scripts, { recursive: true });
   mkdirSync(tasks, { recursive: true });
+  mkdirSync(bin, { recursive: true });
   copyFileSync(runLedger, join(scripts, "run-ledger"));
   chmodSync(join(scripts, "run-ledger"), 0o700);
+  // Without this, `unit_activity` shells out to the real user session bus.
+  // A runner with no working `systemctl --user` gets an unanswerable query
+  // back, `running_runs` reports the fixture's own historical unit as
+  // unknown, and `can-start` refuses on that uncertainty alone — failing a
+  // test about a *landed* run having nothing to do with systemd.
+  writeFileSync(join(bin, "systemctl"), "#!/bin/sh\necho inactive\nexit 0\n", { mode: 0o700 });
   writeFileSync(join(tasks, "ancient.md"), taskSpec("ancient", ["src/ancient.ts"]));
   writeFileSync(join(tasks, "successor.md"), taskSpec("successor", ["src/successor.ts"], ["ancient"]));
   // A need that never landed at all, to prove the acceptance above is the
@@ -2147,7 +2155,11 @@ test("a landed run recorded before declarations existed still satisfies a need",
       ].join("\n") + "\n",
     );
 
-    const environment = { ...process.env, XDG_DATA_HOME: dataHome };
+    const environment = {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      XDG_DATA_HOME: dataHome,
+    };
     const startable = spawnSync(join(scripts, "run-ledger"), ["can-start", "successor"], {
       cwd: repository,
       encoding: "utf8",
@@ -2192,7 +2204,13 @@ test("a stale local main does not make landed work startable again", () => {
   const upstream = join(directory, "upstream");
   const repository = join(directory, "repository");
   const dataHome = join(directory, "data");
+  const bin = join(directory, "bin");
   mkdirSync(upstream, { recursive: true });
+  mkdirSync(bin, { recursive: true });
+  // Same fix as the legacy-run test above: `can-start` calls `running_runs`,
+  // which needs a working `systemctl --user` or it reports this fixture's
+  // own historical unit as unknown and refuses on that alone.
+  writeFileSync(join(bin, "systemctl"), "#!/bin/sh\necho inactive\nexit 0\n", { mode: 0o700 });
 
   try {
     // An upstream whose main carries the landed commit.
@@ -2249,7 +2267,11 @@ test("a stale local main does not make landed work startable again", () => {
       ].join("\n") + "\n",
     );
 
-    const environment = { ...process.env, XDG_DATA_HOME: dataHome };
+    const environment = {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      XDG_DATA_HOME: dataHome,
+    };
     const alreadyLanded = spawnSync(join(repository, "scripts", "run-ledger"), [
       "can-start",
       "ancient",
@@ -2351,7 +2373,10 @@ test("a stale local main does not hide a merged branch as open", () => {
           task: "feature",
           branch: "task/feature",
           outcome: "landed",
-          evidence: "merged upstream",
+          // No wording containing "merged": the assertion below reads the
+          // GIT column git_state() actually computes, not this text, so it
+          // must not be able to pass by matching evidence instead.
+          evidence: "closed once the upstream branch was absorbed",
           ts: 2,
         }),
       ].join("\n") + "\n",
@@ -2362,16 +2387,308 @@ test("a stale local main does not hide a merged branch as open", () => {
       encoding: "utf8",
       env: { ...process.env, XDG_DATA_HOME: dataHome },
     });
+    // `branch_carries_nothing()` is genuinely ambiguous once a `--no-ff`
+    // merge lands: a fully-merged branch and a branch that never diverged
+    // both show zero commits of their own relative to main, so `git_state()`
+    // deliberately reports `unproven` here rather than guessing `merged` —
+    // see its docstring. What the origin/main preference actually fixes is
+    // that a stale local main must not make this read as `open` instead:
+    // before that fix, `branch_carries_nothing` against the stale local
+    // `main` saw the branch as carrying real commits of its own and the
+    // branch fell through to the (wrong) `open` verdict.
     assert.match(
       listed.stdout,
-      /merged/u,
-      `a branch merged upstream must read as merged even with a stale local main: ${listed.stdout}`,
+      /^feature\s+landed\s+unproven\b/mu,
+      `a stale local main must not turn this branch's GIT state into anything but the honest unproven: ${listed.stdout}`,
     );
     assert.doesNotMatch(
       listed.stdout,
       /\bopen\b/u,
       `a stale local main must not make a merged branch look open: ${listed.stdout}`,
     );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("--worktree rejects a following path instead of letting it become the task", () => {
+  // The pre-worktree-mandatory calling convention was `--worktree <path>`.
+  // Silently discarding just the flag (as if it always stood alone) leaves
+  // the path in $@, where it is then read as TASK or trips "one task at a
+  // time" — either way the caller's real task name is lost rather than
+  // rejected with a clear error.
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-task-worktree-arg-"));
+  const repository = join(directory, "repository");
+  const scripts = join(repository, "scripts");
+  mkdirSync(scripts, { recursive: true });
+  copyFileSync(runTask, join(scripts, "run-task"));
+  chmodSync(join(scripts, "run-task"), 0o700);
+
+  try {
+    git(repository, ["init", "-b", "main"]);
+    git(repository, ["add", "."]);
+    // `git add .` on an empty tree is a no-op; commit needs something to
+    // commit so `cd "$(dirname "$0")/.." ` inside run-task resolves cleanly.
+    writeFileSync(join(repository, ".keep"), "");
+    git(repository, ["add", "."]);
+    commit(repository, "fixture");
+
+    const withPath = spawnSync(join(scripts, "run-task"), ["--worktree", "some/path", "realtask"], {
+      cwd: repository,
+      encoding: "utf8",
+    });
+    assert.equal(withPath.status, 2, withPath.stderr);
+    assert.match(withPath.stderr, /--worktree no longer takes a path/u);
+    assert.doesNotMatch(withPath.stderr, /one task at a time/u);
+
+    // The control: bare --worktree, the still-accepted spelling, does not
+    // trip the same refusal — it fails later, for the unrelated reason that
+    // no specification exists for "realtask" once it's read as TASK.
+    const bareFlag = spawnSync(join(scripts, "run-task"), ["realtask", "--worktree", "--branch", "task/x"], {
+      cwd: repository,
+      encoding: "utf8",
+    });
+    assert.doesNotMatch(bareFlag.stderr, /--worktree no longer takes a path/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("an uncheckable result commit is unproven, not merged or open", () => {
+  // git_state() must not let branch fallback classify a run whose result
+  // commit exists but whose reachability question Git could not answer
+  // (in_main returns None for a reason other than "no commit was named").
+  // Regression for: the branch fallback ran whenever `reachable` was not
+  // `True`/`False`, even though its contract is "only when no result commit
+  // was recorded" — an uncheckable commit could then borrow a merged
+  // branch's standing and read as `open` or `merged` instead of `unproven`.
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-unproven-"));
+  const upstream = join(directory, "upstream");
+  const repository = join(directory, "repository");
+  const dataHome = join(directory, "data");
+  const bin = join(directory, "bin");
+  mkdirSync(upstream, { recursive: true });
+  mkdirSync(bin, { recursive: true });
+
+  try {
+    git(upstream, ["init", "-b", "main"]);
+    writeFileSync(join(upstream, "f.txt"), "one\n");
+    git(upstream, ["add", "."]);
+    commit(upstream, "first");
+
+    git(upstream, ["checkout", "-q", "-b", "task/feature"]);
+    writeFileSync(join(upstream, "feature.txt"), "the work\n");
+    git(upstream, ["add", "."]);
+    commit(upstream, "feature work");
+    const result = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: upstream,
+      encoding: "utf8",
+    }).stdout.trim();
+    git(upstream, ["checkout", "-q", "main"]);
+    git(upstream, [
+      "-c",
+      "user.name=Ecosym Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "merge",
+      "-q",
+      "--no-ff",
+      "task/feature",
+      "-m",
+      "merge feature",
+    ]);
+    // A commit after the merge on the feature branch, so the branch itself
+    // still carries commits of its own relative to main — if the bug lets
+    // branch fallback run, this branch reads as merely `open`.
+    git(upstream, ["checkout", "-q", "task/feature"]);
+    writeFileSync(join(upstream, "more.txt"), "more\n");
+    git(upstream, ["add", "."]);
+    commit(upstream, "more work after merge, unmerged");
+    git(upstream, ["checkout", "-q", "main"]);
+
+    spawnSync("git", ["clone", "-q", upstream, repository], { encoding: "utf8" });
+    git(repository, ["branch", "task/feature", "refs/remotes/origin/task/feature"]);
+
+    const scripts = join(repository, "scripts");
+    mkdirSync(scripts, { recursive: true });
+    copyFileSync(runLedger, join(scripts, "run-ledger"));
+    chmodSync(join(scripts, "run-ledger"), 0o700);
+
+    // A `git` stub that makes `merge-base --is-ancestor` fail in a way that
+    // is neither exit 0 (yes) nor exit 1 (no) — the concrete shape of "the
+    // question could not be put" that in_main() must turn into None.
+    const realGit = spawnSync("which", ["git"], { encoding: "utf8" }).stdout.trim();
+    writeFileSync(
+      join(bin, "git"),
+      [
+        "#!/bin/bash",
+        'args=("$@")',
+        "for ((i=0; i<${#args[@]}; i++)); do",
+        '  if [ "${args[i]}" = "merge-base" ] && [ "${args[i+1]}" = "--is-ancestor" ]; then',
+        "    exit 2",
+        "  fi",
+        "done",
+        `exec "${realGit}" "$@"`,
+        "",
+      ].join("\n"),
+      { mode: 0o700 },
+    );
+
+    const ledgerDirectory = join(dataHome, "ecosym");
+    mkdirSync(ledgerDirectory, { recursive: true });
+    writeFileSync(
+      join(ledgerDirectory, "ledger.jsonl"),
+      [
+        JSON.stringify({
+          event: "started",
+          unit: "ecosym-task-feature-100000000",
+          task: "feature",
+          branch: "task/feature",
+          base_commit: null,
+          ts: 1,
+        }),
+        JSON.stringify({
+          event: "closed",
+          unit: "ecosym-task-feature-100000000",
+          task: "feature",
+          branch: "task/feature",
+          outcome: "landed",
+          result_commit: result,
+          evidence: "the actual claim",
+          ts: 2,
+        }),
+      ].join("\n") + "\n",
+    );
+
+    const listed = spawnSync(join(scripts, "run-ledger"), ["list"], {
+      cwd: repository,
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, XDG_DATA_HOME: dataHome },
+    });
+    assert.match(
+      listed.stdout,
+      /^feature\s+landed\s+unproven/mu,
+      `an uncheckable result commit must read as unproven, not borrow the branch's standing: ${listed.stdout}`,
+    );
+    assert.doesNotMatch(listed.stdout, /\bopen\b/u, listed.stdout);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("ready reports an empty specification root instead of silently finding nothing to do", () => {
+  // Path.glob on a missing or empty directory yields nothing and raises
+  // nothing, so `ready` used to print no task and exit 0 regardless of
+  // whether the root was ever populated. The caller could not tell "no task
+  // is startable" from "no specification was read at all".
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-ready-empty-"));
+  const repository = join(directory, "repository");
+  const dataHome = join(directory, "data");
+  const scripts = join(repository, "scripts");
+  mkdirSync(scripts, { recursive: true });
+  copyFileSync(runLedger, join(scripts, "run-ledger"));
+  chmodSync(join(scripts, "run-ledger"), 0o700);
+
+  try {
+    git(repository, ["init", "-b", "main"]);
+    writeFileSync(join(repository, ".keep"), "");
+    git(repository, ["add", "."]);
+    commit(repository, "fixture");
+
+    const missingRoot = join(directory, "nonexistent-tasks-root");
+    const environment = {
+      ...process.env,
+      ECOSYM_TASKS: missingRoot,
+      XDG_DATA_HOME: dataHome,
+    };
+    const ready = spawnSync(join(scripts, "run-ledger"), ["ready"], {
+      cwd: repository,
+      encoding: "utf8",
+      env: environment,
+    });
+    assert.notEqual(ready.status, 0, "an empty specification root must not exit 0");
+    assert.match(ready.stderr, /no task specification found under/u);
+
+    // The control: a populated root with a real, startable specification
+    // still succeeds, so the guard refuses emptiness rather than everything.
+    const populatedRoot = join(directory, "populated-tasks-root");
+    mkdirSync(populatedRoot, { recursive: true });
+    writeFileSync(join(populatedRoot, "solo.md"), taskSpec("solo", ["src/solo.ts"]));
+    const populated = spawnSync(join(scripts, "run-ledger"), ["ready"], {
+      cwd: repository,
+      encoding: "utf8",
+      env: { ...environment, ECOSYM_TASKS: populatedRoot },
+    });
+    assert.equal(populated.status, 0, populated.stderr);
+    assert.match(populated.stdout, /^solo$/mu);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a landed close is refused when the run wrote to a gitignored, undeclared path", () => {
+  // changed_paths() collected untracked files with --exclude-standard,
+  // which hides anything matched by .gitignore. A run that created a new
+  // path the repository's own ignore rules happen to cover — docs/tasks/ is
+  // the concrete case elsewhere in this suite — was therefore invisible to
+  // the territory audit, and cmd_close recorded territory_audit: "passed"
+  // for a write DEVELOPMENT.md says must be refused.
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-ignored-write-"));
+  const repository = join(directory, "repository");
+  const dataHome = join(directory, "data");
+  const scripts = join(repository, "scripts");
+  const tasks = join(repository, "docs", "tasks");
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(tasks, { recursive: true });
+  copyFileSync(runLedger, join(scripts, "run-ledger"));
+  chmodSync(join(scripts, "run-ledger"), 0o700);
+
+  try {
+    git(repository, ["init", "-b", "main"]);
+    writeFileSync(join(repository, ".gitignore"), "secret-dir/\n");
+    mkdirSync(join(repository, "src"), { recursive: true });
+    writeFileSync(join(repository, "src", "bounded.ts"), "export {};\n");
+    writeFileSync(join(tasks, "bounded.md"), taskSpec("bounded", ["src/bounded.ts"]));
+    git(repository, ["add", "."]);
+    commit(repository, "fixture");
+    const base = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: repository,
+      encoding: "utf8",
+    }).stdout.trim();
+
+    const environment = { ...process.env, XDG_DATA_HOME: dataHome };
+    const started = spawnSync(join(scripts, "run-ledger"), [
+      "start",
+      "bounded",
+      "unit-bounded",
+      "--worktree",
+      repository,
+      "--commit",
+      base,
+      "--spec",
+      join(tasks, "bounded.md"),
+    ], { cwd: repository, encoding: "utf8", env: environment });
+    assert.equal(started.status, 0, started.stderr);
+
+    // An undeclared write that only .gitignore hides from a plain
+    // `ls-files --others --exclude-standard`.
+    mkdirSync(join(repository, "secret-dir"), { recursive: true });
+    writeFileSync(join(repository, "secret-dir", "leak.txt"), "leaked\n");
+
+    const result = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: repository,
+      encoding: "utf8",
+    }).stdout.trim();
+    const closed = spawnSync(join(scripts, "run-ledger"), [
+      "close",
+      "unit-bounded",
+      "--outcome",
+      "landed",
+      "--commit",
+      result,
+    ], { cwd: repository, encoding: "utf8", env: environment });
+    assert.notEqual(closed.status, 0, "an undeclared write behind .gitignore must be refused, not passed");
+    assert.match(closed.stderr, /secret-dir\/leak\.txt/u);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

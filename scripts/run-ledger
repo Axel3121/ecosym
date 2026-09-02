@@ -359,6 +359,15 @@ def git_state(
         return "in-main"
     if reachable is False:
         return "unmerged"
+    if commit:
+        # A result commit was named but Git could not say whether it is
+        # reachable from main (`in_main` returned None: both `origin/main`
+        # and `main` failed to answer). The branch fallback below speaks for
+        # the branch, not for this commit, and its contract is to run only
+        # when no result commit exists — falling through here would let an
+        # uncheckable claim borrow the branch's standing and be reported as
+        # `merged` or `open` instead of the honest `unproven`.
+        return "unproven"
 
     # No usable result commit. The branch is all that is left, and it can
     # only speak for itself when Git positively says it carries commits of
@@ -795,9 +804,17 @@ def changed_paths(started: dict, result_commit: str | None) -> tuple[set[str] | 
         "--",
     )
     untracked = git_paths(worktree, "ls-files", "--others", "--exclude-standard", "-z")
-    if any(paths is None for paths in (committed, unstaged, staged, untracked)):
+    # `--exclude-standard` hides anything matched by .gitignore, so a
+    # run-created path the ignore rules happen to cover — docs/tasks/ is the
+    # concrete case — would otherwise vanish from `changed` and therefore from
+    # `undeclared`, letting an undeclared write close as `landed` because the
+    # audit never saw it. A second call for exactly the ignored-but-present
+    # untracked files closes that gap without touching the tracked, staged,
+    # or committed collections above.
+    ignored = git_paths(worktree, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+    if any(paths is None for paths in (committed, unstaged, staged, untracked, ignored)):
         return None, "Git could not determine every path changed by the run"
-    return set().union(committed or set(), unstaged or set(), staged or set(), untracked or set()), None
+    return set().union(committed or set(), unstaged or set(), staged or set(), untracked or set(), ignored or set()), None
 
 
 def territory_audit(
@@ -1016,7 +1033,15 @@ def cmd_can_start(args: argparse.Namespace) -> int:
 def cmd_ready(args: argparse.Namespace) -> int:
     records = read_records()
     snapshot = scheduling_snapshot(records)
-    for path in sorted(tasks_root().glob("*.md")):
+    root = tasks_root()
+    specs = sorted(root.glob("*.md"))
+    if not specs:
+        print(
+            f"no task specification found under {root}; set ECOSYM_TASKS",
+            file=sys.stderr,
+        )
+        return 1
+    for path in specs:
         task = path.stem
         declaration, error = declaration_for_task(task, str(path))
         if error:
