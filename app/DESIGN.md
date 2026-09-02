@@ -41,7 +41,7 @@ clamped to the map. Zoom preserves the point under the pointer.
 |---|---|---|
 | **World** | 0.7 – 1.5 | The painting. Labels on places, fog on the unobserved, smoke and tiny walkers where work runs, pennants for council matters, letters on roads. |
 | **Settlement** | 1.5 – 5 | The settlement plate crossfades in over the painting. Walkers at readable size, smoke on occupied workshops, the seat as the largest building. |
-| **Focus** (leaves the map) | — | Talking to a seat, an agent, or the council. Map blurred behind; portrait + facts left, conversation right. |
+| **Focus** (leaves the map) | — | Talking to a seat, an agent, or the council. Map blurred behind; portrait + facts left, conversation right. Dark, same type as the desk. |
 
 Scale contract: world geometry scales with the camera; walker sprites hold a
 readable logical size (26–96 px) and are clamped, never blurred up.
@@ -65,25 +65,43 @@ readable logical size (26–96 px) and are clamped, never blurred up.
   civilization; one that crosses it is sealed to the council. Agents refuse
   orders and point to their seat. "Why" is answered honestly: not observed.
 
+## The desk and the map
+
+Two zones, one product. **The map is the place; the desk is the tool.**
+Chosen 2026-09-02 from three sketched directions (Inter / Plex Mono / Lora);
+Axel picked the dark monospace desk ("B").
+
+- The desk (left, 340 px) owns every fact and every action: attention
+  counters, roster with keys 1–4 and C, the selected civilization's
+  running-work tree and recent traces, the council queue with ja / nei / spør,
+  and the observed-activity log. Selecting Capital shows the halls in summary.
+- The map owns place and presence only. Nothing floats over the painting
+  except place labels, the hover tip, and the bottom hint. A click on a
+  village or the Capital flies there and selects it on the desk; a click on
+  a walker or the seat opens focus mode.
+- No dashboard chrome on the map (no graphs, gauges, badges over villages),
+  and no game chrome on the desk (no bevels, pixel fonts, XP, scores).
+
 ## Colour
 
 | Token | Value | Role |
 |---|---|---|
-| `--paper` | `#f6e2b8` | panel ground |
-| `--paper-dark` | `#e3c894` | panel inset / conversation ground |
-| `--frame` / `--frame-dark` / `--frame-light` | `#8b5a2b` / `#4a2c14` / `#c98a4b` | wood frame, buttons |
-| `--ink` / `--ink-soft` | `#3a2410` / `#7a5a3a` | text |
-| `--seal` | `#9e2a1e` | petitions, council matters, synthetic warnings (≥4.5:1 on paper) |
-| `--live` | `#6fae4b` | the one "talk" affordance and hover states |
+| `--bg` / `--bg-2` / `--bg-3` | `#1d1a15` / `#2a251d` / `#332d24` | desk, panels, your messages |
+| `--line` / `--line-2` | `#3a342a` / `#5a5040` | rules, borders |
+| `--fg` / `--fg-dim` / `--fg-faint` | `#e6dcc3` / `#9a8f78` / `#6a6252` | text hierarchy |
+| `--live` / `--live-dim` | `#a7d98a` / `#7fb35a` | observed running work; the "ja" and "talk" affordances |
+| `--seal` / `--seal-dim` | `#e8735c` / `#c4553f` | matters waiting on you, border-crossings (⚑), "nei", petitions |
+
+Colour discipline: green means *observed live* or *yes*; red means *needs
+you* or *crosses a border* or *no*. Everything else is cream and grey.
+The synthetic-fixture note is grey, not red: it is information, not alarm.
 
 ## Typography
 
-Bitmap fonts served locally (`/fonts`): **Silkscreen** for headings and
-labels, **Pixelify Sans** for body. No smooth sans anywhere in the chrome.
-Ratio: title 26 → sheet/focus heading 24 → body 17–18 → captions 12–16.
-
-UI chrome is Norwegian. Domain strings from fixtures may be whatever the
-source says.
+**IBM Plex Mono** (400/500), served locally from `/fonts`, for all text —
+desk, hover, hint, focus mode, and the place labels drawn on the canvas.
+Pixel-art lives only in the painting, never in type.
+Sizes: body 13, counters 22, headings 11 uppercase tracked, meta 11–12.
 
 ## Motion
 
