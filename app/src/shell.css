@@ -8,13 +8,13 @@
 :root {
   --glass: rgba(20, 18, 14, 0.72);
   --glass-line: rgba(255, 255, 255, 0.08);
-  --glass-fg: #eee6d2; --glass-dim: #a89d86; --glass-faint: #6f665a;
+  --glass-fg: #eee6d2; --glass-dim: #c4b99f; --glass-faint: #a89d86;
   --glass-r: 6px;
 }
 :root[data-theme="light"] {
   --glass: rgba(246, 240, 226, 0.78);
   --glass-line: rgba(0, 0, 0, 0.10);
-  --glass-fg: #2a2318; --glass-dim: #6f6350; --glass-faint: #9a8c72;
+  --glass-fg: #2a2318; --glass-dim: #5a4f3e; --glass-faint: #766a55;
 }
 .etched {
   background: var(--glass); color: var(--glass-fg);
@@ -37,20 +37,21 @@
 .strip .sep { color: var(--glass-faint); margin: 0 6px; }
 
 /* ---- the command line: one input, suggestions only while typing ------------ */
-.cmd { position: relative; flex: 1 1 260px; min-width: 200px; margin-left: auto; }
+.cmd { position: relative; flex: 0 1 420px; min-width: 200px; max-width: 420px; margin-left: auto; }
 .cmd input { width: 100%; background: transparent; border: 0; border-bottom: 1px solid rgba(255,255,255,.14); color: var(--glass-fg); font: 12px/1.6 var(--mono); padding: 2px 0; outline: none; }
 :root[data-theme="light"] .cmd input { border-bottom-color: rgba(0,0,0,.18); }
 .cmd input::placeholder { color: var(--glass-faint); }
-.cmd input:focus { border-bottom-color: var(--glass-dim); }
-.cmd-suggest { position: absolute; z-index: 9; left: 0; right: 0; bottom: calc(100% + 10px); margin: 0; padding: 4px 0; list-style: none; }
+.cmd input:focus { border-bottom-color: var(--glass-fg); }
+.cmd input:focus-visible { outline: 2px solid var(--live); outline-offset: 3px; border-radius: 2px; }
+.cmd-suggest { position: absolute; z-index: 9; left: 0; width: min(360px, 100%); bottom: calc(100% + 10px); margin: 0; padding: 4px 0; list-style: none; }
 .cmd-suggest li { display: flex; justify-content: space-between; gap: 12px; padding: 6px 12px; cursor: pointer; font: 12px/1.4 var(--mono); color: var(--glass-fg); }
-.cmd-suggest li .hint { color: var(--glass-dim); font-family: var(--serif); }
+.cmd-suggest li .hint { color: var(--glass-dim); font-family: var(--serif); max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
 .cmd-suggest li.on, .cmd-suggest li:hover { background: rgba(255,255,255,.06); }
 :root[data-theme="light"] .cmd-suggest li.on, :root[data-theme="light"] .cmd-suggest li:hover { background: rgba(0,0,0,.05); }
 
 /* ---- ••• : the only place low-frequency things live -------------------------- */
 .more { position: relative; font-family: var(--mono); }
-.more summary { list-style: none; cursor: pointer; color: var(--glass-dim); padding: 2px 4px; letter-spacing: .12em; }
+.more summary { list-style: none; cursor: pointer; color: var(--glass-dim); min-width: 32px; min-height: 32px; display: grid; place-items: center; padding: 0 6px; letter-spacing: .12em; }
 .more summary::-webkit-details-marker { display: none; }
 .more summary:hover, .more[open] summary { color: var(--glass-fg); }
 .more-menu { position: absolute; z-index: 12; bottom: calc(100% + 10px); right: 0; width: 170px; padding: 6px 0; }
@@ -64,7 +65,7 @@
 }
 .sheet[hidden] { display: none; }
 .sheet-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 18px 6px; font: 500 10px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--glass-dim); }
-.quiet { border: 0; background: transparent; color: var(--glass-dim); cursor: pointer; font: 13px var(--mono); padding: 2px 6px; }
+.quiet { border: 0; background: transparent; color: var(--glass-dim); cursor: pointer; font: 13px var(--mono); width: 32px; height: 32px; display: grid; place-items: center; padding: 0; margin: -6px -8px -6px 0; }
 .quiet:hover { color: var(--glass-fg); }
 #sheet-body { overflow-y: auto; padding: 0 18px 20px; color: var(--glass-fg); }
 #sheet-body::-webkit-scrollbar { width: 6px; } #sheet-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 3px; }
@@ -76,9 +77,17 @@
 #sheet-body .label { font: 500 10px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--glass-dim); margin: 18px 0 6px; }
 #sheet-body .matter { border-top: 1px solid var(--glass-line); padding: 8px 0; }
 #sheet-body .actions-line a, #sheet-body .matter-decide a { color: inherit; text-decoration: none; border-bottom: 1px solid rgba(255,255,255,.22); }
+#sheet-body .matter-decide a { display: inline-block; padding: 3px 4px; margin: -3px -2px; }
+#sheet-body .matter-decide a.live { color: var(--live); border-bottom-color: rgba(167,217,138,.4); }
+#sheet-body .matter-decide a.seal { color: var(--seal); border-bottom-color: rgba(232,115,92,.4); }
+#sheet-body .matter-decide a.dim { color: var(--glass-dim); }
+#sheet-body .matter-decide .sep { margin: 0 6px; }
+#sheet-body .matter-meta { color: var(--glass-dim); display: flex; justify-content: space-between; }
+#sheet-body .matter-meta .dim { color: var(--glass-faint); }
 #sheet-body .actions-line a { color: var(--live); border-bottom-color: rgba(167,217,138,.4); }
 #sheet-body .face { border-radius: 4px; }
-#sheet-body .group-label { color: var(--glass-dim); }
+#sheet-body .group-label { color: var(--glass-dim); font-size: 11px; letter-spacing: .12em; margin: 16px 0 7px; }
+#sheet-body .face-preview { font-size: 12px; color: var(--glass-dim); }
 
 /* hover card sits above the glass */
 .hover { z-index: 8; }

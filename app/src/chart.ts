@@ -160,7 +160,7 @@ export class Chart {
       }
 
       // pennants for council matters, above the seat
-      if (s.openMatters > 0) this.pennants(sp, z, s.openMatters);
+      if (s.openMatters > 0) this.marker(sp, s.openMatters, "seal");
       this.hits.push({ kind: "seat", settlementId: s.civilizationId, label: s.seatName, sub: `${s.name} · ${s.openMatters} åpne for rådet`, x: sp.x, y: sp.y + 10 * z, r: Math.max(18, r.w * 0.12 * z) });
 
       // name at world level
@@ -171,7 +171,7 @@ export class Chart {
     {
       const c = this.toScreen(CAPITAL.x, CAPITAL.y);
       this.hits.push({ kind: "capital", label: "Capital", sub: `${scene.capital.matters.length} saker for rådet`, x: c.x, y: c.y, r: CAPITAL.r * 0.7 * z });
-      if (scene.capital.matters.length > 0) this.pennants({ x: c.x, y: c.y - CAPITAL.r * 0.45 * z }, z, scene.capital.matters.length);
+      if (scene.capital.matters.length > 0) this.marker({ x: c.x, y: c.y - CAPITAL.r * 0.45 * z }, scene.capital.matters.length, "seal");
       if (plateAlpha < 1 && this.showLabels) this.label(c.x, c.y - CAPITAL.r * 0.75 * z, "Capital", 1 - plateAlpha);
     }
 
@@ -180,10 +180,8 @@ export class Chart {
       const s = scene.settlements.find((x) => x.civilizationId === l.toCivilizationId); if (!s) continue;
       const a = this.toScreen(CAPITAL.x, CAPITAL.y), b = this.toScreen(s.ground.x, s.ground.y);
       const x = a.x + (b.x - a.x) * l.progress, y = a.y + (b.y - a.y) * l.progress - 6 * z;
-      const sz = Math.max(10, 7 * z);
-      ctx.fillStyle = "#f3e7c8"; ctx.fillRect(x - sz, y - sz * 0.7, sz * 2, sz * 1.4);
-      ctx.fillStyle = "#6b4a2b"; ctx.fillRect(x - sz, y - sz * 0.7, sz * 2, 2); ctx.fillRect(x - sz, y + sz * 0.7 - 2, sz * 2, 2); ctx.fillRect(x - sz, y - sz * 0.7, 2, sz * 1.4); ctx.fillRect(x + sz - 2, y - sz * 0.7, 2, sz * 1.4);
-      ctx.fillStyle = "#b8342a"; ctx.fillRect(x - 2, y - 2, 5, 5);
+      this.marker({ x, y: y + 16 }, 1, "letter");
+      const sz = 8;
       this.hits.push({ kind: "letter", petitionId: l.petitionId, settlementId: s.civilizationId, label: `petisjon · ${l.state}`, sub: l.text, x, y, r: sz * 1.5 });
     }
   }
@@ -234,12 +232,14 @@ export class Chart {
     ctx.restore();
   }
 
-  private pennants(p: P, z: number, n: number) {
-    const { ctx } = this; const u = Math.max(3, 2.2 * z);
-    for (let i = 0; i < n; i++) {
-      const x = p.x + (i - (n - 1) / 2) * u * 7;
-      ctx.fillStyle = "#3a2a1a"; ctx.fillRect(x, p.y - u * 12, u, u * 12);
-      ctx.fillStyle = "#b8342a"; ctx.fillRect(x + u, p.y - u * 12, u * 5, u * 3); ctx.fillRect(x + u, p.y - u * 9, u * 3, u);
-    }
+  /** One etched marker per place — never a marker per matter. dot: red = needs a decision,
+   *  cream = a petition on its way. A count only when n > 1. */
+  private marker(p: P, n: number, dot: "seal" | "letter") {
+    const { ctx } = this; const w = 12, x = Math.round(p.x - w / 2), y = Math.round(p.y - w - 10);
+    ctx.fillStyle = "rgba(20,18,14,0.82)"; ctx.fillRect(x, y, w, w);
+    ctx.strokeStyle = "#c4b99f"; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, w - 1, w - 1);
+    if (dot === "seal") { ctx.fillStyle = "#e8735c"; ctx.fillRect(x + 4, y + 4, 4, 4); }
+    else { ctx.strokeStyle = "#f3e7c8"; ctx.strokeRect(x + 3.5, y + 3.5, 5, 5); }
+    if (n > 1) { ctx.save(); ctx.font = `500 10px "Plex Mono", monospace`; ctx.textBaseline = "middle"; ctx.fillStyle = "#eee6d2"; ctx.fillText(String(n), x + w + 4, y + w / 2 + 0.5); ctx.restore(); }
   }
 }

@@ -101,7 +101,7 @@ function civEntry(scene: Scene, state: DeskState) {
   if (!s) return `<p class="dim">Velg en sivilisasjon — tallene på tastaturet, eller under Sivilisasjoner.</p>`;
   if (s.epistemic !== "observed") return `<p class="civ-name faint">${esc(s.name)}</p><p class="dim">Aldri observert. Koble en kilde for å se noe her.</p>`;
   const { running, traces } = workTree(s);
-  return `<p class="civ-name">${esc(s.name)}</p><p class="civ-sub">${esc(s.domain)} — sist observert <span class="mono">${ago(scene, s.lastSeen!)}</span> siden</p>
+  return `<p class="civ-name">${esc(s.name)}</p><p class="civ-sub">${esc(s.domain)} — observert <span class="mono">${ago(scene, s.lastSeen!)}</span> siden</p>
     <div class="work-tree">${running}${traces}</div>
     <p class="actions-line"><a href="#" data-go="${esc(s.civilizationId)}">gå dit</a><span class="sep">·</span><a href="#" data-talk-civ="${esc(s.civilizationId)}">snakk med ${esc(s.seatName)}</a></p>`;
 }
@@ -228,7 +228,7 @@ export function renderSheet(scene: Scene, state: DeskState, sheet: Sheet): strin
       return `<div class="civ-block">${civEntry(scene, state)}</div>${matters}`;
     }
     case "raadet":
-      return `<p class="label">Rådet</p>${sorted.length ? sorted.map((m) => matterEntry(scene, state, m, true)).join("") : `<p class="dim">Ingenting venter.</p>`}<p class="dim note">Krysser mandatet = utenfor det sivilisasjonen kan alene. Avgjørelser blir petisjoner. Ikke koblet i prototypen.</p>`;
+      return `<p class="label">Rådet</p>${sorted.length ? sorted.map((m) => matterEntry(scene, state, m, true)).join("") : `<p class="dim">Ingenting venter.</p>`}<p class="dim note">Krysser mandatet = utenfor det sivilisasjonen kan alene. Et vedtak er ikke en petisjon; petisjoner vises først når de er sendt.</p>`;
     case "arbeid":
       return `<p class="label">Arbeid</p>${scene.settlements.map((s) => {
         if (s.epistemic !== "observed") return `<p class="civ-name faint">${esc(s.name)} <span class="dim">aldri sett</span></p>`;
@@ -238,12 +238,10 @@ export function renderSheet(scene: Scene, state: DeskState, sheet: Sheet): strin
     case "petisjoner":
       return `<p class="label">Petisjoner</p>${scene.letters.length ? scene.letters.slice().sort((a, b) => Date.parse(b.sentAt) - Date.parse(a.sentAt)).map((l) => {
         const s = scene.settlements.find((x) => x.civilizationId === l.toCivilizationId);
-        const steps = ["sendt", "akseptert", "i kø", "pågår"];
-        const order: Record<string, number> = { sent: 0, accepted: 1, queued: 2, "in-progress": 3, refused: 3 };
-        const cur = order[l.state] ?? 0;
-        const trail = l.state === "refused" ? `<span class="seal">avslått</span>` : steps.map((st, i) => i === cur ? `<b>${st}</b>` : st).join(" → ");
-        return `<div class="matter"><p class="matter-meta"><span>til ${esc(s?.seatName ?? l.toCivilizationId)} · ${esc(s?.name ?? "")}</span><span class="mono dim">${ago(scene, l.sentAt)}</span></p><p class="matter-title">${esc(l.text)}</p><p class="dim">${trail}</p></div>`;
-      }).join("") : `<p class="dim">Ingen petisjoner.</p>`}<p class="dim note">Noe som ble bedt om. Vises aldri som noe som skjedde.</p>`;
+        const word: Record<string, string> = { sent: "sendt — venter på observasjon", accepted: "akseptert", queued: "i kø", "in-progress": "pågår", refused: "avslått" };
+        const st = l.state === "refused" ? `<span class="seal">avslått</span>` : `<b>${word[l.state] ?? l.state}</b>`;
+        return `<div class="matter"><p class="matter-meta"><span>til ${esc(s?.seatName ?? l.toCivilizationId)} · ${esc(s?.name ?? "")}</span><span class="mono dim">${ago(scene, l.sentAt)}</span></p><p class="matter-title">${esc(l.text)}</p><p class="dim">${st}</p></div>`;
+      }).join("") : `<p class="dim">Ingen petisjoner.</p>`}<p class="dim note">Noe som ble bedt om. Bare observert tilstand vises; aldri et resultat.</p>`;
     case "observert":
       return `<p class="label">Observert</p>${observedLog(scene, state.settings.logLimit)}`;
   }
@@ -284,7 +282,7 @@ export function renderSamtaler(scene: Scene, state: DeskState): string {
     return `<p class="face-row" data-resume="${esc(id)}">${faceImg}<span class="face-info"><span class="face-name">${esc(title)}</span><span class="face-preview">${preview}</span></span><span class="mono face-tool">${meta}</span></p>`;
   };
 
-  const openMatters = scene.capital.matters.length;
+  const openMatters = scene.capital.matters.filter((m) => !state.decisions[m.id]).length;
   const global = `<p class="group-label">Hovedkvarter</p>${row("council", "Rådet", openMatters ? `${openMatters} ${openMatters === 1 ? "sak" : "saker"} på bordet` : "bordet er tomt", face(0, "council"))}`;
 
   const civs = scene.settlements.map((s, idx) => {

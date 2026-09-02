@@ -121,8 +121,8 @@ function runCommand(raw: string) {
   cmdInput.value = ""; cmdInput.blur(); cmdList.hidden = true;
 }
 $("cmd").addEventListener("submit", (e) => { e.preventDefault(); const pick = cmdList.querySelector<HTMLElement>("li.on"); runCommand(pick && !cmdList.hidden ? pick.dataset.text! : cmdInput.value); });
-cmdInput.addEventListener("input", () => { sugIndex = -1; renderSuggest(); });
-cmdInput.addEventListener("focus", renderSuggest);
+cmdInput.addEventListener("input", () => { sugIndex = 0; renderSuggest(); });
+cmdInput.addEventListener("focus", () => { sugIndex = 0; renderSuggest(); });
 cmdInput.addEventListener("blur", () => setTimeout(() => { cmdList.hidden = true; }, 120));
 cmdInput.addEventListener("keydown", (e) => {
   const n = cmdList.children.length;
@@ -254,6 +254,7 @@ function push(lines: Line[], record = true) {
     d.className = `msg ${l.who}`; d.textContent = l.text; thread.appendChild(d);
   }
   thread.scrollTop = thread.scrollHeight;
+  renderDocket(); // the strip may now say "1 venter på svar"
 }
 
 function focus(t: Target) {
@@ -294,7 +295,8 @@ $("focus-form").addEventListener("submit", (e) => {
   input.value = "";
   push([{ who: "you", text }]);
   const t = current;
-  setTimeout(() => { if (current === t) push(reply(scene, t, text)); }, 350);
+  thread.dataset.waiting = t.kind === "council" ? "Rådet" : t.kind === "seat" ? t.settlement.seatName : t.agent.label;
+  setTimeout(() => { if (current === t) { delete thread.dataset.waiting; push(reply(scene, t, text)); } }, 350);
 });
 window.addEventListener("keydown", (e) => { if (e.key === "Escape" && current) unfocus(); });
 
