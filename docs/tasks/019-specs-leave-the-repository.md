@@ -88,6 +88,14 @@ Then the control that makes the move meaningful: `git ls-files docs/tasks` is
 empty, and `npm run check` passes. A move that quietly leaves the directory
 tracked has changed nothing.
 
+`.gitignore` already lists `docs/tasks/`, and that is not enough on its own:
+Git ignores only untracked paths, so the twenty specifications currently
+tracked stay tracked until they are explicitly removed from the index. Verified
+2026-09-02 — a new file under `docs/tasks/` is refused by `git add`, while
+`git ls-files docs/tasks` still returns 20. Use `git rm --cached` for those,
+and treat the ignore rule as the guard against the directory coming back rather
+than as the thing that removes it.
+
 Every guard you touch gets the same treatment — remove it, show the test fail,
 restore it, show it pass. `DEVELOPMENT.md` owns this rule.
 
