@@ -1,21 +1,22 @@
 import { deriveScene } from "./scene.ts";
 import type { Scene } from "./scene.ts";
 import { fixture } from "./fixture.ts";
-import { Chart, makeWalkers, stepWalkers, ZOOM_MIN, ZOOM_MAX, coverZoom } from "./chart.ts";
+import { Chart, makeWalkers, stepWalkers, ZOOM_MIN, ZOOM_MAX, fitZoom, WORLD_W, WORLD_H } from "./chart.ts";
+import { quarterOf, HALL } from "./town.ts";
 import type { Hit } from "./chart.ts";
 import { renderSheet, renderStrip, renderSamtaler, renderInnstillinger, civByIndex, DEFAULT_SETTINGS } from "./desk.ts";
 import type { DeskState, Decision, Settings, Thread } from "./desk.ts";
 import type { Sheet } from "./desk.ts";
 import { parse, suggest } from "./command.ts";
-import { PLATES } from "./chart.ts";
-import { plateKeyFor, seatFaceFor, agentFaceFor } from "./looks.ts";
+import { seatFaceFor, agentFaceFor } from "./looks.ts";
 import { opening, reply } from "./dialogue.ts";
 import type { Target, Line } from "./dialogue.ts";
 
 const scene: Scene = deriveScene(fixture);
 const canvas = document.getElementById("chart") as HTMLCanvasElement;
 const chart = new Chart(canvas);
-function minZoom() { return Math.max(ZOOM_MIN, coverZoom(canvas.clientWidth, canvas.clientHeight)); }
+const STRIP_H = 84;
+function minZoom() { return Math.max(ZOOM_MIN, fitZoom(canvas.clientWidth, canvas.clientHeight - STRIP_H) * 0.96); }
 const walkers = makeWalkers(scene);
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 let motionOff = false;
@@ -202,8 +203,8 @@ function select(h: Hit | null) {
     case "settlement":
       if (!s) return;
       desk.selectedCiv = s.civilizationId; show("place");
-      if (s.epistemic === "observed") flyTo(s.ground.x, s.ground.y - 30, Math.max(chart.camera.zoom, 2.4));
-      else flyTo(s.ground.x, s.ground.y, Math.max(chart.camera.zoom, 1.2));
+      { const q = quarterOf(scene, s); const cx = (q.box.x1 + q.box.x2) / 2, cy = (q.box.y1 + q.box.y2) / 2;
+        flyTo(cx, cy, Math.max(chart.camera.zoom, s.epistemic === "observed" ? 2.0 : 1.2)); }
       return;
     case "capital":
       desk.selectedCiv = "__capital"; show("place");
@@ -266,9 +267,9 @@ function focus(t: Target) {
     $("focus-name").textContent = "Rådet"; $("focus-kind").textContent = "Capital · verdens hovedkvarter";
     portrait.className = "portrait face-big"; portrait.style.backgroundImage = `url(/art/faces/0.png)`; portrait.style.backgroundPosition = "50% 50%";
     $("focus-facts").innerHTML = `<b>Saker</b>${scene.capital.matters.map((m) => `${m.summary}<br>`).join("") || "ingen"}<b>Haller</b>${scene.capital.halls.map((h) => `${h.name} · ${h.epistemic === "observed" ? (h.live ? "i arbeid" : "stille") : "aldri sett"}<br>`).join("")}`;
-    flyTo(770, 410, 2.2);
+    flyTo((HALL.box.x1 + HALL.box.x2) / 2, HALL.box.y2 - 40, 2.2);
   } else {
-    const s = t.settlement; const plate = PLATES[plateKeyFor(s.civilizationId)]!;
+    const s = t.settlement;
     const idx = scene.settlements.indexOf(s);
     if (t.kind === "seat") {
       $("focus-name").textContent = s.seatName; $("focus-kind").textContent = `setet i ${s.name} · ${s.domain}`;
@@ -280,7 +281,7 @@ function focus(t: Target) {
       portrait.className = "portrait face-big"; portrait.style.backgroundImage = `url(/art/faces/${agentFaceFor(a.runId, a.tool)}.png)`; portrait.style.backgroundPosition = "50% 50%";
       $("focus-facts").innerHTML = `<b>Verktøy</b>${a.tool ?? "—"}<b>Under</b>${a.parentRunId ? s.inhabitants.find((p) => p.runId === a.parentRunId)?.label ?? a.parentRunId : "ingen (rot)"}<b>Har delegert</b>${s.inhabitants.filter((c) => c.parentRunId === a.runId).map((c) => c.label).join("<br>") || "ingenting"}`;
     }
-    flyTo(s.ground.x, s.ground.y - 30, 2.4);
+    { const q = quarterOf(scene, s); flyTo(q.seat.x, q.seat.y + 20, 2.4); }
   }
   const th = threadFor(t); currentThreadId = th.id;
   if (th.lines.length) { push(th.lines, false); push([{ who: "note", text: "— fortsetter samtalen —" }], false); }
@@ -312,10 +313,12 @@ function frame(now: number) {
     chart.camera.zoom += (target.zoom - chart.camera.zoom) * k;
     if (Math.abs(target.zoom - chart.camera.zoom) < 0.002 && Math.abs(target.x - chart.camera.x) < 0.3 && Math.abs(target.y - chart.camera.y) < 0.3) { chart.camera = { ...target }; flying = false; }
   }
-  // the world has an edge: keep the camera on the map
-  { const hw = chart_w() / 2 / chart.camera.zoom, hh = chart_h() / 2 / chart.camera.zoom;
-    chart.camera.x = Math.min(Math.max(chart.camera.x, Math.min(hw, 768)), Math.max(1536 - hw, 768));
-    chart.camera.y = Math.min(Math.max(chart.camera.y, Math.min(hh, 512)), Math.max(1024 - hh, 512)); }
+  // the town has an edge: keep the camera on it. When the whole town fits, centre it in the
+  // space above the strip instead of letting the strip cover the south quarter.
+  { const z = chart.camera.zoom; const hw = chart_w() / 2 / z, hh = chart_h() / 2 / z;
+    const cx = WORLD_W / 2, cy = WORLD_H / 2 + (STRIP_H / 2) / z;
+    chart.camera.x = Math.min(Math.max(chart.camera.x, Math.min(hw, cx)), Math.max(WORLD_W - hw, cx));
+    chart.camera.y = Math.min(Math.max(chart.camera.y, Math.min(hh, cy)), Math.max(WORLD_H - hh + STRIP_H / z, cy)); }
   stepWalkers(walkers, dt, reduced || motionOff);
   if (canvas.clientWidth > 0) chart.draw(scene, walkers, selected);
   // no hint bar: the strip's placeholder carries the one line of help
@@ -323,6 +326,7 @@ function frame(now: number) {
 }
 applySettings();
 renderDocket();
+requestAnimationFrame(() => { chart.resize(); chart.camera = { x: WORLD_W / 2, y: WORLD_H / 2, zoom: minZoom() }; target = { ...chart.camera }; });
 requestAnimationFrame(frame);
 
 // test hook
