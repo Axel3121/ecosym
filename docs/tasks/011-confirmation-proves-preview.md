@@ -15,6 +15,12 @@ Read `PRODUCT.md`, `ARCHITECTURE.md`, `SECURITY.md` and `DEVELOPMENT.md` first.
 Continue on branch `task/001-observation-layer` in this worktree. Commit each
 coherent verified piece as you go.
 
+**Note on `needs`.** The sentence above names the branch this work continued
+on, which is not the same thing as what it depended on. Git history puts the
+real dependency at 008 (verification trusting the store), and that is what
+`needs` declares. Branch reuse was a workspace convention; the scheduler reads
+the declaration.
+
 ## Outcome
 
 Two operations change the meaning of recorded history: retiring an abandoned

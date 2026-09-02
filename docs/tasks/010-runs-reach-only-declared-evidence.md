@@ -26,6 +26,10 @@ Read `PRODUCT.md`, `ARCHITECTURE.md`, `SECURITY.md` and `DEVELOPMENT.md` first.
 Continue on branch `task/001-observation-layer` in this worktree. Commit each
 coherent piece as you go.
 
+**Note on `needs`.** The sentence above names the branch this work continued
+on. Here that happens to match the real dependency — Git history puts it at
+001 — but the declaration is what the scheduler reads, not the prose.
+
 ## Outcome
 
 A sandboxed run can read exactly the source data its connections declare, and

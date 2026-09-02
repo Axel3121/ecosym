@@ -12,6 +12,12 @@ Read `PRODUCT.md`, `ARCHITECTURE.md`, `SECURITY.md` and `DEVELOPMENT.md` first.
 Continue on branch `task/001-observation-layer` in this worktree. Commit each
 coherent piece as you go rather than once at the end.
 
+**Note on `needs`.** The sentence above names the branch this work continued
+on, which is not the same thing as what it depended on. Git history puts the
+real dependency at 008 (verification trusting the store), and that is what
+`needs` declares. Branch reuse was a workspace convention; the scheduler reads
+the declaration.
+
 ## Outcome
 
 A store carried over from the old JSONL indexing rule becomes usable again
