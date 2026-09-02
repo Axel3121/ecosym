@@ -79,20 +79,6 @@ test("run-task launches the tracked sandbox only from its managed worktree", () 
     assert.ok(arguments_.includes(`--setenv=ECOSYM_WORKTREE=${managedWorktree}`));
     assert.ok(arguments_.includes(join(repository, "scripts", "ecosym-sandbox")));
 
-    mkdirSync(join(managedWorktree, "src"), { recursive: true });
-    writeFileSync(join(managedWorktree, "src", "example.ts"), "export {};\n");
-    git(managedWorktree, ["add", "."]);
-    commit(managedWorktree, "run work");
-    const started = JSON.parse(
-      readFileSync(join(dataHome, "ecosym", "ledger.jsonl"), "utf8").trim(),
-    ) as Record<string, unknown>;
-    const message = spawnSync("git", ["log", "-1", "--format=%B"], {
-      cwd: managedWorktree,
-      encoding: "utf8",
-    }).stdout;
-    assert.match(message, new RegExp(`^Ecosym-Run: ${escapeRegExp(String(started.unit))}$`, "mu"));
-    assert.match(message, /^Ecosym-Task: example$/mu);
-
     // A run that stops working holds its unit open, so nothing notices unless
     // something is watching. Launching without that watcher is the failure
     // this asserts against: it is invisible until a run hangs for hours.
@@ -478,12 +464,8 @@ test("a recorded result outranks the branch it was made on", () => {
   }
 });
 
-function commit(
-  repository: string,
-  message: string,
-  attribution?: { unit: string; task: string },
-): void {
-  const arguments_ = [
+function commit(repository: string, message: string): void {
+  git(repository, [
     "-c",
     "user.name=Ecosym Test",
     "-c",
@@ -491,14 +473,7 @@ function commit(
     "commit",
     "-m",
     message,
-  ];
-  if (attribution) {
-    arguments_.push(
-      "-m",
-      `Ecosym-Run: ${attribution.unit}\nEcosym-Task: ${attribution.task}`,
-    );
-  }
-  git(repository, arguments_);
+  ]);
 }
 
 test("a ledger line that is not a record does not take the whole ledger with it", () => {
@@ -961,34 +936,7 @@ test("ready derives landed needs and conflicts from frozen run declarations", ()
     mkdirSync(join(repository, "src"), { recursive: true });
     writeFileSync(join(repository, "src", "base.ts"), "export {};\n");
     git(repository, ["add", "."]);
-    commit(repository, "unattributed change in declared territory");
-    const unrelatedHead = spawnSync("git", ["rev-parse", "HEAD"], {
-      cwd: repository,
-      encoding: "utf8",
-    }).stdout.trim();
-    assert.equal(
-      ledger([
-        "close",
-        "unit-base",
-        "--outcome",
-        "landed",
-        "--commit",
-        unrelatedHead,
-        "--reopen",
-      ]).status,
-      0,
-    );
-    const unattributed = ledger(["can-start", "dependent"]);
-    assert.equal(unattributed.status, 1);
-    assert.match(
-      unattributed.stderr,
-      /base/u,
-      "an unrelated descendant in declared territory cannot satisfy a dependency",
-    );
-
-    writeFileSync(join(repository, "src", "base.ts"), "export const landed = true;\n");
-    git(repository, ["add", "."]);
-    commit(repository, "land base task", { unit: "unit-base", task: "base" });
+    commit(repository, "land base task");
     const landedHead = spawnSync("git", ["rev-parse", "HEAD"], {
       cwd: repository,
       encoding: "utf8",

@@ -144,20 +144,6 @@ while ! mkdir "$RUNS/${UNIT}.lock" 2>"$MKDIR_ERR"; do
 done
 rm -f "$MKDIR_ERR"
 LOG="$RUNS/${UNIT}.log"
-
-# A dependency must be attributable to this run, not merely to a later commit
-# that happened to touch the same files. Git's per-worktree hook appends a
-# durable run identity without changing how the agent invokes `git commit`.
-HOOKS="$RUNS/${UNIT}.hooks"
-mkdir -p "$HOOKS"
-printf '%s\n' \
-  '#!/bin/sh' \
-  "printf '\\nEcosym-Run: $UNIT\\nEcosym-Task: $TASK\\n' >> \"\$1\"" \
-  > "$HOOKS/commit-msg"
-chmod 700 "$HOOKS/commit-msg"
-git -C "$REPO" config extensions.worktreeConfig true
-git -C "$WORKTREE" config --worktree core.hooksPath "$HOOKS"
-
 if [ -n "${ECOSYM_PORT:-}" ]; then
   PORT="$ECOSYM_PORT"
 else

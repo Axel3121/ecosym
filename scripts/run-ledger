@@ -13,7 +13,8 @@ run *landed*. This ledger is where that is written down.
     run-ledger show   <unit>            one run's records
 
 The file is append-only JSONL. A correction is a new record, never an edit;
-the current state of a run is its last record.
+the current lifecycle state is its latest `started` or `closed` record. Audit
+events remain evidence without replacing that lifecycle state.
 
 What this tool does NOT do, because it cannot: it does not know an outcome. A
 close-out is a human claim, and a human who never runs `close` leaves a run
@@ -400,11 +401,22 @@ def started_record(records: list[dict]) -> dict | None:
     return next((record for record in reversed(records) if record.get("event") == "started"), None)
 
 
-def landed_tasks(records: list[dict]) -> set[str]:
-    """Tasks whose non-empty, declared result diff Git still places in main."""
+def current_lifecycle_record(records: list[dict]) -> dict | None:
+    return next(
+        (
+            record
+            for record in reversed(records)
+            if record.get("event") in ("started", "closed")
+        ),
+        None,
+    )
+
+
+def git_backed_landed_tasks(records: list[dict]) -> set[str]:
+    """Human landed claims with a non-empty declared diff that Git corroborates."""
     landed: set[str] = set()
-    for unit, unit_records in by_unit(records).items():
-        record = unit_records[-1]
+    for unit_records in by_unit(records).values():
+        record = current_lifecycle_record(unit_records) or {}
         started = started_record(unit_records)
         task = record.get("task")
         declaration = record_declaration(started or {})
@@ -436,7 +448,6 @@ def landed_tasks(records: list[dict]) -> set[str]:
                 any(paths_overlap(path, declared) for declared in declaration["touches"])
                 for path in changed
             )
-            and range_has_run_attribution(base_commit, result_commit, unit, task)
             and is_ancestor(base_commit, result_commit) is True
             and in_main(result_commit) is True
         ):
@@ -484,20 +495,28 @@ def running_runs(records: list[dict]) -> tuple[list[dict], list[str]]:
     return running, unknown
 
 
-def start_reasons(task: str, declaration: dict, records: list[dict]) -> list[str]:
+def scheduling_snapshot(records: list[dict]) -> dict:
+    running, unknown = running_runs(records)
+    return {
+        "landed": git_backed_landed_tasks(records),
+        "running": running,
+        "unknown": unknown,
+    }
+
+
+def start_reasons(task: str, declaration: dict, snapshot: dict) -> list[str]:
     reasons: list[str] = []
     if declaration["autonomous"] is False:
         reasons.append("requires a supervised or human run; ordinary run-task is not permitted")
-    landed = landed_tasks(records)
+    landed = snapshot["landed"]
     if task in landed:
         reasons.append(f"task {task} already landed")
     unmet = [need for need in declaration["needs"] if need not in landed]
     if unmet:
         reasons.append(f"needs not landed: {', '.join(unmet)}")
 
-    running, unknown = running_runs(records)
-    reasons.extend(unknown)
-    for run in running:
+    reasons.extend(snapshot["unknown"])
+    for run in snapshot["running"]:
         held = run["touches"]
         if held is None:
             reasons.append(
@@ -622,34 +641,6 @@ def is_ancestor(base: str, result: str) -> bool | None:
     return out.returncode == 0
 
 
-def range_has_run_attribution(base: str, result: str, unit: str, task: str) -> bool:
-    try:
-        out = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo_root()),
-                "log",
-                "--format=%B%x00",
-                f"{base}..{result}",
-                "--",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    if out.returncode != 0:
-        return False
-    run_trailer = f"Ecosym-Run: {unit}"
-    task_trailer = f"Ecosym-Task: {task}"
-    return any(
-        run_trailer in message.splitlines() and task_trailer in message.splitlines()
-        for message in out.stdout.split("\0")
-    )
-
-
 def changed_paths(started: dict, result_commit: str | None) -> tuple[set[str] | None, str | None]:
     worktree_value = started.get("worktree")
     base_commit = started.get("base_commit")
@@ -733,16 +724,16 @@ def cmd_close(args: argparse.Namespace) -> int:
             return 1
 
     unit_records = grouped[unit]
-    last = unit_records[-1]
-    if last.get("event") == "closed" and not args.reopen:
+    lifecycle = current_lifecycle_record(unit_records) or unit_records[-1]
+    if lifecycle.get("event") == "closed" and not args.reopen:
         print(
-            f"{unit} is already closed as {last.get('outcome')!r}; "
+            f"{unit} is already closed as {lifecycle.get('outcome')!r}; "
             f"pass --reopen to record a correction",
             file=sys.stderr,
         )
         return 1
 
-    started = started_record(unit_records) or last
+    started = started_record(unit_records) or lifecycle
     changed, undeclared, audit_error = territory_audit(started, args.commit)
     if record_declaration(started) is not None and args.outcome == "landed":
         if audit_error:
@@ -865,7 +856,7 @@ def cmd_can_start(args: argparse.Namespace) -> int:
         print(f"cannot start {args.task}: {error}", file=sys.stderr)
         return 1
     assert declaration is not None
-    reasons = start_reasons(args.task, declaration, read_records())
+    reasons = start_reasons(args.task, declaration, scheduling_snapshot(read_records()))
     if reasons:
         for reason in reasons:
             print(f"cannot start {args.task}: {reason}", file=sys.stderr)
@@ -876,6 +867,7 @@ def cmd_can_start(args: argparse.Namespace) -> int:
 
 def cmd_ready(args: argparse.Namespace) -> int:
     records = read_records()
+    snapshot = scheduling_snapshot(records)
     for path in sorted((repo_root() / "docs" / "tasks").glob("*.md")):
         task = path.stem
         try:
@@ -883,7 +875,7 @@ def cmd_ready(args: argparse.Namespace) -> int:
         except DeclarationError as error:
             print(f"{task} is not startable: {error}", file=sys.stderr)
             continue
-        if not start_reasons(task, declaration, records):
+        if not start_reasons(task, declaration, snapshot):
             print(task)
     return 0
 
@@ -901,7 +893,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 
     rows = []
     for unit, records in grouped.items():
-        last = records[-1]
+        last = current_lifecycle_record(records) or records[-1]
         project, task, epoch = parse_unit(unit)
         branch = last.get("branch") or (
             f"task/{task}" if f"task/{task}" in all_branches else None
