@@ -1209,6 +1209,75 @@ test("an unrecorded live declaration that omits its task specification remains u
   }
 });
 
+test("backfill preserves a valid frozen declaration for an unrecorded live run", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-backfill-territory-"));
+  const repository = join(directory, "repository");
+  const scripts = join(repository, "scripts");
+  const tasks = join(repository, "docs", "tasks");
+  const dataHome = join(directory, "data");
+  const runs = join(dataHome, "ecosym", "runs");
+  const bin = join(directory, "bin");
+  const unit = "ecosym-task-old-123";
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(tasks, { recursive: true });
+  mkdirSync(runs, { recursive: true });
+  mkdirSync(bin);
+  copyFileSync(runLedger, join(scripts, "run-ledger"));
+  chmodSync(join(scripts, "run-ledger"), 0o700);
+  writeFileSync(join(tasks, "conflict.md"), taskSpec("conflict", ["src/held.ts"]));
+  writeFileSync(join(tasks, "free.md"), taskSpec("free", ["src/free.ts"]));
+  writeFileSync(join(runs, `${unit}.log`), "");
+  writeFileSync(
+    join(runs, `${unit}.declaration.json`),
+    JSON.stringify({
+      autonomous: true,
+      needs: [],
+      touches: ["docs/tasks/old.md", "src/held.ts"],
+    }),
+  );
+  writeFileSync(
+    join(bin, "systemctl"),
+    `#!/bin/sh\nif [ "$3" = ${unit}.service ]; then echo active; else echo inactive; fi\n`,
+    { mode: 0o700 },
+  );
+
+  const ledger = (arguments_: string[]) =>
+    spawnSync(join(scripts, "run-ledger"), arguments_, {
+      cwd: repository,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        XDG_DATA_HOME: dataHome,
+      },
+    });
+  const assertPreciseTerritory = () => {
+    const conflict = ledger(["can-start", "conflict"]);
+    assert.equal(conflict.status, 1);
+    assert.match(conflict.stderr, /territory conflicts with running task old/u);
+    const free = ledger(["can-start", "free"]);
+    assert.equal(free.status, 0, free.stderr);
+  };
+
+  try {
+    git(repository, ["init", "-b", "main"]);
+    git(repository, ["add", "."]);
+    commit(repository, "fixture");
+
+    assertPreciseTerritory();
+    const backfill = ledger(["backfill"]);
+    assert.equal(backfill.status, 0, backfill.stderr);
+    assertPreciseTerritory();
+
+    const record = JSON.parse(
+      readFileSync(join(dataHome, "ecosym", "ledger.jsonl"), "utf8").trim(),
+    ) as Record<string, unknown>;
+    assert.deepEqual(record.touches, ["docs/tasks/old.md", "src/held.ts"]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("ready derives landed needs and conflicts from frozen run declarations", () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-run-ready-"));
   const repository = join(directory, "repository");

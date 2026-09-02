@@ -842,19 +842,21 @@ def cmd_backfill(args: argparse.Namespace) -> int:
         if unit in known:
             continue
         project, task, epoch = parse_unit(unit)
-        append(
-            {
-                "event": "started",
-                "unit": unit,
-                "task": task,
-                "project": project,
-                "branch": None,
-                "worktree": None,
-                "base_commit": None,
-                "ts": epoch or int(log.stat().st_mtime),
-                "backfilled": True,
-            }
-        )
+        record = {
+            "event": "started",
+            "unit": unit,
+            "task": task,
+            "project": project,
+            "branch": None,
+            "worktree": None,
+            "base_commit": None,
+            "ts": epoch or int(log.stat().st_mtime),
+            "backfilled": True,
+        }
+        declaration = frozen_declaration(runs_dir() / f"{unit}.declaration.json", task)
+        if declaration is not None:
+            record.update(declaration)
+        append(record)
         added += 1
     print(f"backfilled {added} run(s)")
     return 0
