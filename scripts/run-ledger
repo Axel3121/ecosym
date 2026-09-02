@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""What autonomous runs came to, as far as anyone recorded it.
+"""What autonomous runs came to, and which declared tasks may begin.
 
 A run leaves behind a log, a branch and a commit. None of those say whether the
 run *landed*. This ledger is where that is written down.
 
+    run-ledger ready                    tasks whose needs and territory are free
+    run-ledger can-start <task>         check one task, failing closed
     run-ledger list                     what every run is doing or did
     run-ledger start  <task> <unit> ..  append a started record (run-task does this)
     run-ledger close  <unit> --outcome landed|dropped|superseded|failed [--evidence ..]
@@ -11,7 +13,8 @@ run *landed*. This ledger is where that is written down.
     run-ledger show   <unit>            one run's records
 
 The file is append-only JSONL. A correction is a new record, never an edit;
-the current state of a run is its last record.
+the current lifecycle state is its latest `started` or `closed` record. Audit
+events remain evidence without replacing that lifecycle state.
 
 What this tool does NOT do, because it cannot: it does not know an outcome. A
 close-out is a human claim, and a human who never runs `close` leaves a run
@@ -32,8 +35,10 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from pathlib import PurePosixPath
 
 OUTCOMES = ("landed", "dropped", "superseded", "failed")
+TASK_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 # A run's unit name is <project>-task-<task>-<epoch>, or <project>-resume-<epoch>
 # for a resumed session that carries no task of its own.
@@ -60,6 +65,101 @@ def ledger_path() -> Path:
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
+
+
+class DeclarationError(ValueError):
+    pass
+
+
+def validate_declaration_values(
+    needs: object,
+    touches: object,
+    autonomous: object = True,
+) -> dict:
+    if not isinstance(needs, list) or not all(isinstance(value, str) for value in needs):
+        raise DeclarationError("'needs' must be a list of task names")
+    if not isinstance(touches, list) or not all(isinstance(value, str) for value in touches):
+        raise DeclarationError("'touches' must be a list of repository paths")
+    if not isinstance(autonomous, bool):
+        raise DeclarationError("'autonomous' must be true or false")
+    if not touches:
+        raise DeclarationError("'touches' must name at least one repository path")
+    if len(needs) != len(set(needs)):
+        raise DeclarationError("'needs' contains a duplicate task")
+    if len(touches) != len(set(touches)):
+        raise DeclarationError("'touches' contains a duplicate path")
+
+    for need in needs:
+        if not TASK_RE.fullmatch(need) or ".." in need:
+            raise DeclarationError(f"invalid task in 'needs': {need!r}")
+    for touch in touches:
+        stripped = touch.removesuffix("/")
+        parts = PurePosixPath(stripped).parts
+        if (
+            not stripped
+            or touch.startswith("/")
+            or "\\" in touch
+            or any(part in ("", ".", "..") for part in parts)
+            or any(character in touch for character in "*?[")
+            or PurePosixPath(stripped).as_posix() != stripped
+        ):
+            raise DeclarationError(f"invalid repository path in 'touches': {touch!r}")
+    return {"needs": needs, "touches": touches, "autonomous": autonomous}
+
+
+def read_declaration(path: Path) -> dict:
+    """Read the strict YAML subset used at the start of every task spec."""
+    try:
+        lines = path.read_text().splitlines()
+    except OSError as error:
+        raise DeclarationError(f"cannot read declaration: {error}") from error
+
+    if not lines or lines[0] != "---":
+        raise DeclarationError("missing scheduling declaration at the start of the file")
+    try:
+        end = lines.index("---", 1)
+    except ValueError as error:
+        raise DeclarationError("scheduling declaration has no closing '---'") from error
+
+    values: dict[str, list[str] | None] = {"needs": None, "touches": None}
+    autonomous = True
+    autonomous_seen = False
+    current: str | None = None
+    for lineno, line in enumerate(lines[1:end], 2):
+        if not line.strip():
+            continue
+        header = re.fullmatch(r"(needs|touches):(?: (\[\]))?", line)
+        if header:
+            name = header.group(1)
+            if values[name] is not None:
+                raise DeclarationError(f"line {lineno}: duplicate '{name}' field")
+            values[name] = []
+            current = None if header.group(2) else name
+            continue
+        mode = re.fullmatch(r"autonomous: (true|false)", line)
+        if mode:
+            if autonomous_seen:
+                raise DeclarationError(f"line {lineno}: duplicate 'autonomous' field")
+            autonomous = mode.group(1) == "true"
+            autonomous_seen = True
+            current = None
+            continue
+        item = re.fullmatch(r"  - (\S(?:.*\S)?)", line)
+        if item and current:
+            assert values[current] is not None
+            values[current].append(item.group(1))
+            continue
+        raise DeclarationError(f"line {lineno}: invalid scheduling declaration syntax")
+
+    for name in ("needs", "touches"):
+        if values[name] is None:
+            raise DeclarationError(f"missing '{name}' field")
+
+    return validate_declaration_values(
+        values["needs"] or [],
+        values["touches"] or [],
+        autonomous,
+    )
 
 
 def git(*args: str) -> str:
@@ -125,8 +225,23 @@ def by_unit(records: list[dict]) -> dict[str, list[dict]]:
     return grouped
 
 
+def main_reference() -> str:
+    """Which ref speaks for 'landed': origin/main when it exists, else local main.
+
+    `in_main` prefers `origin/main` because a local `main` only answers where
+    this checkout last pulled, and a checkout behind origin read landed work
+    as unmerged — measured 2026-09-02. `merged_branches` and
+    `branch_carries_nothing` judge a *branch* the same way `in_main` judges a
+    *commit*, so they must ask the same ref or a stale checkout reads a
+    branch that genuinely merged upstream as still open.
+    """
+    if git("rev-parse", "--verify", "--quiet", "origin/main^{commit}"):
+        return "origin/main"
+    return "main"
+
+
 def merged_branches() -> set[str]:
-    out = git("branch", "-a", "--format=%(refname:short)", "--merged", "main")
+    out = git("branch", "-a", "--format=%(refname:short)", "--merged", main_reference())
     return {b.strip().removeprefix("origin/") for b in out.splitlines() if b.strip()}
 
 
@@ -146,20 +261,27 @@ def in_main(commit: str | None) -> bool | None:
         return None
     if resolves(commit) is not True:
         return None
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(repo_root()), "merge-base", "--is-ancestor", commit, "main"],
-            capture_output=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    # 0 is yes and 1 is no; anything else is Git failing to answer at all —
-    # commonly 128 when there is no local main to compare against. Reading
-    # that as "no" would accuse a landed run on the strength of a missing ref.
-    if out.returncode not in (0, 1):
-        return None
-    return out.returncode == 0
+    # `origin/main` first: the question is whether the work reached the shared
+    # branch, and a local `main` answers only where this checkout last pulled.
+    # A checkout twenty commits behind reported a landed task as startable —
+    # measured 2026-09-02. Fall back to local `main` for a repository with no
+    # remote, and let a missing ref stay unanswered rather than become "no".
+    for reference in ("origin/main", "main"):
+        try:
+            out = subprocess.run(
+                ["git", "-C", str(repo_root()), "merge-base", "--is-ancestor", commit, reference],
+                capture_output=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        # 0 is yes and 1 is no; anything else is Git failing to answer at all —
+        # commonly 128 when the ref does not exist here. Reading that as "no"
+        # would accuse a landed run on the strength of a missing ref, so try
+        # the next reference instead.
+        if out.returncode in (0, 1):
+            return out.returncode == 0
+    return None
 
 
 def resolves(commit: str | None) -> bool | None:
@@ -201,7 +323,7 @@ def branch_carries_nothing(branch: str) -> bool | None:
     happens for a branch that exists only on the remote and whenever local
     main is missing — and an unanswered question must not become evidence.
     """
-    out = git("rev-list", "--count", f"main..{branch}")
+    out = git("rev-list", "--count", f"{main_reference()}..{branch}")
     if not out.isdigit():
         return None
     return int(out) == 0
@@ -237,6 +359,15 @@ def git_state(
         return "in-main"
     if reachable is False:
         return "unmerged"
+    if commit:
+        # A result commit was named but Git could not say whether it is
+        # reachable from main (`in_main` returned None: both `origin/main`
+        # and `main` failed to answer). The branch fallback below speaks for
+        # the branch, not for this commit, and its contract is to run only
+        # when no result commit exists — falling through here would let an
+        # uncheckable claim borrow the branch's standing and be reported as
+        # `merged` or `open` instead of the honest `unproven`.
+        return "unproven"
 
     # No usable result commit. The branch is all that is left, and it can
     # only speak for itself when Git positively says it carries commits of
@@ -253,6 +384,11 @@ def log_mtime(unit: str) -> int | None:
 
 
 def unit_active(unit: str) -> bool:
+    return unit_activity(unit) is True
+
+
+def unit_activity(unit: str) -> bool | None:
+    """True while a unit can still touch files, False only when confirmed done."""
     try:
         out = subprocess.run(
             ["systemctl", "--user", "is-active", f"{unit}.service"],
@@ -261,22 +397,442 @@ def unit_active(unit: str) -> bool:
             timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
+        return None
+    state = out.stdout.strip()
+    if state in ("active", "activating", "reloading", "deactivating"):
+        return True
+    if state in ("inactive", "failed", "unknown", "not-found"):
         return False
-    return out.stdout.strip() == "active"
+    return None
+
+
+def tasks_root() -> Path:
+    """Where task specifications live.
+
+    They are our workflow rather than the product, so they sit outside the
+    repository (DEVELOPMENT.md, "Repository artifacts"). ECOSYM_TASKS names
+    that directory; a checkout that still carries them in-tree keeps working
+    through the fallback.
+    """
+    configured = os.environ.get("ECOSYM_TASKS")
+    if configured:
+        return Path(configured)
+    in_tree = repo_root() / "docs" / "tasks"
+    if in_tree.is_dir():
+        return in_tree
+    data_home = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(data_home) / "ecosym" / "tasks"
+
+
+def path_parts(path: str) -> tuple[str, ...]:
+    return PurePosixPath(path.removesuffix("/")).parts
+
+
+def paths_overlap(left: str, right: str) -> bool:
+    left_parts = path_parts(left)
+    right_parts = path_parts(right)
+    shorter = min(len(left_parts), len(right_parts))
+    return left_parts[:shorter] == right_parts[:shorter]
+
+
+def require_task_spec_touch(task: object, declaration: dict) -> dict:
+    if not isinstance(task, str) or not TASK_RE.fullmatch(task) or ".." in task:
+        raise DeclarationError(f"invalid task name: {task!r}")
+    spec = f"docs/tasks/{task}.md"
+    if not any(paths_overlap(spec, touch) for touch in declaration["touches"]):
+        raise DeclarationError(f"'touches' must cover {spec}, which run-task copies into the worktree")
+    return declaration
+
+
+def record_declaration(record: dict) -> dict | None:
+    try:
+        return require_task_spec_touch(
+            record.get("task"),
+            validate_declaration_values(
+                record.get("needs"),
+                record.get("touches"),
+                record.get("autonomous", True),
+            ),
+        )
+    except DeclarationError:
+        return None
+
+
+def started_record(records: list[dict]) -> dict | None:
+    started = [record for record in records if record.get("event") == "started"]
+    return next(
+        (record for record in reversed(started) if not record.get("backfilled")),
+        started[-1] if started else None,
+    )
+
+
+def current_lifecycle_record(records: list[dict]) -> dict | None:
+    lifecycle = [
+        record
+        for record in records
+        if record.get("event") in ("started", "closed")
+    ]
+    return next(
+        (
+            record
+            for record in reversed(lifecycle)
+            if record.get("event") == "closed" or not record.get("backfilled")
+        ),
+        lifecycle[-1] if lifecycle else None,
+    )
+
+
+def git_backed_landed_results(records: list[dict]) -> dict[str, set[str]]:
+    """Human landed claims with a non-empty declared diff that Git corroborates."""
+    landed: dict[str, set[str]] = {}
+    for unit_records in by_unit(records).values():
+        record = current_lifecycle_record(unit_records) or {}
+        started = started_record(unit_records)
+        task = record.get("task")
+        declaration = record_declaration(started or {})
+        base_commit = (started or {}).get("base_commit")
+        result_commit = record.get("result_commit")
+        changed = None
+        if (
+            isinstance(base_commit, str)
+            and isinstance(result_commit, str)
+            and base_commit != result_commit
+        ):
+            changed = git_paths(
+                repo_root(),
+                "diff",
+                "--name-only",
+                "--no-renames",
+                "-z",
+                base_commit,
+                result_commit,
+                "--",
+            )
+        if (
+            record.get("event") == "closed"
+            and record.get("outcome") == "landed"
+            and isinstance(task, str)
+            and declaration is not None
+            and changed
+            and all(
+                any(paths_overlap(path, declared) for declared in declaration["touches"])
+                for path in changed
+            )
+            and is_ancestor(base_commit, result_commit) is True
+            and in_main(result_commit) is True
+        ):
+            landed.setdefault(task, set()).add(result_commit)
+            continue
+        # A run that predates the declaration format has no base_commit and no
+        # frozen territory, so the diff above cannot be audited. That is a
+        # missing territory audit, not a missing landing: `in_main` is itself
+        # Git's answer to whether the work arrived. Refusing these entirely
+        # made every historical task unlandable — measured 2026-09-02, zero of
+        # 22 landed tasks were recognised, so `needs` could never be satisfied
+        # by anything older than the scheduler and `ready` offered finished
+        # work as startable. Trust the weaker claim, and only the weaker claim.
+        if (
+            record.get("event") == "closed"
+            and record.get("outcome") == "landed"
+            and isinstance(task, str)
+            and base_commit is None
+            and isinstance(result_commit, str)
+            and in_main(result_commit) is True
+        ):
+            landed.setdefault(task, set()).add(result_commit)
+    return landed
+
+
+def running_runs(records: list[dict]) -> tuple[list[dict], list[str]]:
+    """Live declarations plus uncertainties that prevent a safe answer."""
+    grouped = by_unit(records)
+    running: list[dict] = []
+    unknown: list[str] = []
+    for unit, unit_records in grouped.items():
+        activity = unit_activity(unit)
+        if activity is None:
+            unknown.append(f"cannot determine whether run {unit} is active")
+            continue
+        if not activity:
+            continue
+        started = started_record(unit_records)
+        task = (started or {}).get("task") or parse_unit(unit)[1]
+        declaration = record_declaration(started or {})
+        running.append(
+            {
+                "unit": unit,
+                "task": task,
+                "touches": declaration["touches"] if declaration else None,
+            }
+        )
+
+    logs = {path.stem for path in runs_dir().glob("*.log")}
+    for unit in sorted(logs - set(grouped)):
+        activity = unit_activity(unit)
+        if activity is None:
+            unknown.append(f"cannot determine whether unrecorded run {unit} is active")
+        elif activity:
+            task = parse_unit(unit)[1]
+            declaration = frozen_declaration(
+                runs_dir() / f"{unit}.declaration.json",
+                task,
+            )
+            running.append(
+                {
+                    "unit": unit,
+                    "task": task,
+                    "touches": declaration["touches"] if declaration else None,
+                }
+            )
+    return running, unknown
+
+
+def scheduling_snapshot(records: list[dict]) -> dict:
+    running, unknown = running_runs(records)
+    return {
+        "landed": git_backed_landed_results(records),
+        "running": running,
+        "unknown": unknown,
+    }
+
+
+def start_reasons(
+    task: str,
+    declaration: dict,
+    snapshot: dict,
+    candidate_commit: str | None,
+) -> list[str]:
+    reasons: list[str] = []
+    if declaration["autonomous"] is False:
+        reasons.append("requires a supervised or human run; ordinary run-task is not permitted")
+    landed = snapshot["landed"]
+    if task in landed:
+        reasons.append(f"task {task} already landed")
+    unmet = [need for need in declaration["needs"] if need not in landed]
+    if unmet:
+        reasons.append(f"needs not landed: {', '.join(unmet)}")
+    elif candidate_commit is None and declaration["needs"]:
+        reasons.append("cannot determine which commit the task would start from")
+    elif candidate_commit:
+        absent = [
+            need
+            for need in declaration["needs"]
+            if not any(
+                is_ancestor(result_commit, candidate_commit) is True
+                for result_commit in landed[need]
+            )
+        ]
+        if absent:
+            reasons.append(f"candidate commit does not contain landed needs: {', '.join(absent)}")
+
+    reasons.extend(snapshot["unknown"])
+    for run in snapshot["running"]:
+        held = run["touches"]
+        if held is None:
+            reasons.append(
+                f"running task {run['task']} ({run['unit']}) has no launch-time territory declaration"
+            )
+            continue
+        overlaps = sorted(
+            {
+                f"{candidate} <> {occupied}"
+                for candidate in declaration["touches"]
+                for occupied in held
+                if paths_overlap(candidate, occupied)
+            }
+        )
+        if overlaps:
+            reasons.append(
+                f"territory conflicts with running task {run['task']} ({run['unit']}): "
+                + ", ".join(overlaps)
+            )
+    return reasons
 
 
 def cmd_start(args: argparse.Namespace) -> int:
-    append(
-        {
-            "event": "started",
-            "unit": args.unit,
-            "task": args.task,
-            "branch": args.branch,
-            "worktree": args.worktree,
-            "base_commit": args.commit or git("rev-parse", "HEAD"),
-        }
-    )
+    # A task name reaches the ledger, the worktree path and the unit name. It
+    # is validated below only when a declaration accompanies it, so without
+    # this a bare `start ../../evil` writes a traversal straight into the
+    # record every later answer is derived from. Refuse it at the door.
+    if not TASK_RE.fullmatch(args.task) or ".." in args.task:
+        print(f"invalid task name: {args.task!r}", file=sys.stderr)
+        return 2
+    record = {
+        "event": "started",
+        "unit": args.unit,
+        "task": args.task,
+        "branch": args.branch,
+        "worktree": args.worktree,
+        "base_commit": args.commit or git("rev-parse", "HEAD"),
+    }
+    if args.declaration:
+        try:
+            declaration = require_task_spec_touch(
+                args.task,
+                parse_declaration_json(args.declaration),
+            )
+        except (json.JSONDecodeError, DeclarationError) as error:
+            print(f"invalid frozen declaration: {error}", file=sys.stderr)
+            return 1
+        record.update(declaration)
+        record["spec"] = str(Path(args.spec).resolve()) if args.spec else None
+    elif args.spec:
+        try:
+            declaration = require_task_spec_touch(
+                args.task,
+                read_declaration(Path(args.spec)),
+            )
+        except DeclarationError as error:
+            print(f"{args.spec}: {error}", file=sys.stderr)
+            return 1
+        record.update(declaration)
+        record["spec"] = str(Path(args.spec).resolve())
+    append(record)
     return 0
+
+
+def parse_declaration_json(value: str) -> dict:
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict):
+        raise DeclarationError("frozen declaration is not an object")
+    return validate_declaration_values(
+        parsed.get("needs"),
+        parsed.get("touches"),
+        parsed.get("autonomous", True),
+    )
+
+
+def frozen_declaration(path: Path, task: object) -> dict | None:
+    try:
+        return require_task_spec_touch(task, parse_declaration_json(path.read_text()))
+    except (OSError, json.JSONDecodeError, DeclarationError):
+        return None
+
+
+def cmd_declaration(args: argparse.Namespace) -> int:
+    try:
+        declaration = read_declaration(Path(args.spec))
+    except DeclarationError as error:
+        print(f"{args.spec}: {error}", file=sys.stderr)
+        return 1
+    print(json.dumps(declaration, separators=(",", ":"), sort_keys=True))
+    return 0
+
+
+def git_paths(worktree: Path, *args: str) -> set[str] | None:
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(worktree), *args],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return {
+        value.decode("utf-8", errors="surrogateescape")
+        for value in out.stdout.split(b"\0")
+        if value
+    }
+
+
+def git_value(worktree: Path, *args: str) -> str | None:
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(worktree), *args],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
+def is_ancestor(base: str, result: str) -> bool | None:
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root()), "merge-base", "--is-ancestor", base, result],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode not in (0, 1):
+        return None
+    return out.returncode == 0
+
+
+def changed_paths(started: dict, result_commit: str | None) -> tuple[set[str] | None, str | None]:
+    worktree_value = started.get("worktree")
+    base_commit = started.get("base_commit")
+    if not isinstance(worktree_value, str) or not worktree_value:
+        return None, "the run has no recorded worktree"
+    if not isinstance(base_commit, str) or not base_commit:
+        return None, "the run has no recorded base commit"
+    worktree = Path(worktree_value)
+    if not worktree.is_dir():
+        return None, f"the recorded worktree does not exist: {worktree}"
+
+    target = result_commit or "HEAD"
+    if result_commit:
+        head_commit = git_value(worktree, "rev-parse", "HEAD^{commit}")
+        target_commit = git_value(worktree, "rev-parse", f"{result_commit}^{{commit}}")
+        if not head_commit or not target_commit:
+            return None, "Git could not resolve the result commit and worktree HEAD"
+        if head_commit != target_commit:
+            return None, f"result commit {target_commit} is not worktree HEAD {head_commit}"
+    committed = git_paths(
+        worktree,
+        "diff",
+        "--name-only",
+        "--no-renames",
+        "-z",
+        base_commit,
+        target,
+        "--",
+    )
+    unstaged = git_paths(worktree, "diff", "--name-only", "--no-renames", "-z", "--")
+    staged = git_paths(
+        worktree,
+        "diff",
+        "--cached",
+        "--name-only",
+        "--no-renames",
+        "-z",
+        "--",
+    )
+    untracked = git_paths(worktree, "ls-files", "--others", "--exclude-standard", "-z")
+    # `--exclude-standard` hides anything matched by .gitignore, so a
+    # run-created path the ignore rules happen to cover — docs/tasks/ is the
+    # concrete case — would otherwise vanish from `changed` and therefore from
+    # `undeclared`, letting an undeclared write close as `landed` because the
+    # audit never saw it. A second call for exactly the ignored-but-present
+    # untracked files closes that gap without touching the tracked, staged,
+    # or committed collections above.
+    ignored = git_paths(worktree, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+    if any(paths is None for paths in (committed, unstaged, staged, untracked, ignored)):
+        return None, "Git could not determine every path changed by the run"
+    return set().union(committed or set(), unstaged or set(), staged or set(), untracked or set(), ignored or set()), None
+
+
+def territory_audit(
+    started: dict,
+    result_commit: str | None,
+) -> tuple[list[str] | None, list[str] | None, str | None]:
+    declaration = record_declaration(started)
+    if declaration is None:
+        return None, None, "the run has no valid launch-time territory declaration"
+    changed, error = changed_paths(started, result_commit)
+    if changed is None:
+        return None, None, error
+    undeclared = sorted(
+        path
+        for path in changed
+        if not any(paths_overlap(path, declared) for declared in declaration["touches"])
+    )
+    return sorted(changed), undeclared, None
 
 
 def cmd_close(args: argparse.Namespace) -> int:
@@ -298,27 +854,70 @@ def cmd_close(args: argparse.Namespace) -> int:
             print(f"no run named {args.unit} in the ledger", file=sys.stderr)
             return 1
 
-    last = grouped[unit][-1]
-    if last.get("event") == "closed" and not args.reopen:
+    unit_records = grouped[unit]
+    lifecycle = current_lifecycle_record(unit_records) or unit_records[-1]
+    if lifecycle.get("event") == "closed" and not args.reopen:
         print(
-            f"{unit} is already closed as {last.get('outcome')!r}; "
+            f"{unit} is already closed as {lifecycle.get('outcome')!r}; "
             f"pass --reopen to record a correction",
             file=sys.stderr,
         )
         return 1
 
+    started = started_record(unit_records) or lifecycle
+    changed, undeclared, audit_error = territory_audit(started, args.commit)
+    if args.outcome == "landed":
+        if audit_error:
+            append(
+                {
+                    "event": "territory-audit-failed",
+                    "unit": unit,
+                    "task": started.get("task"),
+                    "reason": audit_error,
+                }
+            )
+            print(f"cannot close {unit} as landed: {audit_error}", file=sys.stderr)
+            return 1
+        if undeclared:
+            append(
+                {
+                    "event": "territory-violation",
+                    "unit": unit,
+                    "task": started.get("task"),
+                    "changed_paths": changed,
+                    "undeclared_paths": undeclared,
+                }
+            )
+            print(
+                f"cannot close {unit} as landed; paths outside its declared territory: "
+                + ", ".join(undeclared),
+                file=sys.stderr,
+            )
+            return 1
+
     append(
         {
             "event": "closed",
             "unit": unit,
-            "task": last.get("task"),
-            "branch": args.branch or last.get("branch"),
+            "task": started.get("task"),
+            "branch": args.branch or started.get("branch"),
             "outcome": args.outcome,
             "evidence": args.evidence,
             # The commit a run STARTED from is its base, and proves nothing
             # about the work. Only a commit named at close-out is a result.
-            "base_commit": last.get("base_commit") or last.get("commit"),
+            "base_commit": started.get("base_commit") or started.get("commit"),
             "result_commit": args.commit,
+            "changed_paths": changed,
+            "undeclared_paths": undeclared,
+            "territory_audit": (
+                "unknown"
+                if audit_error
+                else "failed"
+                if undeclared
+                else "passed"
+                if changed is not None
+                else None
+            ),
         }
     )
     print(f"{unit}: {args.outcome}")
@@ -334,19 +933,21 @@ def cmd_backfill(args: argparse.Namespace) -> int:
         if unit in known:
             continue
         project, task, epoch = parse_unit(unit)
-        append(
-            {
-                "event": "started",
-                "unit": unit,
-                "task": task,
-                "project": project,
-                "branch": None,
-                "worktree": None,
-                "base_commit": None,
-                "ts": epoch or int(log.stat().st_mtime),
-                "backfilled": True,
-            }
-        )
+        record = {
+            "event": "started",
+            "unit": unit,
+            "task": task,
+            "project": project,
+            "branch": None,
+            "worktree": None,
+            "base_commit": None,
+            "ts": epoch or int(log.stat().st_mtime),
+            "backfilled": True,
+        }
+        declaration = frozen_declaration(runs_dir() / f"{unit}.declaration.json", task)
+        if declaration is not None:
+            record.update(declaration)
+        append(record)
         added += 1
     print(f"backfilled {added} run(s)")
     return 0
@@ -359,6 +960,97 @@ def cmd_show(args: argparse.Namespace) -> int:
         return 1
     for r in grouped[args.unit]:
         print(json.dumps(r, sort_keys=True))
+    return 0
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    failed = False
+    for value in args.specs:
+        path = Path(value)
+        try:
+            declaration = read_declaration(path)
+            if path.resolve().parent == tasks_root().resolve():
+                require_task_spec_touch(path.stem, declaration)
+        except DeclarationError as error:
+            print(f"{path}: {error}", file=sys.stderr)
+            failed = True
+    return 1 if failed else 0
+
+
+def declaration_for_task(task: str, spec: str | None = None) -> tuple[dict | None, str | None]:
+    path = Path(spec) if spec else tasks_root() / f"{task}.md"
+    try:
+        return require_task_spec_touch(task, read_declaration(path)), None
+    except DeclarationError as error:
+        return None, f"{path}: {error}"
+
+
+def candidate_commit_for_task(
+    task: str,
+    commit: str | None = None,
+    branch: str | None = None,
+) -> str | None:
+    if commit:
+        return git_value(repo_root(), "rev-parse", f"{commit}^{{commit}}")
+    candidate_branch = branch or f"task/{task}"
+    if git_value(repo_root(), "rev-parse", f"{candidate_branch}^{{commit}}") is None:
+        candidate_branch = "main"
+    return git_value(repo_root(), "rev-parse", f"{candidate_branch}^{{commit}}")
+
+
+def cmd_can_start(args: argparse.Namespace) -> int:
+    if args.declaration:
+        try:
+            declaration = require_task_spec_touch(
+                args.task,
+                parse_declaration_json(args.declaration),
+            )
+            error = None
+        except (json.JSONDecodeError, DeclarationError) as declaration_error:
+            declaration = None
+            error = f"invalid frozen declaration: {declaration_error}"
+    else:
+        declaration, error = declaration_for_task(args.task, args.spec)
+    if error:
+        print(f"cannot start {args.task}: {error}", file=sys.stderr)
+        return 1
+    assert declaration is not None
+    candidate_commit = candidate_commit_for_task(args.task, args.commit, args.branch)
+    reasons = start_reasons(
+        args.task,
+        declaration,
+        scheduling_snapshot(read_records()),
+        candidate_commit,
+    )
+    if reasons:
+        for reason in reasons:
+            print(f"cannot start {args.task}: {reason}", file=sys.stderr)
+        return 1
+    print(f"{args.task} may start")
+    return 0
+
+
+def cmd_ready(args: argparse.Namespace) -> int:
+    records = read_records()
+    snapshot = scheduling_snapshot(records)
+    root = tasks_root()
+    specs = sorted(root.glob("*.md"))
+    if not specs:
+        print(
+            f"no task specification found under {root}; set ECOSYM_TASKS",
+            file=sys.stderr,
+        )
+        return 1
+    for path in specs:
+        task = path.stem
+        declaration, error = declaration_for_task(task, str(path))
+        if error:
+            print(f"{task} is not startable: {error}", file=sys.stderr)
+            continue
+        assert declaration is not None
+        candidate_commit = candidate_commit_for_task(task)
+        if not start_reasons(task, declaration, snapshot, candidate_commit):
+            print(task)
     return 0
 
 
@@ -375,7 +1067,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 
     rows = []
     for unit, records in grouped.items():
-        last = records[-1]
+        last = current_lifecycle_record(records) or records[-1]
         project, task, epoch = parse_unit(unit)
         branch = last.get("branch") or (
             f"task/{task}" if f"task/{task}" in all_branches else None
@@ -509,6 +1201,8 @@ def main() -> int:
     s.add_argument("--branch")
     s.add_argument("--worktree")
     s.add_argument("--commit")
+    s.add_argument("--spec", help="launch-time task specification to snapshot")
+    s.add_argument("--declaration", help="frozen declaration JSON captured before launch")
     s.set_defaults(fn=cmd_start)
 
     s = sub.add_parser("close", help="record what a run came to")
@@ -526,6 +1220,25 @@ def main() -> int:
     s = sub.add_parser("show", help="every record for one run")
     s.add_argument("unit")
     s.set_defaults(fn=cmd_show)
+
+    s = sub.add_parser("validate", help="validate task scheduling declarations")
+    s.add_argument("specs", nargs="+")
+    s.set_defaults(fn=cmd_validate)
+
+    s = sub.add_parser("declaration", help="read one task declaration as JSON")
+    s.add_argument("spec")
+    s.set_defaults(fn=cmd_declaration)
+
+    s = sub.add_parser("can-start", help="refuse a task whose needs or territory are blocked")
+    s.add_argument("task")
+    s.add_argument("--spec", help="candidate specification (defaults to docs/tasks/<task>.md)")
+    s.add_argument("--declaration", help="frozen declaration JSON to check")
+    s.add_argument("--commit", help="exact candidate commit to check for landed needs")
+    s.add_argument("--branch", help="candidate branch when no exact commit is supplied")
+    s.set_defaults(fn=cmd_can_start)
+
+    s = sub.add_parser("ready", help="list declared tasks that may begin now")
+    s.set_defaults(fn=cmd_ready)
 
     args = p.parse_args()
     return args.fn(args)
