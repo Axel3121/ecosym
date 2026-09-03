@@ -50,12 +50,60 @@ export const fixture: Observations = {
       seatName: "Moot",
       mandate: { alone: ["listen", "transcribe"], council: ["speak on my behalf"] },
     },
+    {
+      id: "carthago",
+      name: "Carthago",
+      domain: "shorts-content — research and scripts",
+      seatName: "Suffet",
+      voice: "Punic trader: brisk, counts everything twice.",
+      mandate: { alone: ["research topics", "draft scripts"], council: ["approve a script for production"] },
+    },
+    {
+      id: "alexandria",
+      name: "Alexandria",
+      domain: "llm-wiki — the knowledge base",
+      seatName: "Bibliotekaren",
+      voice: "Librarian: precise, cites sources, dislikes guesses.",
+      mandate: { alone: ["read notes", "link pages", "index sessions"], council: ["delete a page", "rewrite an invariant"] },
+    },
+    {
+      id: "kyiv",
+      name: "Kyiv",
+      domain: "cron — the scheduled watchers",
+      seatName: "Veche",
+      voice: "Town assembly: plain, reports what fired and what did not.",
+      mandate: { alone: ["run on schedule", "report"], council: ["change a schedule", "add a watcher"] },
+    },
+    {
+      id: "uruk",
+      name: "Uruk",
+      domain: "ecosym-backend — observation and petitions",
+      seatName: "Ensi",
+      mandate: { alone: ["read observations"], council: ["submit a petition on my behalf"] },
+    },
+    {
+      id: "tenochtitlan",
+      name: "Tenochtitlan",
+      domain: "himalaya — mail",
+      seatName: "Tlatoani",
+      mandate: { alone: ["read mail", "draft replies"], council: ["send mail"] },
+    },
+    {
+      id: "harappa",
+      name: "Harappa",
+      domain: "obsidian — the vault",
+      seatName: "Rådet i Harappa",
+      mandate: { alone: ["read notes"], council: ["write notes"] },
+    },
   ],
   lastSeen: {
     roma: min(2),
     midgard: min(0),
     edo: min(47),
-    // thule: never observed
+    carthago: min(9),
+    alexandria: min(130),
+    kyiv: min(1),
+    // thule, uruk, tenochtitlan, harappa: never observed
   },
   runs: [
     // Roma — one live tree, one finished
@@ -71,6 +119,14 @@ export const fixture: Observations = {
     // Edo — nothing running, two traces
     { id: "e0", civilizationId: "edo", label: "render short 041", tool: "ffmpeg", startedAt: min(200), endedAt: min(180), live: false },
     { id: "e1", civilizationId: "edo", label: "schedule 041", startedAt: min(170), endedAt: min(168), live: false },
+    // Carthago — live
+    { id: "c1", civilizationId: "carthago", label: "research: hook formats", tool: "browser", startedAt: min(14), live: true },
+    { id: "c0", civilizationId: "carthago", label: "script 042 draft", startedAt: min(260), endedAt: min(200), live: false },
+    // Alexandria — quiet, one trace
+    { id: "a0", civilizationId: "alexandria", label: "index sessions", tool: "python", startedAt: min(160), endedAt: min(131), live: false },
+    // Kyiv — live: two watchers firing
+    { id: "k1", civilizationId: "kyiv", label: "price watch", tool: "python", startedAt: min(3), live: true },
+    { id: "k2", civilizationId: "kyiv", label: "blog watch", tool: "python", startedAt: min(1), live: true },
     // Thule — has runs but is unobserved: they must not appear
     { id: "t0", civilizationId: "thule", label: "listen", startedAt: min(30), live: true },
   ],
