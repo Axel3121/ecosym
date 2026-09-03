@@ -157,6 +157,12 @@ systemd-run --user --unit="$UNIT" --collect \
   "Follow the instructions in the attached files." \
   -f "$SPEC" -f scripts/run-instruction.md
 
+systemd-run --user --unit="${UNIT}-committer" --collect \
+  --working-directory="${WORKTREE:-$REPO}" \
+  "$REPO/scripts/commit-servicer" "$UNIT" "${WORKTREE:-$REPO}" \
+  "$RUNS/${UNIT}.channel" "$LOG" "$RUNS/${UNIT}.declaration.json" \
+  >/dev/null 2>&1 || echo "warning: no commit servicer for $UNIT" >&2
+
 systemd-run --user --unit="${UNIT}-watchdog" --collect \
   "$REPO/scripts/run-watchdog" "$UNIT" "$LOG" "${ECOSYM_IDLE_SECONDS:-900}" \
   >/dev/null 2>&1 || echo "warning: no watchdog for $UNIT" >&2
