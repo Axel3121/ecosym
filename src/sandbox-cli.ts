@@ -36,6 +36,7 @@ try {
       process.env.ECOSYM_SANDBOX_EXEC ?? join(home, ".opencode", "bin", "opencode");
     const arguments_ = sandboxArguments({
       childArguments: process.argv.slice(2),
+      commitChannel: process.env.ECOSYM_COMMIT_CHANNEL,
       environment: process.env,
       executable,
       home,

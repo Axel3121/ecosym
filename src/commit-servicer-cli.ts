@@ -12,16 +12,18 @@ if (!unit || !worktree || !channel || !log || !declaration) {
 
 prepareChannel(channel);
 
-serviceUntilGone({
-  channel,
-  declaredTouches: readDeclaredTouches(declaration),
-  isRunning: () => {
+serviceUntilGone(
+  {
+    channel,
+    declaredTouches: readDeclaredTouches(declaration),
+    log,
+    worktree,
+  },
+  () => {
     try {
       return spawnSync("systemctl", ["--user", "is-active", "--quiet", unit]).status === 0;
     } catch {
       return false;
     }
   },
-  log,
-  worktree,
-});
+);

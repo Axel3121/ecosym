@@ -819,6 +819,111 @@ test("the watchdog starts after the run's own unit exists, not before", () => {
   }
 });
 
+test("the sandboxed run is told its commit channel, and the channel exists before it launches", () => {
+  // sandboxArguments only binds and names a channel directory that already
+  // exists (existsSync-gated). The committer's own systemd-run call creates
+  // that directory too (prepareChannel in the servicer), but systemd-run
+  // returns as soon as the unit is registered — it does not wait for the
+  // committer process to actually start. If run-task relied on the
+  // committer to create the channel, the sandbox launch and the channel's
+  // creation would race, and a run could start with no
+  // ECOSYM_COMMIT_CHANNEL at all depending purely on scheduling luck.
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-run-task-channel-"));
+  const repository = join(directory, "repository");
+  const scripts = join(repository, "scripts");
+  const tasks = join(repository, "docs", "tasks");
+  const dataHome = join(directory, "data");
+  const bin = join(directory, "bin");
+  const capture = join(directory, "systemd-arguments");
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(tasks, { recursive: true });
+  mkdirSync(bin);
+  copyFileSync(runTask, join(scripts, "run-task"));
+  chmodSync(join(scripts, "run-task"), 0o700);
+  writeFileSync(join(scripts, "ecosym-sandbox"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  writeFileSync(join(scripts, "run-instruction.md"), "Test instruction\n");
+  writeFileSync(join(tasks, "example.md"), "# Test task\n");
+  // Captures every full argument list, one call per line, and — for the
+  // run's own sandbox call specifically — snapshots whether the channel
+  // directory the run was just told about already exists at the moment
+  // systemd-run is invoked (before any process it starts has run at all).
+  writeFileSync(
+    join(bin, "systemd-run"),
+    [
+      "#!/bin/sh",
+      'printf "%s\\t" "$@" >> "$SYSTEMD_CAPTURE"',
+      'printf "\\n" >> "$SYSTEMD_CAPTURE"',
+      "for a in \"$@\"; do",
+      '  case "$a" in',
+      "    --setenv=ECOSYM_COMMIT_CHANNEL=*)",
+      '      channel="${a#--setenv=ECOSYM_COMMIT_CHANNEL=}"',
+      '      if [ -d "$channel/requests" ] && [ -d "$channel/replies" ]; then',
+      '        echo "channel-ready:$channel" >> "$SYSTEMD_CAPTURE"',
+      "      else",
+      '        echo "channel-missing:$channel" >> "$SYSTEMD_CAPTURE"',
+      "      fi",
+      "      ;;",
+      "  esac",
+      "done",
+      "exit 0",
+    ].join("\n"),
+    { mode: 0o700 },
+  );
+
+  try {
+    git(repository, ["init", "-b", "main"]);
+    git(repository, ["add", "."]);
+    commit(repository, "fixture");
+
+    const result = spawnSync(join(scripts, "run-task"), ["example"], {
+      cwd: repository,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ECOSYM_PORT: "3215",
+        ECOSYM_PROJECT: "",
+        ECOSYM_WORKTREE: "",
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        SYSTEMD_CAPTURE: capture,
+        XDG_DATA_HOME: dataHome,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+
+    const output = readFileSync(capture, "utf8");
+    assert.match(
+      output,
+      /--setenv=ECOSYM_COMMIT_CHANNEL=/u,
+      "run-task never told the sandboxed run its commit channel",
+    );
+    assert.match(
+      output,
+      /channel-ready:/u,
+      "the channel directory did not exist yet when the sandboxed run was launched",
+    );
+    assert.doesNotMatch(
+      output,
+      /channel-missing:/u,
+      "the sandboxed run could have started before its channel was created",
+    );
+
+    const channelLine = output
+      .split("\n")
+      .find((line) => line.startsWith("channel-ready:"));
+    assert.ok(channelLine, output);
+    const channelPath = channelLine!.slice("channel-ready:".length);
+    // The same path must be handed to the committer as its channel argument,
+    // not a second, disconnected directory.
+    assert.ok(
+      output.includes(channelPath) &&
+        output.split(channelPath).length - 1 >= 2,
+      "the sandbox's channel and the committer's channel argument must be the same path",
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("a task name that escapes the specification directory is refused", () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-run-task-name-"));
   const repository = join(directory, "repository");
