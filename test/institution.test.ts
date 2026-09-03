@@ -156,6 +156,45 @@ test("resolution refuses an unknown and a dissolved civilization", async () => {
   assert.equal(dissolved.output.error, "civilization_dissolved");
 });
 
+test("a second, structurally different civilization is founded from configuration alone", async () => {
+  // PRODUCT.md: "the second civilization must be foundable without writing
+  // code. If it cannot be, the engine was not general." Nothing below touches
+  // src/ — the only input is a different JSON document.
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-institution-second-"));
+  const xdgDataHome = join(directory, "data");
+
+  const firstPath = join(directory, "first.json");
+  writeFileSync(firstPath, JSON.stringify(mandateConfig()));
+  assert.equal((await runCli(["found", firstPath], xdgDataHome)).output.outcome, "founded");
+
+  const secondPath = join(directory, "second.json");
+  writeFileSync(
+    secondPath,
+    JSON.stringify({
+      schemaVersion: 1,
+      id: "civilization:household",
+      domain: "the money and the house",
+      sources: ["bank-export", "energy-meter"],
+      mayActAlone: ["read.balance", "read.meter", "summarise.month"],
+      mustEscalate: ["move.money", "sign.contract"],
+    }),
+  );
+  const second = await runCli(["found", secondPath], xdgDataHome);
+  assert.equal(second.code, 0);
+  assert.equal(second.output.outcome, "founded");
+
+  // Each resolves to its own authority, with its own derived digest.
+  const one = await runCli(["resolve-authority", "civilization:engineering"], xdgDataHome);
+  const two = await runCli(["resolve-authority", "civilization:household"], xdgDataHome);
+  const digestOne = (one.output.authorityContext as AuthorityContext).authorityContext;
+  const digestTwo = (two.output.authorityContext as AuthorityContext).authorityContext;
+  assert.notEqual(digestOne.mandateDigest, digestTwo.mandateDigest);
+  assert.equal(
+    digestTwo.mandateDigest,
+    `sha256:${sha256(canonicalJson(two.output.mandate as JsonValue))}`,
+  );
+});
+
 async function runCli(arguments_: string[], xdgDataHome: string): Promise<CliResult> {
   const child = spawn(process.execPath, [cli, ...arguments_], {
     env: { ...process.env, XDG_DATA_HOME: xdgDataHome },
