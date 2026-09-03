@@ -57,7 +57,6 @@ export function sandboxArguments(input: SandboxArgumentsInput): string[] {
     join(input.home, ".local", "share", "opencode"),
     join(input.home, ".cache", "opencode"),
     join(input.home, ".local", "state", "opencode"),
-    ...(input.project === undefined ? [] : [join(resolve(input.project), ".git")]),
   ]).map((path) => ({ destination: path, source: path, writable: true }));
   const readonlyMounts = existingMounts([
     join(input.home, ".opencode"),
@@ -66,6 +65,16 @@ export function sandboxArguments(input: SandboxArgumentsInput): string[] {
     join(input.home, ".gitconfig"),
     join(input.home, ".local", "bin"),
     join(input.home, ".nvm"),
+    // Read-only, not writable: a run that can write inside .git owns the host.
+    // Ten paths from that write to host execution were demonstrated — four
+    // hooks, and core.hooksPath, filter.smudge with info/attributes,
+    // core.fsmonitor, core.sshCommand, credential.helper and a bang alias
+    // through .git/config. core.fsmonitor fires on `git status`;
+    // reference-transaction fired three times from one commit. Screening those
+    // keys would be a deny-list against a surface git releases keep widening,
+    // so the run does not write there at all and commits through a broker
+    // outside this boundary.
+    ...(input.project === undefined ? [] : [join(resolve(input.project), ".git")]),
   ]).map((path) => ({ destination: path, source: path, writable: false }));
   const sourceMounts = input.sourceMounts.map((mount) => ({ ...mount, writable: false }));
   const protectedSourceDirectories = sourceProtectionRoots(
