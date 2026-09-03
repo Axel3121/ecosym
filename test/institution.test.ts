@@ -198,6 +198,23 @@ test("resolution refuses an unknown and a dissolved civilization", async () => {
     (await runCli(["dissolve", civilizationId], xdgDataHome)).output.outcome,
     "dissolved",
   );
+  const database = new DatabaseSync(join(xdgDataHome, "ecosym", "observations.sqlite"), {
+    readOnly: true,
+  });
+  const dissolutionHistory = database
+    .prepare(
+      `SELECT revision, previous_revision
+         FROM mandate_revisions
+        WHERE civilization_id = ?
+        ORDER BY revision_order`,
+    )
+    .all(civilizationId)
+    .map((row) => ({ ...(row as Record<string, unknown>) }));
+  database.close();
+  assert.deepEqual(dissolutionHistory, [
+    { revision: "revision:1", previous_revision: null },
+    { revision: "revision:2", previous_revision: "revision:1" },
+  ]);
   const dissolved = await runCli(["resolve-authority", civilizationId], xdgDataHome);
   assert.notEqual(dissolved.code, 0);
   assert.equal(dissolved.output.error, "civilization_dissolved");

@@ -29,6 +29,7 @@ import {
 } from "./verification-facts.ts";
 
 const STORE_SCHEMA_VERSION = 12;
+const LEGACY_REBUILD_SCHEMA_VERSION = 9;
 const STORE_FILENAME = "observations.sqlite";
 const BUSY_RETRY_WINDOW_MILLISECONDS = 250;
 const CREATE_COLLECTION_ATTEMPTS = `
@@ -121,8 +122,7 @@ const CREATE_INSTITUTION = `
   CREATE TABLE IF NOT EXISTS civilizations (
     civilization_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    founded_at TEXT NOT NULL,
-    dissolved_at TEXT
+    founded_at TEXT NOT NULL
   ) STRICT;
 
   CREATE TABLE IF NOT EXISTS mandate_revisions (
@@ -131,6 +131,7 @@ const CREATE_INSTITUTION = `
     mandate_id TEXT NOT NULL,
     revision TEXT NOT NULL,
     previous_revision TEXT,
+    status TEXT NOT NULL CHECK (status IN ('active', 'dissolved')),
     mandate_json TEXT NOT NULL,
     mandate_digest TEXT NOT NULL,
     recorded_at TEXT NOT NULL,
@@ -572,6 +573,7 @@ export class ObservationStore {
         mandateId,
         "revision:1",
         null,
+        "active",
         parsed.mandate,
         timestamp,
       );
@@ -587,23 +589,25 @@ export class ObservationStore {
     const timestamp = now.toISOString();
     return this.#transaction(() => {
       const existing = this.#database
-        .prepare("SELECT dissolved_at FROM civilizations WHERE civilization_id = ?")
-        .get(civilizationId) as { dissolved_at: null | string } | undefined;
+        .prepare("SELECT 1 AS found FROM civilizations WHERE civilization_id = ?")
+        .get(civilizationId) as { found: 1 } | undefined;
       if (existing === undefined) {
         throw new CivilizationNotFoundError(civilizationId);
       }
-      if (existing.dissolved_at !== null) {
-        throw new CivilizationDissolvedError(civilizationId);
-      }
       const previous = this.#database
         .prepare(
-          `SELECT mandate_id, revision FROM mandate_revisions
+          `SELECT mandate_id, revision, status FROM mandate_revisions
             WHERE civilization_id = ?
             ORDER BY revision_order DESC LIMIT 1`,
         )
-        .get(civilizationId) as { mandate_id: string; revision: string } | undefined;
+        .get(civilizationId) as
+        | { mandate_id: string; revision: string; status: "active" | "dissolved" }
+        | undefined;
       if (previous === undefined) {
         throw new MandateUnreadableError(civilizationId);
+      }
+      if (previous.status === "dissolved") {
+        throw new CivilizationDissolvedError(civilizationId);
       }
       const previousNumber = Number.parseInt(previous.revision.replace("revision:", ""), 10);
       if (!Number.isSafeInteger(previousNumber) || `revision:${previousNumber}` !== previous.revision) {
@@ -615,6 +619,7 @@ export class ObservationStore {
         previous.mandate_id,
         revision,
         previous.revision,
+        "active",
         parsed,
         timestamp,
       );
@@ -632,25 +637,32 @@ export class ObservationStore {
    */
   resolveAuthorityContext(civilizationId: string): ResolvedAuthorityContext {
     const civilization = this.#database
-      .prepare("SELECT dissolved_at FROM civilizations WHERE civilization_id = ?")
-      .get(civilizationId) as { dissolved_at: null | string } | undefined;
+      .prepare("SELECT 1 AS found FROM civilizations WHERE civilization_id = ?")
+      .get(civilizationId) as { found: 1 } | undefined;
     if (civilization === undefined) {
       throw new CivilizationNotFoundError(civilizationId);
     }
-    if (civilization.dissolved_at != null) {
-      throw new CivilizationDissolvedError(civilizationId);
-    }
     const row = this.#database
       .prepare(
-        `SELECT mandate_id, revision, mandate_json, mandate_digest FROM mandate_revisions
+        `SELECT mandate_id, revision, status, mandate_json, mandate_digest
+           FROM mandate_revisions
           WHERE civilization_id = ?
           ORDER BY revision_order DESC LIMIT 1`,
       )
       .get(civilizationId) as
-      | { mandate_digest: string; mandate_id: string; mandate_json: string; revision: string }
+      | {
+          mandate_digest: string;
+          mandate_id: string;
+          mandate_json: string;
+          revision: string;
+          status: "active" | "dissolved";
+        }
       | undefined;
     if (row === undefined) {
       throw new CivilizationNotFoundError(civilizationId);
+    }
+    if (row.status === "dissolved") {
+      throw new CivilizationDissolvedError(civilizationId);
     }
     const mandate = parseStoredMandate(row.mandate_json, civilizationId);
     const derivedDigest = mandateDigest(mandate as unknown as JsonValue);
@@ -672,13 +684,43 @@ export class ObservationStore {
 
   dissolveCivilization(civilizationId: string, now = new Date()): boolean {
     return this.#transaction(() => {
-      const result = this.#database
+      const current = this.#database
         .prepare(
-          `UPDATE civilizations SET dissolved_at = ?
-            WHERE civilization_id = ? AND dissolved_at IS NULL`,
+          `SELECT mandate_id, revision, status, mandate_json, mandate_digest
+             FROM mandate_revisions
+            WHERE civilization_id = ?
+            ORDER BY revision_order DESC LIMIT 1`,
         )
-        .run(now.toISOString(), civilizationId);
-      return numberOfChanges(result) === 1;
+        .get(civilizationId) as
+        | {
+            mandate_digest: string;
+            mandate_id: string;
+            mandate_json: string;
+            revision: string;
+            status: "active" | "dissolved";
+          }
+        | undefined;
+      if (current === undefined || current.status === "dissolved") {
+        return false;
+      }
+      const mandate = parseStoredMandate(current.mandate_json, civilizationId);
+      if (mandateDigest(mandate as unknown as JsonValue) !== current.mandate_digest) {
+        throw new MandateUnreadableError(civilizationId);
+      }
+      const previousNumber = Number.parseInt(current.revision.replace("revision:", ""), 10);
+      if (!Number.isSafeInteger(previousNumber) || `revision:${previousNumber}` !== current.revision) {
+        throw new MandateUnreadableError(civilizationId);
+      }
+      this.#insertMandateRevision(
+        civilizationId,
+        current.mandate_id,
+        `revision:${previousNumber + 1}`,
+        current.revision,
+        "dissolved",
+        parseMandateConfig(mandate),
+        now.toISOString(),
+      );
+      return true;
     });
   }
 
@@ -687,6 +729,7 @@ export class ObservationStore {
     mandateId: string,
     revision: string,
     previousRevision: null | string,
+    status: "active" | "dissolved",
     parsed: ParsedMandateConfig,
     recordedAt: string,
   ): void {
@@ -696,14 +739,15 @@ export class ObservationStore {
       .prepare(
         `INSERT INTO mandate_revisions (
            civilization_id, mandate_id, revision, previous_revision,
-           mandate_json, mandate_digest, recorded_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           status, mandate_json, mandate_digest, recorded_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         civilizationId,
         mandateId,
         revision,
         previousRevision,
+        status,
         mandateJson,
         derivedDigest,
         recordedAt,
@@ -1712,7 +1756,7 @@ export class ObservationStore {
       if (row.user_version === 8) {
         this.#database.exec(`
           ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
-          PRAGMA user_version = ${STORE_SCHEMA_VERSION};
+          PRAGMA user_version = ${LEGACY_REBUILD_SCHEMA_VERSION};
         `);
         return;
       }
@@ -1846,7 +1890,7 @@ export class ObservationStore {
         }
         this.#database.exec(`
           ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
-          PRAGMA user_version = ${STORE_SCHEMA_VERSION};
+          PRAGMA user_version = ${LEGACY_REBUILD_SCHEMA_VERSION};
         `);
         return;
       }
@@ -1862,7 +1906,7 @@ export class ObservationStore {
             NOT NULL DEFAULT 'physical-line'
             CHECK (jsonl_record_index_mode IN ('physical-line', 'record-ordinal', 'unknown'));
           ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
-          PRAGMA user_version = ${STORE_SCHEMA_VERSION};
+          PRAGMA user_version = ${LEGACY_REBUILD_SCHEMA_VERSION};
         `);
         return;
       }
@@ -2030,7 +2074,7 @@ export class ObservationStore {
             source_time_key
           );
         ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
-        PRAGMA user_version = ${STORE_SCHEMA_VERSION};
+        PRAGMA user_version = ${LEGACY_REBUILD_SCHEMA_VERSION};
       `);
     });
     if (version.user_version !== 0) {

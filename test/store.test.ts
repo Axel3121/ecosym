@@ -1740,6 +1740,91 @@ test("schema-ten stores gain an empty confirmation-preview ledger without rewrit
   }
 });
 
+test("schema-eleven stores gain institutional tables before WAL is enabled", () => {
+  const { directory, store } = temporaryStore();
+  store.close();
+  const downgraded = new DatabaseSync(join(directory, "observations.sqlite"));
+  downgraded.exec(`
+    DROP INDEX mandate_revisions_current;
+    DROP TABLE mandate_revisions;
+    DROP TABLE civilizations;
+    PRAGMA user_version = 11;
+  `);
+  downgraded.close();
+
+  const migrated = new ObservationStore(directory);
+  migrated.close();
+  const inspected = new DatabaseSync(join(directory, "observations.sqlite"));
+  try {
+    assert.equal(
+      (inspected.prepare("PRAGMA user_version").get() as { user_version: number })
+        .user_version,
+      12,
+    );
+    assert.deepEqual(
+      inspected
+        .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name LIKE '%civilization%' OR type = 'table' AND name = 'mandate_revisions'")
+        .all()
+        .map((row) => (row as { name: string }).name)
+        .sort(),
+      ["civilizations", "mandate_revisions"],
+    );
+    assert.equal(
+      (inspected.prepare("PRAGMA journal_mode").get() as { journal_mode: string })
+        .journal_mode,
+      "wal",
+    );
+  } finally {
+    inspected.close();
+  }
+});
+
+test("an interrupted legacy rebuild remains resumable as schema nine", () => {
+  const { directory, store } = temporaryStore();
+  store.close();
+  const path = join(directory, "observations.sqlite");
+  const downgraded = new DatabaseSync(path);
+  downgraded.exec(`
+    DROP INDEX mandate_revisions_current;
+    DROP TABLE mandate_revisions;
+    DROP TABLE civilizations;
+    DROP TABLE record_index_mode_resolutions;
+    DROP TABLE confirmation_previews;
+    CREATE TABLE collection_attempts_replacement (blocker INTEGER) STRICT;
+    PRAGMA user_version = 8;
+  `);
+  downgraded.close();
+
+  assert.throws(() => new ObservationStore(directory), /already exists/);
+  const interrupted = new DatabaseSync(path);
+  assert.equal(
+    (interrupted.prepare("PRAGMA user_version").get() as { user_version: number })
+      .user_version,
+    9,
+  );
+  interrupted.exec("DROP TABLE collection_attempts_replacement");
+  interrupted.close();
+
+  const resumed = new ObservationStore(directory);
+  resumed.close();
+  const inspected = new DatabaseSync(path);
+  try {
+    assert.equal(
+      (inspected.prepare("PRAGMA user_version").get() as { user_version: number })
+        .user_version,
+      12,
+    );
+    assert.equal(
+      (inspected
+        .prepare("SELECT count(*) AS count FROM mandate_revisions")
+        .get() as { count: number }).count,
+      0,
+    );
+  } finally {
+    inspected.close();
+  }
+});
+
 test("the unpublished schema-seven migration is refused rather than trusted", () => {
   const { directory, store } = temporaryStore();
   store.close();
