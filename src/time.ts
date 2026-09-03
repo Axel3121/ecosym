@@ -47,6 +47,8 @@ export function utcInstantOrderingKey(value: unknown): null | string {
   if (milliseconds === null) {
     return null;
   }
-  const orderingKey = new Date(milliseconds).toISOString();
-  return /^\d{4}-/.test(orderingKey) ? orderingKey : null;
+  // The entry pattern above admits only four-digit years, and `toISOString`
+  // widens a year to the expanded `+YYYYYY` form only outside that range, so
+  // the key is always lexicographically comparable here.
+  return new Date(milliseconds).toISOString();
 }

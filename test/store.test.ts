@@ -1920,3 +1920,173 @@ test("version-three reversions migrate without claiming a current attempt status
     inspected.close();
   }
 });
+
+test("every query filter narrows the result rather than widening it", async () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+    await store.collect(active, (sink) => {
+      sink.recordSourceRecord(() => [
+        fact({ kind: "example.value", subject: "subject-a", payload: { value: 1 } }),
+        fact({ kind: "example.value", subject: "subject-b", payload: { value: 2 } }),
+        fact({
+          epistemicStatus: "claim",
+          kind: "example.completion-report",
+          payload: { state: "completed" },
+          subject: "subject-a",
+        }),
+      ]);
+    });
+
+    // Each filter is a further restriction, so asking for observations about
+    // one subject must not also return the claim about it, nor the other
+    // subject's observation. Combining the conditions with OR instead of AND
+    // returns all three: the epistemic-status condition is one of the terms.
+    const narrowed = store.queryObservations({ subject: "subject-a" });
+    assert.deepEqual(
+      narrowed.map((record) => [record.epistemicStatus, record.subject, record.payload]),
+      [["observation", "subject-a", { value: 1 }]],
+    );
+
+    // The same, one filter deeper: a kind that no claim shares still must not
+    // admit a fact that fails the subject condition.
+    assert.deepEqual(
+      store
+        .queryObservations({ kind: "example.value", subject: "subject-b" })
+        .map((record) => record.payload),
+      [{ value: 2 }],
+    );
+
+    // And a filter that matches nothing returns nothing rather than everything
+    // that satisfies some other term.
+    assert.deepEqual(store.queryObservations({ subject: "absent" }), []);
+    assert.deepEqual(store.queryClaims({ subject: "subject-b" }), []);
+
+    // The unfiltered queries still see all three facts, so the assertions above
+    // are narrowing rather than an empty store.
+    assert.equal(store.queryObservations().length, 2);
+    assert.equal(store.queryClaims().length, 1);
+  } finally {
+    store.close();
+  }
+});
+
+test("stored configuration that no longer matches its identity is refused", async () => {
+  const { directory, store } = temporaryStore();
+  const parsed = connection();
+  const path = store.path;
+  try {
+    store.register(parsed);
+    // A fact collected under the honest configuration, so the tampering below
+    // is the only thing that changes between the reads.
+    const active = store.getConnection(parsed.config.id);
+    await store.collect(active, (sink) => {
+      sink.recordSourceRecord(() => [fact()]);
+    });
+    assert.equal(store.getConnection(parsed.config.id).config.factOwner, "owner-a");
+  } finally {
+    store.close();
+  }
+
+  // Rewrite the stored configuration in place, leaving its identity hash
+  // untouched. This is what an edited state file looks like: the row still
+  // claims to be the configuration whose hash is recorded beside it.
+  const tampered = JSON.parse(parsed.canonical) as { factOwner: string };
+  tampered.factOwner = "attacker-owner";
+  const database = new DatabaseSync(path);
+  try {
+    database
+      .prepare("UPDATE connection_versions SET config_json = ? WHERE config_hash = ?")
+      .run(JSON.stringify(tampered), parsed.hash);
+  } finally {
+    database.close();
+  }
+
+  const reopened = new ObservationStore(directory);
+  try {
+    // Reading it back must fail rather than hand out an authority the recorded
+    // identity never covered. Both read paths derive the configuration from the
+    // same stored row, so both must refuse it.
+    assert.throws(
+      () => reopened.getConnection(parsed.config.id),
+      /does not match its identity/,
+    );
+    assert.throws(() => reopened.listConnections(), /does not match its identity/);
+  } finally {
+    reopened.close();
+  }
+});
+
+test("payload values that cannot be persisted exactly are refused", async () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+
+    // NaN and the infinities have no JSON spelling, and negative zero does not
+    // survive a round trip distinguishably from zero. Storing any of them would
+    // record a value the store cannot return. Collection wraps the rejection,
+    // so assert on the failure code rather than the message.
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -0]) {
+      await assert.rejects(
+        store.collect(active, (sink) => {
+          sink.recordSourceRecord(() => [fact({ payload: { value } })]);
+        }),
+        (error: unknown) =>
+          error instanceof CollectionFailedError && error.code === "internal_error",
+        String(value),
+      );
+      assert.equal(store.countFacts(), 0, String(value));
+    }
+
+    // Ordinary finite numbers, including positive zero and a negative value,
+    // are still accepted, so the guard is not rejecting every number.
+    for (const value of [0, -1.5, 7]) {
+      await store.collect(active, (sink) => {
+        sink.recordSourceRecord(() => [fact({ payload: { value } })]);
+      });
+    }
+    assert.deepEqual(
+      store.queryObservations().map((record) => record.payload.value).sort(),
+      [-1.5, 0, 7],
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("a retirement actor must be a bounded machine identifier", async () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+
+    // The bound is part of the grammar: an actor is recorded in an audit trail,
+    // so an unbounded string is not an identifier. Validation happens before
+    // the confirmation token is examined, so an unused token is enough.
+    for (const actor of ["a".repeat(129), "a".repeat(200), "a".repeat(1024)]) {
+      assert.throws(
+        () => store.retireCollectionAttempt("absent-attempt", actor, "unused-token"),
+        /stable machine identifier/,
+        `length ${actor.length}`,
+      );
+    }
+    // The longest permitted identifier passes the grammar, so the assertions
+    // above are about the bound rather than rejecting everything. It fails for
+    // the unrelated reason that no such confirmation exists.
+    assert.throws(
+      () =>
+        store.retireCollectionAttempt(
+          "absent-attempt",
+          `a${"b".repeat(127)}`,
+          "unused-token",
+        ),
+      (error: Error) => !/stable machine identifier/.test(error.message),
+    );
+  } finally {
+    store.close();
+  }
+});

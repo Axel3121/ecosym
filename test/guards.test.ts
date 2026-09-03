@@ -259,3 +259,104 @@ test("materialization rejects an empty subject", () => {
     SourceMappingError,
   );
 });
+
+// The tests below defend deletions rather than guards. Each removed check
+// could never fail given the checks around it, so no mutation to it could be
+// killed. What can break is the reasoning: widen an input pattern and a deleted
+// check becomes load-bearing again. These assert the premise, so that change
+// fails here instead of passing silently.
+//
+// Two premise mutations survive by design and are reported rather than fixed,
+// because what they reveal is a second redundancy rather than a missing
+// assertion:
+//
+//   - widening the pattern's time fields to `\d{1,2}` changes nothing, because
+//     `Date.parse` refuses a single-digit second on its own;
+//   - relaxing `Number.isSafeInteger` to `Number.isFinite` changes nothing,
+//     because 2^53 already exceeds the largest instant a `Date` can hold, so
+//     the representable-instant check refuses every unsafe value first.
+//
+// Both are asserted below as the facts they are. Deleting either check as well
+// is defensible; keeping them costs nothing and they document intent at the
+// boundary where the reasoning lives.
+
+test("only four-digit years reach the ordering key, so it stays comparable", () => {
+  // The entry pattern admits `\d{4}` years exclusively. Both representable
+  // extremes must still produce a plain, lexicographically sortable key.
+  for (const value of ["0001-01-01T00:00:00Z", "9999-12-31T23:59:59.999Z"]) {
+    const key = utcInstantOrderingKey(value);
+    assert.notEqual(key, null, value);
+    assert.match(key as string, /^\d{4}-/, value);
+  }
+  // An expanded year is not admitted at all, which is what makes the key safe.
+  for (const value of ["+010000-01-01T00:00:00Z", "-000001-01-01T00:00:00Z"]) {
+    assert.equal(utcInstantOrderingKey(value), null, value);
+  }
+});
+
+test("a single-digit second is refused by the pattern and by Date.parse", () => {
+  for (const value of [
+    "2026-01-15T12:30:6Z",
+    "2026-01-15T12:30:6.500Z",
+    "2026-01-15T12:3:06Z",
+  ]) {
+    assert.equal(utcInstantOrderingKey(value), null, value);
+    // The second layer, asserted separately: widening the pattern alone would
+    // not admit these, which is why that mutation survives.
+    assert.equal(Number.isFinite(Date.parse(value)), false, value);
+  }
+});
+
+test("no unsafe millisecond count is a representable instant", () => {
+  // This is why the safe-integer bound in `exactMilliseconds` cannot be the
+  // check that refuses a value: everything it would reject is already outside
+  // the range a `Date` can hold.
+  const maximumInstant = 8.64e15;
+  assert.equal(2 ** 53 > maximumInstant, true);
+  for (let exponent = 53; exponent <= 62; exponent++) {
+    for (const delta of [-2, -1, 0, 1, 2]) {
+      for (const sign of [1, -1]) {
+        const milliseconds = sign * (2 ** exponent + delta);
+        if (Number.isSafeInteger(milliseconds)) {
+          continue;
+        }
+        assert.equal(
+          Math.abs(milliseconds) > maximumInstant,
+          true,
+          String(milliseconds),
+        );
+      }
+    }
+  }
+});
+
+test("unix source times beyond the representable range are refused", () => {
+  const { config } = parseConnectionConfig({
+    ...(validConfig() as Record<string, unknown>),
+    sourceRecord: {
+      identity: [{ scope: "record", path: "id" }],
+      retention: "history",
+      recordedAt: {
+        format: "unix-milliseconds",
+        selector: { scope: "record", path: "at" },
+      },
+    },
+  });
+  const materialize = (at: number) =>
+    materializeFacts(config, {
+      meta: { recordIndex: 0, sourcePath: "/unused.jsonl" },
+      numericLexemes: null,
+      record: { at, id: "one", subject: "item", value: 7 },
+      root: { at, id: "one", subject: "item", value: 7 },
+    });
+
+  // A millisecond count no `Date` can hold, or one whose year goes expanded,
+  // cannot become a stored instant.
+  for (const at of [2 ** 53, -(2 ** 53), 2 ** 60, 253_402_300_800_000]) {
+    assert.throws(() => materialize(at), SourceMappingError, String(at));
+  }
+  // The largest four-digit-year instant must still be accepted, so the bound is
+  // not merely rejecting everything.
+  assert.equal(materialize(253_402_300_799_999).length, 1);
+  assert.doesNotThrow(() => materialize(1_788_000_000_000));
+});
