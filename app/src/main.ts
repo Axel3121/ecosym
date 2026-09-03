@@ -274,7 +274,7 @@ function focus(t: Target) {
     if (t.kind === "seat") {
       $("focus-name").textContent = s.seatName; $("focus-kind").textContent = `setet i ${s.name} · ${s.domain}`;
       portrait.className = "portrait face-big"; portrait.style.backgroundImage = `url(/art/faces/${seatFaceFor(idx, s.epistemic === "observed")}.png)`; portrait.style.backgroundPosition = "50% 50%";
-      $("focus-facts").innerHTML = `<b>Kan alene</b>${s.mandate.alone.join("<br>")}<b>Må til rådet</b>${s.mandate.council.join("<br>")}<b>Nå</b>${s.inhabitants.length} i arbeid · ${s.traces.length} spor · ${s.openMatters} hos rådet`;
+      $("focus-facts").innerHTML = `<b>Kan alene</b>${s.mandate.alone.join("<br>")}<b>Må til rådet</b>${s.mandate.council.join("<br>")}<b>Nå</b>${s.inhabitants.length} ${s.inhabitants.length === 1 ? "oppgave" : "oppgaver"} i gang · ${s.traces.length} spor · ${s.openMatters} hos rådet`;
     } else {
       const a = t.agent;
       $("focus-name").textContent = a.label; $("focus-kind").textContent = `forbipasserende arbeid i ${s.name}`;

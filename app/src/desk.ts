@@ -133,7 +133,7 @@ function roster(scene: Scene, state: DeskState) {
   const rows = scene.settlements.map((s, i) => {
     const sel = state.selectedCiv === s.civilizationId ? " sel" : "";
     const status = s.epistemic !== "observed" ? `<span class="roster-status faint">aldri sett</span>`
-      : s.inhabitants.length ? `<span class="roster-status">${s.inhabitants.length} i arbeid</span>`
+      : s.inhabitants.length ? `<span class="roster-status">${s.inhabitants.length} ${s.inhabitants.length === 1 ? "oppgave" : "oppgaver"} i gang</span>`
       : `<span class="roster-status dim">stille · sist ${ago(scene, s.lastSeen!)}</span>`;
     const open = s.openMatters ? ` <span class="seal">${s.openMatters}</span>` : "";
     return `<p class="roster-row${sel}" data-civ="${esc(s.civilizationId)}"><span class="mono roster-key">${i + 1}</span><span class="roster-name">${esc(s.name)}</span>${status}${open}</p>`;
@@ -191,7 +191,7 @@ export function renderLog(scene: Scene, state: DeskState): string {
     ${scene.settlements.map((s) => {
       if (s.epistemic !== "observed") return `<p class="civ-name faint">${esc(s.name)} <span class="dim">aldri sett</span></p>`;
       const { running, traces } = workTree(s);
-      return `<p class="civ-name">${esc(s.name)} <span class="dim">${s.inhabitants.length ? `${s.inhabitants.length} i arbeid` : "stille"} · <span class="mono">${ago(scene, s.lastSeen!)}</span></span></p><div class="work-tree">${running}${traces}</div>`;
+      return `<p class="civ-name">${esc(s.name)} <span class="dim">${s.inhabitants.length ? `${s.inhabitants.length} ${s.inhabitants.length === 1 ? "oppgave" : "oppgaver"} i gang` : "stille"} · <span class="mono">${ago(scene, s.lastSeen!)}</span></span></p><div class="work-tree">${running}${traces}</div>`;
     }).join("")}
   </section>`;
 
@@ -233,7 +233,7 @@ export function renderSheet(scene: Scene, state: DeskState, sheet: Sheet): strin
       return `<p class="label">Arbeid</p>${scene.settlements.map((s) => {
         if (s.epistemic !== "observed") return `<p class="civ-name faint">${esc(s.name)} <span class="dim">aldri sett</span></p>`;
         const { running, traces } = workTree(s);
-        return `<p class="civ-name"><a href="#" data-go="${esc(s.civilizationId)}">${esc(s.name)}</a> <span class="dim">${s.inhabitants.length ? `${s.inhabitants.length} i arbeid` : "stille"} · <span class="mono">${ago(scene, s.lastSeen!)}</span></span></p><div class="work-tree">${running}${traces}</div>`;
+        return `<p class="civ-name"><a href="#" data-go="${esc(s.civilizationId)}">${esc(s.name)}</a> <span class="dim">${s.inhabitants.length ? `${s.inhabitants.length} ${s.inhabitants.length === 1 ? "oppgave" : "oppgaver"} i gang` : "stille"} · <span class="mono">${ago(scene, s.lastSeen!)}</span></span></p><div class="work-tree">${running}${traces}</div>`;
       }).join("")}`;
     case "petisjoner":
       return `<p class="label">Petisjoner</p>${scene.letters.length ? scene.letters.slice().sort((a, b) => Date.parse(b.sentAt) - Date.parse(a.sentAt)).map((l) => {
@@ -257,7 +257,7 @@ export function renderStrip(scene: Scene, state: DeskState): string {
   const part = (n: number, word: string, sheet: string, cls = "") => `<a href="#" data-sheet="${sheet}" class="strip-part"><span class="n ${n ? cls : "faint"}">${n}</span> ${word}</a>`;
   return [
     part(open, open === 1 ? "sak venter" : "saker venter", "raadet", "seal"),
-    part(live, "i arbeid", "arbeid", "live"),
+    part(live, live === 1 ? "kvartal i arbeid" : "kvartaler i arbeid", "arbeid", "live"),
     part(quiet, "stille", "arbeid"),
     part(unseen, "aldri sett", "arbeid"),
     part(scene.letters.length, "petisjoner", "petisjoner"),

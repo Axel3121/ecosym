@@ -162,12 +162,13 @@ export class Chart {
 
     // petitions on their way: a messenger walks from the quarter's gate to the hall door
     for (const l of scene.letters) {
+      if (l.state === "refused") continue; // nothing is on its way; drawing a walker would be a lie
       const s = scene.settlements.find((x) => x.civilizationId === l.toCivilizationId); if (!s) continue;
       const q = quarterOf(scene, s);
       const a = q.gate, b = HALL.door;
       const wx = a.x + (b.x - a.x) * (1 - l.progress), wy = a.y + (b.y - a.y) * (1 - l.progress);
       const p = this.toScreen(wx, wy);
-      this.walker(p, z, b.x - a.x, b.y - a.y, 1, now + hash01(l.petitionId) * 3);
+      this.walker(p, z, b.x - a.x, b.y - a.y, 1, now + hash01(l.petitionId) * 3, true);
       this.hits.push({ kind: "letter", petitionId: l.petitionId, settlementId: s.civilizationId, label: `petisjon · ${l.state}`, sub: l.text, x: p.x, y: p.y - 8, r: Math.max(12, 10 * z) });
     }
     void selected;
@@ -205,7 +206,7 @@ export class Chart {
     this.ctx.globalAlpha = 1;
   }
 
-  private walker(p: P, z: number, dx: number, dy: number, depth: number, t: number) {
+  private walker(p: P, z: number, dx: number, dy: number, depth: number, t: number, satchel = false) {
     const im = this.im("/art/walkers.png"); if (!im) return;
     const side = Math.abs(dx) >= Math.abs(dy);
     const row = side ? (depth === 0 ? 2 : 3) : dy > 0 ? 0 : 1;
@@ -216,6 +217,11 @@ export class Chart {
     ctx.save(); ctx.translate(p.x, p.y); if (flip) ctx.scale(-1, 1);
     ctx.globalAlpha = 0.25; ctx.fillStyle = "#000"; ctx.beginPath(); ctx.ellipse(0, 0, hpx * 0.28, hpx * 0.08, 0, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
     ctx.drawImage(im, WCOLS[frame]!, WROWS[row]!, WCELL.w, WCELL.h, -WCELL.w * s / 2, -hpx, WCELL.w * s, hpx);
+    if (satchel) { // a messenger carries the letter: a cream satchel at the hip, sealed red
+      const u = Math.max(1, hpx / 30);
+      ctx.fillStyle = "#f3e7c8"; ctx.fillRect(Math.round(4 * u), Math.round(-hpx * 0.42), Math.round(7 * u), Math.round(6 * u));
+      ctx.fillStyle = "#b8342a"; ctx.fillRect(Math.round(6 * u), Math.round(-hpx * 0.42 + 2 * u), Math.round(3 * u), Math.round(2 * u));
+    }
     ctx.restore();
   }
 
