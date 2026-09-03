@@ -18,18 +18,18 @@ export interface Quarter {
 
 /** Measured on town.png. Order = founding order: spread out first (cardinal), then the corners. */
 export const QUARTERS: Quarter[] = [
-  { key: "W",  box: { x1: 446, y1: 389, x2: 607, y2: 565 },  seat: { x: 530, y: 470 },  chimneys: [{ x: 565, y: 435 }, { x: 500, y: 520 }],                    gate: { x: 620, y: 500 } },
-  { key: "SE", box: { x1: 791, y1: 541, x2: 1134, y2: 838 }, seat: { x: 955, y: 680 },  chimneys: [{ x: 945, y: 630 }, { x: 1040, y: 720 }, { x: 870, y: 760 }], gate: { x: 800, y: 560 } },
-  { key: "NW", box: { x1: 436, y1: 114, x2: 714, y2: 387 },  seat: { x: 555, y: 260 },  chimneys: [{ x: 560, y: 235 }, { x: 640, y: 320 }],                    gate: { x: 700, y: 380 } },
-  { key: "SW", box: { x1: 450, y1: 555, x2: 738, y2: 842 },  seat: { x: 610, y: 700 },  chimneys: [{ x: 600, y: 655 }, { x: 680, y: 760 }],                    gate: { x: 730, y: 590 } },
-  { key: "E",  box: { x1: 887, y1: 353, x2: 1043, y2: 555 }, seat: { x: 985, y: 400 },  chimneys: [{ x: 975, y: 355 }, { x: 960, y: 500 }],                    gate: { x: 880, y: 470 } },
-  { key: "S",  box: { x1: 693, y1: 744, x2: 868, y2: 939 },  seat: { x: 785, y: 800 },  chimneys: [{ x: 775, y: 750 }],                                        gate: { x: 780, y: 730 } },
-  { key: "NE", box: { x1: 969, y1: 280, x2: 1122, y2: 537 }, seat: { x: 1050, y: 400 }, chimneys: [{ x: 1040, y: 330 }, { x: 1080, y: 470 }],                   gate: { x: 960, y: 420 } },
-  { key: "N",  box: { x1: 783, y1: 191, x2: 897, y2: 350 },  seat: { x: 840, y: 265 },  chimneys: [{ x: 855, y: 235 }],                                        gate: { x: 800, y: 350 } },
+  { key: "W",  box: { x1: 334, y1: 386, x2: 429, y2: 553 },  seat: { x: 396, y: 450 }, chimneys: [{ x: 402, y: 418 }],                                        gate: { x: 440, y: 470 } },
+  { key: "SE", box: { x1: 617, y1: 556, x2: 935, y2: 827 },  seat: { x: 763, y: 663 }, chimneys: [{ x: 798, y: 628 }, { x: 700, y: 740 }, { x: 860, y: 720 }], gate: { x: 620, y: 570 } },
+  { key: "NW", box: { x1: 261, y1: 137, x2: 521, y2: 378 },  seat: { x: 365, y: 238 }, chimneys: [{ x: 345, y: 200 }, { x: 440, y: 300 }],                     gate: { x: 500, y: 370 } },
+  { key: "SW", box: { x1: 296, y1: 587, x2: 548, y2: 838 },  seat: { x: 422, y: 688 }, chimneys: [{ x: 452, y: 653 }, { x: 360, y: 760 }],                     gate: { x: 540, y: 600 } },
+  { key: "E",  box: { x1: 696, y1: 362, x2: 928, y2: 539 },  seat: { x: 793, y: 408 }, chimneys: [{ x: 763, y: 370 }, { x: 880, y: 470 }],                     gate: { x: 690, y: 450 } },
+  { key: "S",  box: { x1: 506, y1: 743, x2: 683, y2: 906 },  seat: { x: 604, y: 798 }, chimneys: [{ x: 598, y: 758 }],                                        gate: { x: 590, y: 740 } },
+  { key: "N",  box: { x1: 609, y1: 188, x2: 720, y2: 327 },  seat: { x: 665, y: 250 }, chimneys: [{ x: 690, y: 215 }],                                        gate: { x: 620, y: 330 } },
+  { key: "WS", box: { x1: 272, y1: 468, x2: 347, y2: 566 },  seat: { x: 312, y: 503 }, chimneys: [{ x: 294, y: 473 }],                                        gate: { x: 350, y: 540 } },
 ];
 
-export const SQUARE = { x: 780, y: 515, r: 60 };
-export const HALL = { box: { x1: 690, y1: 335, x2: 800, y2: 430 }, door: { x: 745, y: 424 } };
+export const SQUARE = { x: 572, y: 527, r: 78 };
+export const HALL = { box: { x1: 518, y1: 348, x2: 622, y2: 452 }, door: { x: 570, y: 450 } };
 /** Where petitioners stand when a matter waits: a line down the steps, one body per matter. */
 export function queueSpot(i: number): P { void i; return { x: HALL.door.x - 30, y: HALL.door.y + 34 }; }
 
