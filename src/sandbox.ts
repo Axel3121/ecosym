@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { glob } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -40,7 +40,15 @@ export async function prepareSandboxSources(
       if (!existsSync(destination)) {
         return;
       }
-      if (!statSync(destination).isFile()) {
+      // lstat, not stat: a bind mount resolves its source on the host at mount
+      // time, so a symlink named as a source hands the run whatever it points
+      // at. A declared path must be the object it authorises, not a reference
+      // that can be repointed at a key or a database nobody declared.
+      const declared = lstatSync(destination);
+      if (declared.isSymbolicLink()) {
+        throw new Error(`Declared source is a symlink: ${destination}`);
+      }
+      if (!declared.isFile()) {
         throw new Error(`Declared source is not a file: ${destination}`);
       }
       addMount(mounts, destination, destination);
