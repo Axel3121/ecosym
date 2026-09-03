@@ -5,6 +5,7 @@ import type { SandboxSourceMount } from "./sandbox.ts";
 
 interface SandboxArgumentsInput {
   childArguments: string[];
+  environment: Record<string, string | undefined>;
   executable: string;
   home: string;
   project: string | undefined;
@@ -19,6 +20,28 @@ interface SandboxArgumentsInput {
 interface RuntimeMount extends SandboxSourceMount {
   writable: boolean;
 }
+
+// What a run legitimately needs to execute: locale, terminal, and the paths
+// that find node and opencode. Anything absent from this list is absent from
+// the run — a credential the run was never granted cannot leak from it.
+const PASSED_ENVIRONMENT = [
+  "COLORTERM",
+  "FORCE_COLOR",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "LOGNAME",
+  "NO_COLOR",
+  "NVM_BIN",
+  "NVM_DIR",
+  "NVM_INC",
+  "PATH",
+  "SHELL",
+  "TERM",
+  "TZ",
+  "USER",
+  "XDG_DATA_HOME",
+];
 
 export function sandboxArguments(input: SandboxArgumentsInput): string[] {
   if (!isAbsolute(input.home) || input.home === "/") {
@@ -142,6 +165,17 @@ export function sandboxArguments(input: SandboxArgumentsInput): string[] {
   addMounts(arguments_, sourceMounts);
   for (const directory of protectedSourceDirectories) {
     arguments_.push("--remount-ro", directory);
+  }
+  // A run inherits whatever the launcher was started with, and that is every
+  // API key and token in the operator's shell. The run has no claim on them:
+  // it was given a worktree and a task, not the operator's credentials. Drop
+  // the inherited environment and name what the run may keep.
+  arguments_.push("--clearenv");
+  for (const name of PASSED_ENVIRONMENT) {
+    const value = input.environment[name];
+    if (value !== undefined) {
+      arguments_.push("--setenv", name, value);
+    }
   }
   arguments_.push(
     "--setenv",
