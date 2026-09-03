@@ -107,7 +107,7 @@ function civEntry(scene: Scene, state: DeskState) {
 }
 function capitalEntry(scene: Scene) {
   const halls = scene.capital.halls.map((h) => `<p class="hall-row" data-civ="${esc(h.civilizationId)}"><b>${esc(h.name)}</b> <span class="dim">${esc(h.seatName)}</span> — ${h.epistemic === "observed" ? (h.live ? `<span class="live">live</span>` : `<span class="dim">stille</span>`) : `<span class="faint">aldri sett</span>`}${h.openMatters ? ` <span class="seal">${h.openMatters}</span>` : ""}</p>`).join("");
-  return `<p class="civ-name">Capital</p><p class="civ-sub">verdens hovedkvarter</p>${halls}<p class="dim">Rådet ser hver sivilisasjon i sammendrag. Detaljene bor der arbeidet bor.</p><p class="actions-line"><a href="#" data-talk-council="1">gå inn i rådskammeret</a></p>`;
+  return `<p class="civ-name">Rådhuset</p><p class="civ-sub">på torget · alle kvartaler møtes her</p>${halls}<p class="dim">Rådet ser hver sivilisasjon i sammendrag. Detaljene bor der arbeidet bor.</p><p class="actions-line"><a href="#" data-talk-council="1">gå inn i rådskammeret</a></p>`;
 }
 
 /** One council matter, as a flowing entry. big=true adds the crossed rule and the "se X" link (full Rådet section). */
@@ -139,7 +139,7 @@ function roster(scene: Scene, state: DeskState) {
     return `<p class="roster-row${sel}" data-civ="${esc(s.civilizationId)}"><span class="mono roster-key">${i + 1}</span><span class="roster-name">${esc(s.name)}</span>${status}${open}</p>`;
   }).join("");
   const capSel = state.selectedCiv === "__capital" ? " sel" : "";
-  return `<p class="label">Sivilisasjoner</p>${rows}<p class="roster-row${capSel}" data-civ="__capital"><span class="mono roster-key">C</span><span class="roster-name">Capital</span><span class="roster-status">${scene.capital.matters.length} saker</span></p>`;
+  return `<p class="label">Sivilisasjoner</p>${rows}<p class="roster-row${capSel}" data-civ="__capital"><span class="mono roster-key">C</span><span class="roster-name">Rådhuset</span><span class="roster-status">${scene.capital.matters.length} saker</span></p>`;
 }
 
 function observedLog(scene: Scene, limit: number) {
@@ -320,7 +320,7 @@ export function renderInnstillinger(scene: Scene, state: DeskState): string {
   <p class="label">Kilder</p>
   <p class="dim">Ingen koblinger. Verdenen leser en syntetisk fixture.</p>
   <p class="label">Tastatur</p>
-  <p class="dim"><kbd>1</kbd>–<kbd>9</kbd> sivilisasjon i rekkefølge (<kbd>0</kbd> = den tiende) · <kbd>C</kbd> Capital</p>
+  <p class="dim"><kbd>1</kbd>–<kbd>9</kbd> sivilisasjon i rekkefølge (<kbd>0</kbd> = den tiende) · <kbd>C</kbd> Rådhuset</p>
   <p class="dim">${allKeys.map((t) => `<kbd>${t.key}</kbd> ${t.label}`).join(" · ")}</p>
   <p class="dim"><kbd>⌥B</kbd> skjul / vis bordet · <kbd>⌥F</kbd> fullskjerm · <kbd>Esc</kbd> tilbake</p>`;
 }

@@ -2,7 +2,7 @@ import { deriveScene } from "./scene.ts";
 import type { Scene } from "./scene.ts";
 import { fixture } from "./fixture.ts";
 import { Chart, makeWalkers, stepWalkers, ZOOM_MIN, ZOOM_MAX, fitZoom, WORLD_W, WORLD_H } from "./chart.ts";
-import { quarterOf, HALL } from "./town.ts";
+import { quarterOf, HALL, SQUARE } from "./town.ts";
 import type { Hit } from "./chart.ts";
 import { renderSheet, renderStrip, renderSamtaler, renderInnstillinger, civByIndex, DEFAULT_SETTINGS } from "./desk.ts";
 import type { DeskState, Decision, Settings, Thread } from "./desk.ts";
@@ -51,7 +51,7 @@ function renderDocket() {
   if (!openSheet) { sheet.hidden = true; return; }
   sheet.hidden = false;
   const civ = scene.settlements.find((x) => x.civilizationId === desk.selectedCiv);
-  $("sheet-title").textContent = openSheet === "place" ? (desk.selectedCiv === "__capital" ? "Capital" : civ?.name ?? "") : SHEET_TITLES[openSheet];
+  $("sheet-title").textContent = openSheet === "place" ? (desk.selectedCiv === "__capital" ? "Rådhuset" : civ?.name ?? "") : SHEET_TITLES[openSheet];
   const body = $("sheet-body");
   body.innerHTML = openSheet === "samtaler" ? renderSamtaler(scene, desk)
     : openSheet === "innstillinger" ? renderInnstillinger(scene, desk)
@@ -81,7 +81,7 @@ function deskClick(e: Event) {
   if (t.dataset.decide) { desk.decisions[t.dataset.id!] = { decision: t.dataset.decide as Decision, at: Date.now() }; renderDocket(); return; }
   if (t.dataset.undo) { delete desk.decisions[t.dataset.undo]; renderDocket(); return; }
   const civId = t.dataset.go ?? t.dataset.civ;
-  if (civId === "__capital") { select({ kind: "capital", label: "Capital" }); return; }
+  if (civId === "__capital") { select({ kind: "capital", label: "Rådhuset" }); return; }
   if (civId) { const s = scene.settlements.find((x) => x.civilizationId === civId)!; select({ kind: "settlement", settlementId: s.civilizationId, label: s.name }); return; }
   if (t.dataset.talkCiv) { const s = scene.settlements.find((x) => x.civilizationId === t.dataset.talkCiv)!; focus({ kind: "seat", settlement: s }); return; }
   if (t.dataset.talkCouncil) { focus({ kind: "council" }); return; }
@@ -110,7 +110,7 @@ function runCommand(raw: string) {
   const c = parse(scene, desk, raw);
   switch (c.kind) {
     case "decide": desk.decisions[c.matterId] = { decision: c.decision, at: Date.now() }; if (!openSheet) show("raadet"); else renderDocket(); break;
-    case "go": if (c.civ === "__capital") select({ kind: "capital", label: "Capital" }); else { const s = scene.settlements.find((x) => x.civilizationId === c.civ)!; select({ kind: "settlement", settlementId: s.civilizationId, label: s.name }); } break;
+    case "go": if (c.civ === "__capital") select({ kind: "capital", label: "Rådhuset" }); else { const s = scene.settlements.find((x) => x.civilizationId === c.civ)!; select({ kind: "settlement", settlementId: s.civilizationId, label: s.name }); } break;
     case "sheet": show(c.sheet); break;
     case "talk":
       if (c.target === "council") focus({ kind: "council" });
@@ -141,7 +141,7 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "/") { e.preventDefault(); cmdInput.focus(); return; }
   const n = e.key === "0" ? 10 : Number(e.key);
   if (Number.isInteger(n) && n >= 1) { const s = civByIndex(scene, n); if (s) select({ kind: "settlement", settlementId: s.civilizationId, label: s.name }); }
-  if (e.key === "c" || e.key === "C") select({ kind: "capital", label: "Capital" });
+  if (e.key === "c" || e.key === "C") select({ kind: "capital", label: "Rådhuset" });
 });
 
 // ---- camera -----------------------------------------------------------------
@@ -208,7 +208,7 @@ function select(h: Hit | null) {
       return;
     case "capital":
       desk.selectedCiv = "__capital"; show("place");
-      flyTo(770, 410, Math.max(chart.camera.zoom, 1.7));
+      flyTo(SQUARE.x, (HALL.box.y1 + SQUARE.y) / 2, Math.max(chart.camera.zoom, 1.6));
       return;
     case "seat":
       if (s) focus({ kind: "seat", settlement: s });
@@ -264,7 +264,7 @@ function focus(t: Target) {
   app.classList.add("focused"); focusEl.hidden = false; thread.innerHTML = "";
   const portrait = $("focus-portrait"); portrait.className = "portrait";
   if (t.kind === "council") {
-    $("focus-name").textContent = "Rådet"; $("focus-kind").textContent = "Capital · verdens hovedkvarter";
+    $("focus-name").textContent = "Rådet"; $("focus-kind").textContent = "Rådhuset · på torget";
     portrait.className = "portrait face-big"; portrait.style.backgroundImage = `url(/art/faces/0.png)`; portrait.style.backgroundPosition = "50% 50%";
     $("focus-facts").innerHTML = `<b>Saker</b>${scene.capital.matters.map((m) => `${m.summary}<br>`).join("") || "ingen"}<b>Haller</b>${scene.capital.halls.map((h) => `${h.name} · ${h.epistemic === "observed" ? (h.live ? "i arbeid" : "stille") : "aldri sett"}<br>`).join("")}`;
     flyTo((HALL.box.x1 + HALL.box.x2) / 2, HALL.box.y2 - 40, 2.2);

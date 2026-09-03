@@ -1,5 +1,5 @@
 import type { Scene, Settlement } from "./scene.ts";
-import { TOWN_W, TOWN_H, HALL, queueSpot, quarterOf } from "./town.ts";
+import { TOWN_W, TOWN_H, HALL, SQUARE, queueSpot, quarterOf } from "./town.ts";
 
 export interface Camera { x: number; y: number; zoom: number }
 export const ZOOM_MIN = 0.3;
@@ -171,7 +171,26 @@ export class Chart {
       this.walker(p, z, b.x - a.x, b.y - a.y, 1, now + hash01(l.petitionId) * 3, true);
       this.hits.push({ kind: "letter", petitionId: l.petitionId, settlementId: s.civilizationId, label: `petisjon · ${l.state}`, sub: l.text, x: p.x, y: p.y - 8, r: Math.max(12, 10 * z) });
     }
-    void selected;
+    // the chosen quarter: a quiet ring on the ground around its lot, nothing else changes
+    if (selected?.settlementId && selected.kind !== "letter") {
+      const s = scene.settlements.find((x) => x.civilizationId === selected.settlementId);
+      if (s) {
+        const q = quarterOf(scene, s);
+        const a = this.toScreen(q.box.x1, q.box.y1), b = this.toScreen(q.box.x2, q.box.y2);
+        const pad = 6 * z, r = 10 * z;
+        ctx.save();
+        ctx.strokeStyle = "rgba(243,231,200,0.85)"; ctx.lineWidth = Math.max(1.5, 1.2 * z);
+        ctx.setLineDash([]);
+        ctx.beginPath(); ctx.roundRect(a.x - pad, a.y - pad, b.x - a.x + pad * 2, b.y - a.y + pad * 2, r); ctx.stroke();
+        ctx.strokeStyle = "rgba(20,18,14,0.45)"; ctx.lineWidth = Math.max(3, 3 * z); ctx.globalCompositeOperation = "destination-over";
+        ctx.beginPath(); ctx.roundRect(a.x - pad, a.y - pad, b.x - a.x + pad * 2, b.y - a.y + pad * 2, r); ctx.stroke();
+        ctx.restore();
+      }
+    } else if (selected?.kind === "capital") {
+      const c = this.toScreen(SQUARE.x, SQUARE.y);
+      ctx.save(); ctx.strokeStyle = "rgba(243,231,200,0.85)"; ctx.lineWidth = Math.max(1.5, 1.2 * z);
+      ctx.beginPath(); ctx.arc(c.x, c.y, (SQUARE.r + 8) * z, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+    }
   }
 
   private plain(x: number, y: number, text: string, alpha: number) {

@@ -35,7 +35,7 @@ const VOICES: Record<string, Voice> = {
     why: (f) => `Hvorfor? Jeg fører protokoll, ikke motiver. Det som er ført: ${f}. Vil du ha mer, spør runtimen — den er ikke koblet.`,
     mandate: (a, c) => `Uten deg: ${a}. Med rådet: ${c}. Ikke be meg om det siste.`,
     inside: (o) => `Innenfor. Forseglet: «${o}». Kom tilbake når det er observert, ikke før.`,
-    crossing: (r) => `Nei. «${r}» er over grensen. Det går til Capital, og du får vente på rådet som alle andre.`,
+    crossing: (r) => `Nei. «${r}» er over grensen. Det går til rådhuset, og du får vente på rådet som alle andre.`,
     unknown: () => `Uklart. Spør om status, mandat eller rådet — eller gi en ordre.`,
   },
   Ting: {
@@ -53,7 +53,7 @@ const VOICES: Record<string, Voice> = {
     why: (f) => `Beklageligvis vet vi kun hva som er iakttatt, ikke hvorfor. Iakttatt: ${f}.`,
     mandate: (a, c) => `Vårt embete tillater: ${a}. Med rådets velsignelse: ${c}.`,
     inside: (o) => `Det skal gjøres. Forseglet: «${o}». De vil bli underrettet når det er iakttatt.`,
-    crossing: (r) => `Med den dypeste respekt — «${r}» overstiger vårt embete. Vi videresender ydmykt til Capital.`,
+    crossing: (r) => `Med den dypeste respekt — «${r}» overstiger vårt embete. Vi videresender ydmykt til rådhuset.`,
     unknown: () => `Tilgi oss, vi forsto ikke. Spør gjerne om vårt arbeid, vårt embete eller rådet.`,
   },
 };
@@ -156,6 +156,6 @@ export function reply(scene: Scene, t: Target, raw: string): Line[] {
     "speak on my behalf": ["snakk for meg", "svar for meg", "speak"],
   };
   const crossing = s.mandate.council.find((rule) => (KEYS[rule] ?? rule.toLowerCase().split(" ")).some((w) => q.includes(w)));
-  if (crossing) return [{ who: "them", text: v.crossing(crossing) }, { who: "note", text: `Forseglet og sendt til Capital — ligger hos rådet.` }];
+  if (crossing) return [{ who: "them", text: v.crossing(crossing) }, { who: "note", text: `Forseglet og båret til rådhuset — ligger hos rådet.` }];
   return [{ who: "them", text: v.inside(raw.trim()) }, { who: "note", text: `Forseglet og sendt til ${s.name}.` }];
 }
