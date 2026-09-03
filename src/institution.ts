@@ -1,24 +1,29 @@
 import { canonicalJson, type JsonValue, sha256 } from "./json.ts";
 
-const NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
-
 /**
  * The four things PRODUCT.md requires to found a civilization, "and no more".
  * A fifth required field is a product change, not an implementation detail.
  */
 export interface MandateConfig {
   schemaVersion: 1;
-  id: string;
   domain: string;
   sources: string[];
   mayActAlone: string[];
   mustEscalate: string[];
 }
 
+export interface CivilizationConfig extends MandateConfig {
+  name: string;
+}
+
 export interface ParsedMandateConfig {
   config: MandateConfig;
   canonical: string;
-  digest: string;
+}
+
+export interface ParsedCivilizationConfig {
+  config: CivilizationConfig;
+  mandate: ParsedMandateConfig;
 }
 
 export class InstitutionError extends Error {
@@ -42,7 +47,7 @@ export function parseMandateConfig(input: unknown): ParsedMandateConfig {
   const mandate = objectAt(input, "mandate");
   exactKeys(
     mandate,
-    ["schemaVersion", "id", "domain", "sources", "mayActAlone", "mustEscalate"],
+    ["schemaVersion", "domain", "sources", "mayActAlone", "mustEscalate"],
     "mandate",
   );
   if (mandate.schemaVersion !== 1) {
@@ -50,14 +55,26 @@ export function parseMandateConfig(input: unknown): ParsedMandateConfig {
   }
   const config: MandateConfig = {
     schemaVersion: 1,
-    id: patternedStringAt(mandate.id, "mandate.id"),
     domain: nonEmptyStringAt(mandate.domain, "mandate.domain"),
     sources: stringArrayAt(mandate.sources, "mandate.sources"),
     mayActAlone: stringArrayAt(mandate.mayActAlone, "mandate.mayActAlone"),
     mustEscalate: stringArrayAt(mandate.mustEscalate, "mandate.mustEscalate"),
   };
   const canonical = canonicalJson(config as unknown as JsonValue);
-  return { config, canonical, digest: mandateDigest(config as unknown as JsonValue) };
+  return { config, canonical };
+}
+
+export function parseCivilizationConfig(input: unknown): ParsedCivilizationConfig {
+  const civilization = objectAt(input, "civilization");
+  exactKeys(
+    civilization,
+    ["schemaVersion", "name", "domain", "sources", "mayActAlone", "mustEscalate"],
+    "civilization",
+  );
+  const name = nonEmptyStringAt(civilization.name, "civilization.name");
+  const { name: _name, ...mandateInput } = civilization;
+  const mandate = parseMandateConfig(mandateInput);
+  return { config: { ...mandate.config, name }, mandate };
 }
 
 function objectAt(value: unknown, path: string): Record<string, unknown> {
@@ -77,14 +94,6 @@ function exactKeys(
   if (present.length !== expected.length || present.some((key, index) => key !== expected[index])) {
     throw new InstitutionError(`${path} must have exactly the keys ${expected.join(", ")}`);
   }
-}
-
-function patternedStringAt(value: unknown, path: string): string {
-  const text = nonEmptyStringAt(value, path);
-  if (!NAME_PATTERN.test(text)) {
-    throw new InstitutionError(`${path} must match ${NAME_PATTERN.source}`);
-  }
-  return text;
 }
 
 function nonEmptyStringAt(value: unknown, path: string): string {

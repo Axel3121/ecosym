@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import { collectConnection } from "./collect.ts";
 import { parseConnectionConfig } from "./config.ts";
-import { parseMandateConfig } from "./institution.ts";
+import { parseCivilizationConfig, parseMandateConfig } from "./institution.ts";
 import {
   CollectionFailedError,
   ObservationStore,
@@ -32,6 +32,7 @@ async function run(arguments_: string[]): Promise<CommandResult> {
           "connect",
           "disconnect",
           "found",
+          "redraw",
           "dissolve",
           "resolve-authority",
           "collect",
@@ -55,6 +56,8 @@ async function run(arguments_: string[]): Promise<CommandResult> {
         return disconnect(store, arguments_.slice(1));
       case "found":
         return await found(store, arguments_.slice(1));
+      case "redraw":
+        return await redraw(store, arguments_.slice(1));
       case "dissolve":
         return dissolve(store, arguments_.slice(1));
       case "resolve-authority":
@@ -124,26 +127,47 @@ async function found(store: ObservationStore, arguments_: string[]): Promise<Com
   if (arguments_.length !== 1) {
     return invalidArguments("found");
   }
-  const input = await readConfig(arguments_[0] as string);
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(input) as unknown;
-  } catch {
-    throw Object.assign(new Error("mandate input is not JSON"), {
-      code: "invalid_mandate",
-    });
-  }
-  const parsed = parseMandateConfig(decoded);
-  const outcome = store.foundCivilization(parsed);
+  const parsed = parseCivilizationConfig(await readInstitutionInput(arguments_[0] as string));
+  const founded = store.foundCivilization(parsed);
   return {
     exitCode: 0,
     output: {
       schemaVersion: 1,
       command: "found",
-      outcome,
-      civilizationId: parsed.config.id,
+      outcome: "founded",
+      ...founded,
     },
   };
+}
+
+async function redraw(store: ObservationStore, arguments_: string[]): Promise<CommandResult> {
+  if (arguments_.length !== 2) {
+    return invalidArguments("redraw");
+  }
+  const civilizationId = arguments_[0] as string;
+  const parsed = parseMandateConfig(await readInstitutionInput(arguments_[1] as string));
+  const mandateRevision = store.redrawMandate(civilizationId, parsed);
+  return {
+    exitCode: 0,
+    output: {
+      schemaVersion: 1,
+      command: "redraw",
+      outcome: "redrawn",
+      civilizationId,
+      mandateRevision,
+    },
+  };
+}
+
+async function readInstitutionInput(path: string): Promise<unknown> {
+  const input = await readConfig(path);
+  try {
+    return JSON.parse(input) as unknown;
+  } catch {
+    throw Object.assign(new Error("mandate input is not JSON"), {
+      code: "invalid_mandate",
+    });
+  }
 }
 
 function dissolve(store: ObservationStore, arguments_: string[]): CommandResult {

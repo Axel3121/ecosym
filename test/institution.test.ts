@@ -27,10 +27,10 @@ interface CliResult {
   stderr: string;
 }
 
-function mandateConfig(): unknown {
+function foundingConfig(): Record<string, unknown> {
   return {
     schemaVersion: 1,
-    id: "civilization:engineering",
+    name: "Engineering",
     domain: "the software this person builds",
     sources: ["cli-source"],
     mayActAlone: ["read.source"],
@@ -38,18 +38,24 @@ function mandateConfig(): unknown {
   };
 }
 
+function redrawConfig(): Record<string, unknown> {
+  const { name: _name, ...mandate } = foundingConfig();
+  return mandate;
+}
+
 test("a founded civilization resolves an authority context whose digest is derived from the stored mandate", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-institution-"));
   const xdgDataHome = join(directory, "data");
   const configPath = join(directory, "civilization.json");
-  writeFileSync(configPath, JSON.stringify(mandateConfig()));
+  writeFileSync(configPath, JSON.stringify(foundingConfig()));
 
   const found = await runCli(["found", configPath], xdgDataHome);
   assert.equal(found.code, 0);
   assert.equal(found.output.outcome, "founded");
+  const civilizationId = found.output.civilizationId as string;
 
   const resolved = await runCli(
-    ["resolve-authority", "civilization:engineering"],
+    ["resolve-authority", civilizationId],
     xdgDataHome,
   );
   assert.equal(resolved.code, 0);
@@ -58,11 +64,16 @@ test("a founded civilization resolves an authority context whose digest is deriv
     civilizationId: string;
     authorityContext: { mandateId: string; mandateRevision: string; mandateDigest: string };
   };
-  assert.equal(context.civilizationId, "civilization:engineering");
+  assert.equal(context.civilizationId, civilizationId);
 
-  // The digest must be the digest of the mandate the store actually holds,
-  // recomputed here from the reported content rather than trusted as reported.
-  const storedMandate = resolved.output.mandate as JsonValue;
+  const database = new DatabaseSync(join(xdgDataHome, "ecosym", "observations.sqlite"), {
+    readOnly: true,
+  });
+  const row = database
+    .prepare("SELECT mandate_json FROM mandate_revisions WHERE civilization_id = ?")
+    .get(civilizationId) as { mandate_json: string };
+  database.close();
+  const storedMandate = JSON.parse(row.mandate_json) as JsonValue;
   assert.equal(
     context.authorityContext.mandateDigest,
     `sha256:${sha256(canonicalJson(storedMandate))}`,
@@ -73,18 +84,20 @@ test("a redrawn mandate refuses a context resolved under the previous revision",
   const directory = mkdtempSync(join(tmpdir(), "ecosym-institution-redraw-"));
   const xdgDataHome = join(directory, "data");
   const configPath = join(directory, "civilization.json");
-  writeFileSync(configPath, JSON.stringify(mandateConfig()));
+  writeFileSync(configPath, JSON.stringify(foundingConfig()));
 
-  assert.equal((await runCli(["found", configPath], xdgDataHome)).code, 0);
-  const first = await runCli(["resolve-authority", "civilization:engineering"], xdgDataHome);
+  const founded = await runCli(["found", configPath], xdgDataHome);
+  assert.equal(founded.code, 0);
+  const civilizationId = founded.output.civilizationId as string;
+  const first = await runCli(["resolve-authority", civilizationId], xdgDataHome);
 
-  const redrawn = mandateConfig() as Record<string, unknown>;
+  const redrawn = redrawConfig();
   redrawn.mustEscalate = ["spend.money", "hire.agent"];
   writeFileSync(configPath, JSON.stringify(redrawn));
-  const redraw = await runCli(["found", configPath], xdgDataHome);
+  const redraw = await runCli(["redraw", civilizationId, configPath], xdgDataHome);
   assert.equal(redraw.output.outcome, "redrawn");
 
-  const second = await runCli(["resolve-authority", "civilization:engineering"], xdgDataHome);
+  const second = await runCli(["resolve-authority", civilizationId], xdgDataHome);
   assert.notEqual(
     (first.output.authorityContext as AuthorityContext).authorityContext.mandateDigest,
     (second.output.authorityContext as AuthorityContext).authorityContext.mandateDigest,
@@ -110,28 +123,60 @@ test("a redrawn mandate refuses a context resolved under the previous revision",
     () => assertAuthorityContextMatches(forged, second.output.authorityContext),
     { rule: "authority_context_mismatch" },
   );
+
+  const database = new DatabaseSync(join(xdgDataHome, "ecosym", "observations.sqlite"), {
+    readOnly: true,
+  });
+  const history = database
+    .prepare(
+      `SELECT revision, previous_revision, mandate_json
+         FROM mandate_revisions
+        WHERE civilization_id = ?
+        ORDER BY revision_order`,
+    )
+    .all(civilizationId) as {
+    mandate_json: string;
+    previous_revision: null | string;
+    revision: string;
+  }[];
+  database.close();
+  assert.deepEqual(
+    history.map(({ revision, previous_revision: previousRevision }) => ({
+      revision,
+      previousRevision,
+    })),
+    [
+      { revision: "revision:1", previousRevision: null },
+      { revision: "revision:2", previousRevision: "revision:1" },
+    ],
+  );
+  assert.deepEqual(JSON.parse(history[0]?.mandate_json ?? "null"), redrawConfig());
 });
 
 test("a mandate edited underneath the store refuses to resolve", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-institution-tamper-"));
   const xdgDataHome = join(directory, "data");
   const configPath = join(directory, "civilization.json");
-  writeFileSync(configPath, JSON.stringify(mandateConfig()));
-  assert.equal((await runCli(["found", configPath], xdgDataHome)).code, 0);
+  writeFileSync(configPath, JSON.stringify(foundingConfig()));
+  const founded = await runCli(["found", configPath], xdgDataHome);
+  assert.equal(founded.code, 0);
+  const civilizationId = founded.output.civilizationId as string;
 
   // Edit the stored mandate directly, the way nothing legitimate ever would.
   // A digest cached at write time would still agree with its own column here;
   // only a digest re-derived from these bytes can notice.
   const database = new DatabaseSync(join(xdgDataHome, "ecosym", "observations.sqlite"));
   try {
+    const tampered = redrawConfig();
+    tampered.mayActAlone = ["read.source", "delete.repository"];
     database
       .prepare("UPDATE mandate_revisions SET mandate_json = ? WHERE civilization_id = ?")
-      .run('{"schemaVersion":1,"id":"civilization:engineering"}', "civilization:engineering");
+      .run(canonicalJson(tampered as JsonValue), civilizationId);
   } finally {
     database.close();
   }
 
-  const resolved = await runCli(["resolve-authority", "civilization:engineering"], xdgDataHome);
+  const resolved = await runCli(["resolve-authority", civilizationId], xdgDataHome);
   assert.notEqual(resolved.code, 0);
   assert.equal(resolved.output.error, "mandate_unreadable");
 });
@@ -140,18 +185,20 @@ test("resolution refuses an unknown and a dissolved civilization", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-institution-closed-"));
   const xdgDataHome = join(directory, "data");
   const configPath = join(directory, "civilization.json");
-  writeFileSync(configPath, JSON.stringify(mandateConfig()));
+  writeFileSync(configPath, JSON.stringify(foundingConfig()));
 
   const unknown = await runCli(["resolve-authority", "civilization:absent"], xdgDataHome);
   assert.notEqual(unknown.code, 0);
   assert.equal(unknown.output.error, "civilization_not_found");
 
-  assert.equal((await runCli(["found", configPath], xdgDataHome)).code, 0);
+  const founded = await runCli(["found", configPath], xdgDataHome);
+  assert.equal(founded.code, 0);
+  const civilizationId = founded.output.civilizationId as string;
   assert.equal(
-    (await runCli(["dissolve", "civilization:engineering"], xdgDataHome)).output.outcome,
+    (await runCli(["dissolve", civilizationId], xdgDataHome)).output.outcome,
     "dissolved",
   );
-  const dissolved = await runCli(["resolve-authority", "civilization:engineering"], xdgDataHome);
+  const dissolved = await runCli(["resolve-authority", civilizationId], xdgDataHome);
   assert.notEqual(dissolved.code, 0);
   assert.equal(dissolved.output.error, "civilization_dissolved");
 });
@@ -164,15 +211,16 @@ test("a second, structurally different civilization is founded from configuratio
   const xdgDataHome = join(directory, "data");
 
   const firstPath = join(directory, "first.json");
-  writeFileSync(firstPath, JSON.stringify(mandateConfig()));
-  assert.equal((await runCli(["found", firstPath], xdgDataHome)).output.outcome, "founded");
+  writeFileSync(firstPath, JSON.stringify(foundingConfig()));
+  const first = await runCli(["found", firstPath], xdgDataHome);
+  assert.equal(first.output.outcome, "founded");
 
   const secondPath = join(directory, "second.json");
   writeFileSync(
     secondPath,
     JSON.stringify({
       schemaVersion: 1,
-      id: "civilization:household",
+      name: "Household",
       domain: "the money and the house",
       sources: ["bank-export", "energy-meter"],
       mayActAlone: ["read.balance", "read.meter", "summarise.month"],
@@ -184,8 +232,14 @@ test("a second, structurally different civilization is founded from configuratio
   assert.equal(second.output.outcome, "founded");
 
   // Each resolves to its own authority, with its own derived digest.
-  const one = await runCli(["resolve-authority", "civilization:engineering"], xdgDataHome);
-  const two = await runCli(["resolve-authority", "civilization:household"], xdgDataHome);
+  const one = await runCli(
+    ["resolve-authority", first.output.civilizationId as string],
+    xdgDataHome,
+  );
+  const two = await runCli(
+    ["resolve-authority", second.output.civilizationId as string],
+    xdgDataHome,
+  );
   const digestOne = (one.output.authorityContext as AuthorityContext).authorityContext;
   const digestTwo = (two.output.authorityContext as AuthorityContext).authorityContext;
   assert.notEqual(digestOne.mandateDigest, digestTwo.mandateDigest);

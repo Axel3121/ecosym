@@ -16,6 +16,7 @@ import { canonicalJson, type JsonScalar, type JsonValue, sha256 } from "./json.t
 import {
   mandateDigest,
   parseMandateConfig,
+  type ParsedCivilizationConfig,
   type MandateConfig,
   type ParsedMandateConfig,
 } from "./institution.ts";
@@ -119,6 +120,7 @@ const CREATE_CONFIRMATION_PREVIEWS = `
 const CREATE_INSTITUTION = `
   CREATE TABLE IF NOT EXISTS civilizations (
     civilization_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
     founded_at TEXT NOT NULL,
     dissolved_at TEXT
   ) STRICT;
@@ -128,10 +130,19 @@ const CREATE_INSTITUTION = `
     civilization_id TEXT NOT NULL,
     mandate_id TEXT NOT NULL,
     revision TEXT NOT NULL,
+    previous_revision TEXT,
     mandate_json TEXT NOT NULL,
+    mandate_digest TEXT NOT NULL,
     recorded_at TEXT NOT NULL,
     UNIQUE (civilization_id, revision),
-    FOREIGN KEY (civilization_id) REFERENCES civilizations(civilization_id)
+    UNIQUE (mandate_id, revision),
+    FOREIGN KEY (civilization_id) REFERENCES civilizations(civilization_id),
+    FOREIGN KEY (mandate_id, previous_revision)
+      REFERENCES mandate_revisions(mandate_id, revision),
+    CHECK (
+      (revision = 'revision:1' AND previous_revision IS NULL) OR
+      (revision <> 'revision:1' AND previous_revision IS NOT NULL)
+    )
   ) STRICT;
 
   CREATE INDEX IF NOT EXISTS mandate_revisions_current
@@ -542,56 +553,72 @@ export class ObservationStore {
     });
   }
 
-  /**
-   * Found a civilization, or append a redrawn mandate to one already founded.
-   * Both are sovereign user acts; nothing else in the system may reach this.
-   */
   foundCivilization(
+    parsed: ParsedCivilizationConfig,
+    now = new Date(),
+  ): { civilizationId: string; mandateId: string } {
+    const timestamp = now.toISOString();
+    const civilizationId = `civilization:${randomUUID()}`;
+    const mandateId = `mandate:${randomUUID()}`;
+    return this.#transaction(() => {
+      this.#database
+        .prepare(
+          `INSERT INTO civilizations (civilization_id, name, founded_at)
+           VALUES (?, ?, ?)`,
+        )
+        .run(civilizationId, parsed.config.name, timestamp);
+      this.#insertMandateRevision(
+        civilizationId,
+        mandateId,
+        "revision:1",
+        null,
+        parsed.mandate,
+        timestamp,
+      );
+      return { civilizationId, mandateId };
+    });
+  }
+
+  redrawMandate(
+    civilizationId: string,
     parsed: ParsedMandateConfig,
     now = new Date(),
-  ): "founded" | "redrawn" {
+  ): string {
     const timestamp = now.toISOString();
     return this.#transaction(() => {
       const existing = this.#database
-        .prepare(
-          "SELECT dissolved_at FROM civilizations WHERE civilization_id = ?",
-        )
-        .get(parsed.config.id) as { dissolved_at: null | string } | undefined;
-      if (existing?.dissolved_at != null) {
-        throw new CivilizationDissolvedError(parsed.config.id);
-      }
+        .prepare("SELECT dissolved_at FROM civilizations WHERE civilization_id = ?")
+        .get(civilizationId) as { dissolved_at: null | string } | undefined;
       if (existing === undefined) {
-        this.#database
-          .prepare(
-            "INSERT INTO civilizations (civilization_id, founded_at) VALUES (?, ?)",
-          )
-          .run(parsed.config.id, timestamp);
+        throw new CivilizationNotFoundError(civilizationId);
+      }
+      if (existing.dissolved_at !== null) {
+        throw new CivilizationDissolvedError(civilizationId);
       }
       const previous = this.#database
         .prepare(
-          `SELECT revision FROM mandate_revisions
+          `SELECT mandate_id, revision FROM mandate_revisions
             WHERE civilization_id = ?
             ORDER BY revision_order DESC LIMIT 1`,
         )
-        .get(parsed.config.id) as { revision: string } | undefined;
-      const nextRevision =
-        previous === undefined
-          ? 1
-          : Number.parseInt(previous.revision.replace("revision:", ""), 10) + 1;
-      this.#database
-        .prepare(
-          `INSERT INTO mandate_revisions (
-             civilization_id, mandate_id, revision, mandate_json, recorded_at
-           ) VALUES (?, ?, ?, ?, ?)`,
-        )
-        .run(
-          parsed.config.id,
-          `mandate:${parsed.config.id}`,
-          `revision:${nextRevision}`,
-          parsed.canonical,
-          timestamp,
-        );
-      return previous === undefined ? "founded" : "redrawn";
+        .get(civilizationId) as { mandate_id: string; revision: string } | undefined;
+      if (previous === undefined) {
+        throw new MandateUnreadableError(civilizationId);
+      }
+      const previousNumber = Number.parseInt(previous.revision.replace("revision:", ""), 10);
+      if (!Number.isSafeInteger(previousNumber) || `revision:${previousNumber}` !== previous.revision) {
+        throw new MandateUnreadableError(civilizationId);
+      }
+      const revision = `revision:${previousNumber + 1}`;
+      this.#insertMandateRevision(
+        civilizationId,
+        previous.mandate_id,
+        revision,
+        previous.revision,
+        parsed,
+        timestamp,
+      );
+      return revision;
     });
   }
 
@@ -615,24 +642,28 @@ export class ObservationStore {
     }
     const row = this.#database
       .prepare(
-        `SELECT mandate_id, revision, mandate_json FROM mandate_revisions
+        `SELECT mandate_id, revision, mandate_json, mandate_digest FROM mandate_revisions
           WHERE civilization_id = ?
           ORDER BY revision_order DESC LIMIT 1`,
       )
       .get(civilizationId) as
-      | { mandate_id: string; mandate_json: string; revision: string }
+      | { mandate_digest: string; mandate_id: string; mandate_json: string; revision: string }
       | undefined;
     if (row === undefined) {
       throw new CivilizationNotFoundError(civilizationId);
     }
     const mandate = parseStoredMandate(row.mandate_json, civilizationId);
+    const derivedDigest = mandateDigest(mandate as unknown as JsonValue);
+    if (derivedDigest !== row.mandate_digest) {
+      throw new MandateUnreadableError(civilizationId);
+    }
     return {
       authorityContext: {
         civilizationId,
         authorityContext: {
           mandateId: row.mandate_id,
           mandateRevision: row.revision,
-          mandateDigest: mandateDigest(mandate as unknown as JsonValue),
+          mandateDigest: derivedDigest,
         },
       },
       mandate,
@@ -649,6 +680,34 @@ export class ObservationStore {
         .run(now.toISOString(), civilizationId);
       return numberOfChanges(result) === 1;
     });
+  }
+
+  #insertMandateRevision(
+    civilizationId: string,
+    mandateId: string,
+    revision: string,
+    previousRevision: null | string,
+    parsed: ParsedMandateConfig,
+    recordedAt: string,
+  ): void {
+    const mandateJson = canonicalJson(parsed.config as unknown as JsonValue);
+    const derivedDigest = mandateDigest(parsed.config as unknown as JsonValue);
+    this.#database
+      .prepare(
+        `INSERT INTO mandate_revisions (
+           civilization_id, mandate_id, revision, previous_revision,
+           mandate_json, mandate_digest, recorded_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        civilizationId,
+        mandateId,
+        revision,
+        previousRevision,
+        mandateJson,
+        derivedDigest,
+        recordedAt,
+      );
   }
 
   planRecordIndexModeResolution(
@@ -2714,7 +2773,11 @@ function parseStoredMandate(mandateJson: string, civilizationId: string): Mandat
     throw new MandateUnreadableError(civilizationId);
   }
   try {
-    return parseMandateConfig(decoded).config;
+    const parsed = parseMandateConfig(decoded);
+    if (parsed.canonical !== mandateJson) {
+      throw new MandateUnreadableError(civilizationId);
+    }
+    return parsed.config;
   } catch {
     throw new MandateUnreadableError(civilizationId);
   }
