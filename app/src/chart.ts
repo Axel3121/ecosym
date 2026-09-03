@@ -87,7 +87,7 @@ export class Chart {
     this.hits = [];
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.imageSmoothingEnabled = false;
-    ctx.fillStyle = "#1e2a1c"; ctx.fillRect(0, 0, this.w, this.h);
+    ctx.fillStyle = "#14120e"; ctx.fillRect(0, 0, this.w, this.h); // never meant to be seen: minZoom covers the viewport
 
     // one painted town. It has an edge; beyond it is nothing.
     const town = this.im("/art/town.png");
@@ -218,8 +218,8 @@ export class Chart {
     const im = this.im("/art/smoke.png"); if (!im) return;
     // frames 0-2 only (3-5 are sparkle residue); the puff rises and thins
     const f = Math.floor((t * 2.5) % 3); const sw = 90, sh = 150, sx = 10 + f * 107, sy = 55;
-    const s = Math.max(0.22, 0.2 * z);
-    const rise = ((t * 0.6) % 1) * 12 * z;
+    const s = 0.24; void z;
+    const rise = ((t * 0.6) % 1) * 12;
     this.ctx.globalAlpha = 0.85 - f * 0.2;
     this.ctx.drawImage(im, sx, sy, sw, sh, p.x - sw * s * 0.5, p.y - sh * s - rise, sw * s, sh * s);
     this.ctx.globalAlpha = 1;
@@ -230,7 +230,7 @@ export class Chart {
     const side = Math.abs(dx) >= Math.abs(dy);
     const row = side ? (depth === 0 ? 2 : 3) : dy > 0 ? 0 : 1;
     const frame = Math.floor((t * 5) % 4);
-    const hpx = Math.max(30, Math.min(96, 30 * z)); const s = hpx / WCELL.h;
+    const hpx = 34; void z; const s = hpx / WCELL.h;
     const flip = side && dx > 0;
     const { ctx } = this;
     ctx.save(); ctx.translate(p.x, p.y); if (flip) ctx.scale(-1, 1);

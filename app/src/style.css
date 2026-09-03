@@ -3,7 +3,7 @@
 :root {
   --bg: #1d1a15; --bg-2: #2a251d; --line: #3a342a; --line-2: #5a5040;
   --fg: #e6dcc3; --fg-dim: #9a8f78; --fg-faint: #8f846c; --bg-3: #332d24;
-  --seal: #e8735c; --seal-dim: #c4553f; --live: #a7d98a; --live-dim: #7fb35a;
+  --seal: #e8735c; --seal-dim: #c4553f; --live: var(--fg); --live-dim: var(--fg-dim);
   --mono: "Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --serif: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
 }
@@ -120,7 +120,7 @@ p.note { margin-top: 14px; }
 #chart { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; image-rendering: pixelated; }
 #chart.dragging { cursor: grabbing; }
 #chart.pointing { cursor: pointer; }
-#chart:focus-visible { outline: 2px solid var(--live-dim); outline-offset: -2px; }
+#chart:focus-visible { outline: none; }
 
 .panel { background: var(--panel-bg, rgba(29, 26, 21, 0.94)); color: var(--fg); border: 1px solid var(--line-2); box-shadow: 0 8px 24px rgba(0,0,0,0.45); font-size: 13px; line-height: 1.45; font-family: var(--mono); }
 .cartouche, .docket { display: none; }
@@ -169,7 +169,7 @@ p.note { margin-top: 14px; }
 :root[data-theme="light"] { --panel-bg: rgba(244, 239, 228, 0.95);
   --bg: #f4efe4; --bg-2: #eae3d3; --bg-3: #e0d7c3; --line: #d6ccb6; --line-2: #b8ab90;
   --fg: #2a2318; --fg-dim: #5f553f; --fg-faint: #7a6f58;
-  --seal: #b8432e; --seal-dim: #d0705d; --live: #3f7d2a; --live-dim: #6fa657;
+  --seal: #b8432e; --seal-dim: #d0705d; --live: var(--fg); --live-dim: var(--fg-dim);
 }
 :root[data-theme="light"] .desk { border-right-color: var(--line-2); }
 :root[data-theme="light"] .hint, :root[data-theme="light"] .hover { background: rgba(244,239,228,0.92); color: var(--fg); border: 1px solid var(--line-2); }

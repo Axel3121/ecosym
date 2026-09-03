@@ -1,7 +1,7 @@
 import { deriveScene } from "./scene.ts";
 import type { Scene } from "./scene.ts";
 import { fixture } from "./fixture.ts";
-import { Chart, makeWalkers, stepWalkers, ZOOM_MIN, ZOOM_MAX, fitZoom, WORLD_W, WORLD_H } from "./chart.ts";
+import { Chart, makeWalkers, stepWalkers, ZOOM_MIN, ZOOM_MAX, coverZoom, WORLD_W, WORLD_H } from "./chart.ts";
 import { quarterOf, HALL, SQUARE } from "./town.ts";
 import type { Hit } from "./chart.ts";
 import { renderSheet, renderStrip, renderSamtaler, renderInnstillinger, civByIndex, DEFAULT_SETTINGS } from "./desk.ts";
@@ -16,7 +16,8 @@ const scene: Scene = deriveScene(fixture);
 const canvas = document.getElementById("chart") as HTMLCanvasElement;
 const chart = new Chart(canvas);
 const STRIP_H = 84;
-function minZoom() { return Math.max(ZOOM_MIN, fitZoom(canvas.clientWidth, canvas.clientHeight - STRIP_H) * 0.96); }
+// the painting always covers the viewport: you can scroll out until an edge meets the screen edge, never past it
+function minZoom() { return Math.max(ZOOM_MIN, coverZoom(canvas.clientWidth, canvas.clientHeight)); }
 const walkers = makeWalkers(scene);
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 let motionOff = false;
@@ -326,7 +327,10 @@ function frame(now: number) {
 }
 applySettings();
 renderDocket();
-requestAnimationFrame(() => { chart.resize(); chart.camera = { x: WORLD_W / 2, y: WORLD_H / 2, zoom: minZoom() }; target = { ...chart.camera }; });
+// opening view: the town fills the width (the painting is square, the screen is not); the whole
+// town is still one scroll-out away (minZoom). Centre a little above the square so the hall and its
+// queue sit in the upper third, with the built quarters around.
+requestAnimationFrame(() => { chart.resize(); const w = canvas.clientWidth, h = canvas.clientHeight - STRIP_H; void w; void h; const z = Math.max(minZoom(), 1.0); chart.camera = { x: WORLD_W / 2, y: WORLD_H / 2 - 20, zoom: z }; target = { ...chart.camera }; });
 requestAnimationFrame(frame);
 
 // test hook
