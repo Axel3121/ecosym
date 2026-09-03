@@ -1,6 +1,5 @@
 import type { Scene, Settlement } from "./scene.ts";
-import { TOWN_W, TOWN_H, QUARTERS, SQUARE, HALL, queueSpot, quarterOf, unfoundedQuarters } from "./town.ts";
-import type { Quarter } from "./town.ts";
+import { TOWN_W, TOWN_H, HALL, queueSpot, quarterOf } from "./town.ts";
 
 export interface Camera { x: number; y: number; zoom: number }
 export const ZOOM_MIN = 0.3;
@@ -64,7 +63,7 @@ export class Chart {
 
   constructor(private canvas: HTMLCanvasElement, public camera: Camera = { x: TOWN_W / 2, y: TOWN_H / 2, zoom: 0.7 }) {
     this.ctx = canvas.getContext("2d")!;
-    for (const src of ["/art/town.png", "/art/walkers.png", "/art/smoke.png", "/art/fog.png"]) {
+    for (const src of ["/art/town.png", "/art/town-built.png", "/art/walkers.png", "/art/smoke.png"]) {
       const im = new Image(); im.src = src; this.img.set(src, im);
     }
     this.resize();
@@ -97,8 +96,19 @@ export class Chart {
     const labelAlpha = 1 - Math.max(0, Math.min(1, (z - 1.5) / (SETTLEMENT_ZOOM - 1.5)));
     const now = (performance.now() - this.t0) / 1000;
 
-    // quarters nobody has founded: fog. Not painted over, not invented — covered.
-    for (const q of unfoundedQuarters(scene)) this.fogBox(q, now);
+    // the ground is painted EMPTY. A founded quarter is cut in from the built painting — the
+    // buildings exist only where a civilization does. An unfounded lot is simply an empty lot.
+    const built = this.im("/art/town-built.png");
+    if (built) for (const s of scene.settlements) {
+      if (s.epistemic !== "observed") continue; // never seen → nothing is drawn there
+      const q = quarterOf(scene, s); if (q.key.startsWith("ring")) continue;
+      const pad = 24;
+      const sx = q.box.x1 - pad, sy = q.box.y1 - pad, sw = q.box.x2 - q.box.x1 + pad * 2, sh = q.box.y2 - q.box.y1 + pad * 2;
+      const a = this.toScreen(sx, sy);
+      ctx.drawImage(built, sx, sy, sw, sh, a.x, a.y, sw * z, sh * z);
+    }
+
+    // lots no one has founded are simply empty. Emptiness needs no caption.
 
     // truth layer per founded quarter
     for (const s of scene.settlements) {
@@ -106,7 +116,7 @@ export class Chart {
       const c = this.toScreen((q.box.x1 + q.box.x2) / 2, (q.box.y1 + q.box.y2) / 2);
       const R = Math.max(q.box.x2 - q.box.x1, q.box.y2 - q.box.y1) / 2 * z;
       this.hits.push({ kind: "settlement", settlementId: s.civilizationId, label: s.name, sub: s.epistemic === "observed" ? s.domain : "aldri observert", x: c.x, y: c.y, r: R });
-      if (s.epistemic !== "observed") { this.fogBox(q, now, `${s.name} · aldri observert`); continue; }
+      if (s.epistemic !== "observed") { if (this.showLabels) { const c = this.toScreen(q.seat.x, q.seat.y); this.label(c.x, c.y - 9, s.name, 0.9); this.plain(c.x, c.y + 11, "aldri observert", 0.8); } continue; }
 
       // smoke only where something runs — over that workshop's chimney
       const roots = s.buildings.filter((b) => b.kind === "workshop");
@@ -141,7 +151,9 @@ export class Chart {
       const hc = this.toScreen(hx, hy);
       this.hits.push({ kind: "capital", label: "Rådhuset", sub: scene.capital.matters.length ? `${scene.capital.matters.length} saker venter på svar` : "ingenting venter", x: hc.x, y: hc.y, r: Math.max(24, 70 * z) });
       scene.capital.matters.forEach((m, i) => {
-        const p = this.toScreen(queueSpot(i).x, queueSpot(i).y);
+        // identity objects keep screen size, so the line is spaced in screen pixels, not world units
+        const base = this.toScreen(queueSpot(0).x, queueSpot(0).y);
+        const p = { x: base.x + i * 30, y: base.y };
         this.walker(p, z, 0, -1, 1, 0); // standing, facing the door
         this.hits.push({ kind: "letter", petitionId: m.id, label: m.summary, sub: "venter på svar", x: p.x, y: p.y - 8, r: Math.max(12, 10 * z) });
       });
@@ -161,27 +173,25 @@ export class Chart {
     void selected;
   }
 
+  private plain(x: number, y: number, text: string, alpha: number) {
+    const { ctx } = this;
+    ctx.save(); ctx.globalAlpha = alpha; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.font = `500 10px "Plex Mono", monospace`; ctx.lineJoin = "round"; ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(22,18,12,0.7)"; ctx.strokeText(text.toUpperCase(), x, y);
+    ctx.fillStyle = "#e6dcc3"; ctx.fillText(text.toUpperCase(), x, y); ctx.restore();
+  }
+
   private label(x: number, y: number, text: string, alpha: number) {
     const { ctx } = this;
     ctx.save(); ctx.globalAlpha = alpha; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.font = `500 11px "Plex Mono", monospace`;
-    ctx.lineJoin = "round"; ctx.lineWidth = 4; ctx.strokeStyle = "rgba(22,18,12,0.75)"; ctx.strokeText(text.toUpperCase(), x, y);
-    ctx.fillStyle = "#f1e8d6"; ctx.fillText(text.toUpperCase(), x, y);
+    ctx.font = `500 10px "Plex Mono", monospace`;
+    const t = text.toUpperCase(); const w = Math.ceil(ctx.measureText(t).width) + 14, h = 16;
+    const X = Math.round(x - w / 2), Y = Math.round(y - h / 2);
+    ctx.fillStyle = "rgba(20,16,10,0.35)"; ctx.fillRect(X + 1, Y + 2, w, h);   // soft shadow
+    ctx.fillStyle = "#e9dcc0"; ctx.fillRect(X, Y, w, h);                          // plank
+    ctx.fillStyle = "#b9a884"; ctx.fillRect(X, Y + h - 2, w, 2);                  // plank edge
+    ctx.fillStyle = "#2a2118"; ctx.fillText(t, x, y + 0.5);
     ctx.restore();
-  }
-
-  private fogBox(q: Quarter, now: number, text?: string) {
-    const { ctx } = this;
-    const a = this.toScreen(q.box.x1, q.box.y1), b = this.toScreen(q.box.x2, q.box.y2);
-    const w = b.x - a.x, h = b.y - a.y, cx = a.x + w / 2, cy = a.y + h / 2;
-    const breathe = 0.9 + Math.sin(now * 0.4 + q.box.x1) * 0.04;
-    // a soft dusk over the quarter: darkening, slightly cool, feathered — not a white blob
-    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(w, h) * 0.62 * breathe);
-    g.addColorStop(0, "rgba(38,44,58,0.72)");
-    g.addColorStop(0.7, "rgba(38,44,58,0.55)");
-    g.addColorStop(1, "rgba(38,44,58,0)");
-    ctx.fillStyle = g; ctx.fillRect(a.x - w * 0.3, a.y - h * 0.3, w * 1.6, h * 1.6);
-    if (text && this.showLabels) this.label(cx, cy, text, 0.9);
   }
 
   private smoke(p: P, z: number, t: number) {
@@ -200,7 +210,7 @@ export class Chart {
     const side = Math.abs(dx) >= Math.abs(dy);
     const row = side ? (depth === 0 ? 2 : 3) : dy > 0 ? 0 : 1;
     const frame = Math.floor((t * 5) % 4);
-    const hpx = Math.max(26, Math.min(96, 24 * z)); const s = hpx / WCELL.h;
+    const hpx = Math.max(30, Math.min(96, 30 * z)); const s = hpx / WCELL.h;
     const flip = side && dx > 0;
     const { ctx } = this;
     ctx.save(); ctx.translate(p.x, p.y); if (flip) ctx.scale(-1, 1);
