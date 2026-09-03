@@ -13,6 +13,12 @@ import {
   type ParsedConnectionConfig,
 } from "./config.ts";
 import { canonicalJson, type JsonScalar, type JsonValue, sha256 } from "./json.ts";
+import {
+  mandateDigest,
+  parseMandateConfig,
+  type MandateConfig,
+  type ParsedMandateConfig,
+} from "./institution.ts";
 import { defaultStateDirectory } from "./paths.ts";
 import type { JsonlRecordIndexMode } from "./readers.ts";
 import { utcInstantOrderingKey } from "./time.ts";
@@ -21,7 +27,7 @@ import {
   verificationFactFromInput,
 } from "./verification-facts.ts";
 
-const STORE_SCHEMA_VERSION = 11;
+const STORE_SCHEMA_VERSION = 12;
 const STORE_FILENAME = "observations.sqlite";
 const BUSY_RETRY_WINDOW_MILLISECONDS = 250;
 const CREATE_COLLECTION_ATTEMPTS = `
@@ -100,6 +106,36 @@ const CREATE_CONFIRMATION_PREVIEWS = `
     issued_at TEXT NOT NULL,
     consumed_at TEXT
   ) STRICT;
+`;
+
+// Institutional state. Kept in tables distinct from `facts`: SECURITY.md names
+// institutional records and observations as one protected class, so they share a
+// store, but institutional state says what *should* exist while a fact says what
+// was observed, and the two must never be queried as one thing.
+//
+// A mandate revision is never updated in place. Redrawing appends a row; the
+// previous revision stays readable, because history and current truth are
+// distinct. `dissolved_at` retires a civilization without erasing what it was.
+const CREATE_INSTITUTION = `
+  CREATE TABLE IF NOT EXISTS civilizations (
+    civilization_id TEXT PRIMARY KEY,
+    founded_at TEXT NOT NULL,
+    dissolved_at TEXT
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS mandate_revisions (
+    revision_order INTEGER PRIMARY KEY,
+    civilization_id TEXT NOT NULL,
+    mandate_id TEXT NOT NULL,
+    revision TEXT NOT NULL,
+    mandate_json TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    UNIQUE (civilization_id, revision),
+    FOREIGN KEY (civilization_id) REFERENCES civilizations(civilization_id)
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS mandate_revisions_current
+    ON mandate_revisions(civilization_id, revision_order DESC);
 `;
 
 export interface ActiveConnection {
@@ -252,6 +288,49 @@ type RecordIndexModeResolutionSnapshot = Omit<
 
 export interface CollectionSink {
   recordSourceRecord(facts: () => readonly FactInput[]): void;
+}
+
+export interface ResolvedAuthorityContext {
+  authorityContext: {
+    civilizationId: string;
+    authorityContext: {
+      mandateId: string;
+      mandateRevision: string;
+      mandateDigest: string;
+    };
+  };
+  mandate: MandateConfig;
+}
+
+export class CivilizationNotFoundError extends Error {
+  readonly code = "civilization_not_found";
+
+  constructor(_civilizationId: string) {
+    super("No civilization is founded under this id");
+    this.name = "CivilizationNotFoundError";
+  }
+}
+
+export class CivilizationDissolvedError extends Error {
+  readonly code = "civilization_dissolved";
+
+  constructor(_civilizationId: string) {
+    super("This civilization has been dissolved");
+    this.name = "CivilizationDissolvedError";
+  }
+}
+
+/**
+ * A stored mandate that cannot be read back as the thing it was written as is
+ * an unknown territory, and an unknown territory cannot authorize anything.
+ */
+export class MandateUnreadableError extends Error {
+  readonly code = "mandate_unreadable";
+
+  constructor(_civilizationId: string) {
+    super("The stored mandate could not be read as a mandate");
+    this.name = "MandateUnreadableError";
+  }
 }
 
 export class ConnectionConflictError extends Error {
@@ -459,6 +538,115 @@ export class ObservationStore {
       const result = this.#database
         .prepare("DELETE FROM active_connections WHERE connection_id = ?")
         .run(connectionId);
+      return numberOfChanges(result) === 1;
+    });
+  }
+
+  /**
+   * Found a civilization, or append a redrawn mandate to one already founded.
+   * Both are sovereign user acts; nothing else in the system may reach this.
+   */
+  foundCivilization(
+    parsed: ParsedMandateConfig,
+    now = new Date(),
+  ): "founded" | "redrawn" {
+    const timestamp = now.toISOString();
+    return this.#transaction(() => {
+      const existing = this.#database
+        .prepare(
+          "SELECT dissolved_at FROM civilizations WHERE civilization_id = ?",
+        )
+        .get(parsed.config.id) as { dissolved_at: null | string } | undefined;
+      if (existing?.dissolved_at != null) {
+        throw new CivilizationDissolvedError(parsed.config.id);
+      }
+      if (existing === undefined) {
+        this.#database
+          .prepare(
+            "INSERT INTO civilizations (civilization_id, founded_at) VALUES (?, ?)",
+          )
+          .run(parsed.config.id, timestamp);
+      }
+      const previous = this.#database
+        .prepare(
+          `SELECT revision FROM mandate_revisions
+            WHERE civilization_id = ?
+            ORDER BY revision_order DESC LIMIT 1`,
+        )
+        .get(parsed.config.id) as { revision: string } | undefined;
+      const nextRevision =
+        previous === undefined
+          ? 1
+          : Number.parseInt(previous.revision.replace("revision:", ""), 10) + 1;
+      this.#database
+        .prepare(
+          `INSERT INTO mandate_revisions (
+             civilization_id, mandate_id, revision, mandate_json, recorded_at
+           ) VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(
+          parsed.config.id,
+          `mandate:${parsed.config.id}`,
+          `revision:${nextRevision}`,
+          parsed.canonical,
+          timestamp,
+        );
+      return previous === undefined ? "founded" : "redrawn";
+    });
+  }
+
+  /**
+   * Resolve a civilization's current authority context.
+   *
+   * The digest is derived here, from the bytes actually stored, on every read.
+   * It is deliberately not a column: a cached digest agrees with its content
+   * only until someone edits the content underneath it, and that is precisely
+   * the drift this boundary exists to detect.
+   */
+  resolveAuthorityContext(civilizationId: string): ResolvedAuthorityContext {
+    const civilization = this.#database
+      .prepare("SELECT dissolved_at FROM civilizations WHERE civilization_id = ?")
+      .get(civilizationId) as { dissolved_at: null | string } | undefined;
+    if (civilization === undefined) {
+      throw new CivilizationNotFoundError(civilizationId);
+    }
+    if (civilization.dissolved_at != null) {
+      throw new CivilizationDissolvedError(civilizationId);
+    }
+    const row = this.#database
+      .prepare(
+        `SELECT mandate_id, revision, mandate_json FROM mandate_revisions
+          WHERE civilization_id = ?
+          ORDER BY revision_order DESC LIMIT 1`,
+      )
+      .get(civilizationId) as
+      | { mandate_id: string; mandate_json: string; revision: string }
+      | undefined;
+    if (row === undefined) {
+      throw new CivilizationNotFoundError(civilizationId);
+    }
+    const mandate = parseStoredMandate(row.mandate_json, civilizationId);
+    return {
+      authorityContext: {
+        civilizationId,
+        authorityContext: {
+          mandateId: row.mandate_id,
+          mandateRevision: row.revision,
+          mandateDigest: mandateDigest(mandate as unknown as JsonValue),
+        },
+      },
+      mandate,
+    };
+  }
+
+  dissolveCivilization(civilizationId: string, now = new Date()): boolean {
+    return this.#transaction(() => {
+      const result = this.#database
+        .prepare(
+          `UPDATE civilizations SET dissolved_at = ?
+            WHERE civilization_id = ? AND dissolved_at IS NULL`,
+        )
+        .run(now.toISOString(), civilizationId);
       return numberOfChanges(result) === 1;
     });
   }
@@ -1432,10 +1620,20 @@ export class ObservationStore {
     if (version.user_version === STORE_SCHEMA_VERSION) {
       return;
     }
+    if (version.user_version === 11) {
+      this.#transaction(() => {
+        this.#database.exec(`
+          ${CREATE_INSTITUTION}
+          PRAGMA user_version = ${STORE_SCHEMA_VERSION};
+        `);
+      });
+      return;
+    }
     if (version.user_version === 10) {
       this.#transaction(() => {
         this.#database.exec(`
           ${CREATE_CONFIRMATION_PREVIEWS}
+          ${CREATE_INSTITUTION}
           PRAGMA user_version = ${STORE_SCHEMA_VERSION};
         `);
       });
@@ -1500,6 +1698,8 @@ export class ObservationStore {
         ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
 
         ${CREATE_CONFIRMATION_PREVIEWS}
+
+        ${CREATE_INSTITUTION}
 
         ${CREATE_COLLECTION_ATTEMPTS}
         ${CREATE_COLLECTION_ATTEMPTS_LATEST_INDEX}
@@ -1806,6 +2006,7 @@ export class ObservationStore {
         this.#database.exec(CREATE_COLLECTION_ATTEMPTS_LATEST_INDEX);
         this.#database.exec(CREATE_COLLECTION_ATTEMPT_RETIREMENTS);
         this.#database.exec(CREATE_CONFIRMATION_PREVIEWS);
+        this.#database.exec(CREATE_INSTITUTION);
         this.#database.exec(`PRAGMA user_version = ${STORE_SCHEMA_VERSION}`);
       });
     } finally {
@@ -2495,6 +2696,28 @@ function safeFailureCode(error: unknown): string {
     return error.code;
   }
   return "internal_error";
+}
+
+/**
+ * Read a stored mandate back as a mandate, or refuse.
+ *
+ * Re-parsing on the read path is what makes the digest honest: it is derived
+ * from bytes that have been proven to still be a mandate, so content edited
+ * underneath the store fails closed here rather than producing a confident
+ * digest of something nobody validated.
+ */
+function parseStoredMandate(mandateJson: string, civilizationId: string): MandateConfig {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(mandateJson) as unknown;
+  } catch {
+    throw new MandateUnreadableError(civilizationId);
+  }
+  try {
+    return parseMandateConfig(decoded).config;
+  } catch {
+    throw new MandateUnreadableError(civilizationId);
+  }
 }
 
 function numberOfChanges(result: StatementResultingChanges): number {

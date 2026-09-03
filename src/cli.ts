@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import { collectConnection } from "./collect.ts";
 import { parseConnectionConfig } from "./config.ts";
+import { parseMandateConfig } from "./institution.ts";
 import {
   CollectionFailedError,
   ObservationStore,
@@ -30,6 +31,9 @@ async function run(arguments_: string[]): Promise<CommandResult> {
         commands: [
           "connect",
           "disconnect",
+          "found",
+          "dissolve",
+          "resolve-authority",
           "collect",
           "status",
           "query",
@@ -49,6 +53,12 @@ async function run(arguments_: string[]): Promise<CommandResult> {
         return await connect(store, arguments_.slice(1));
       case "disconnect":
         return disconnect(store, arguments_.slice(1));
+      case "found":
+        return await found(store, arguments_.slice(1));
+      case "dissolve":
+        return dissolve(store, arguments_.slice(1));
+      case "resolve-authority":
+        return resolveAuthority(store, arguments_.slice(1));
       case "collect":
         return await collect(store, arguments_.slice(1));
       case "status":
@@ -106,6 +116,65 @@ async function connect(store: ObservationStore, arguments_: string[]): Promise<C
       outcome,
       connectionId: parsed.config.id,
       connectionVersion: parsed.hash,
+    },
+  };
+}
+
+async function found(store: ObservationStore, arguments_: string[]): Promise<CommandResult> {
+  if (arguments_.length !== 1) {
+    return invalidArguments("found");
+  }
+  const input = await readConfig(arguments_[0] as string);
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(input) as unknown;
+  } catch {
+    throw Object.assign(new Error("mandate input is not JSON"), {
+      code: "invalid_mandate",
+    });
+  }
+  const parsed = parseMandateConfig(decoded);
+  const outcome = store.foundCivilization(parsed);
+  return {
+    exitCode: 0,
+    output: {
+      schemaVersion: 1,
+      command: "found",
+      outcome,
+      civilizationId: parsed.config.id,
+    },
+  };
+}
+
+function dissolve(store: ObservationStore, arguments_: string[]): CommandResult {
+  if (arguments_.length !== 1) {
+    return invalidArguments("dissolve");
+  }
+  const civilizationId = arguments_[0] as string;
+  return {
+    exitCode: 0,
+    output: {
+      schemaVersion: 1,
+      command: "dissolve",
+      outcome: store.dissolveCivilization(civilizationId) ? "dissolved" : "not-founded",
+      civilizationId,
+    },
+  };
+}
+
+function resolveAuthority(store: ObservationStore, arguments_: string[]): CommandResult {
+  if (arguments_.length !== 1) {
+    return invalidArguments("resolve-authority");
+  }
+  const resolved = store.resolveAuthorityContext(arguments_[0] as string);
+  return {
+    exitCode: 0,
+    output: {
+      schemaVersion: 1,
+      command: "resolve-authority",
+      outcome: "resolved",
+      authorityContext: resolved.authorityContext,
+      mandate: resolved.mandate,
     },
   };
 }
