@@ -9,6 +9,7 @@ const bwrapPresent = existsSync("/usr/bin/bwrap");
 function argumentsFor(environment: Record<string, string>): string[] {
   return sandboxArguments({
     childArguments: ["--version"],
+    commitChannel: undefined,
     environment,
     executable: "/usr/bin/true",
     home: "/home/tester",
@@ -79,6 +80,7 @@ test(
     const { spawnSync } = await import("node:child_process");
     const arguments_ = sandboxArguments({
       childArguments: ["-c", 'test -z "${ECOSYM_TEST_SECRET+x}"'],
+      commitChannel: undefined,
       environment: { PATH: process.env.PATH ?? "/usr/bin" },
       executable: "/usr/bin/bash",
       home: process.env.HOME ?? "/home/tester",

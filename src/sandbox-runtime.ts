@@ -5,6 +5,7 @@ import type { SandboxSourceMount } from "./sandbox.ts";
 
 interface SandboxArgumentsInput {
   childArguments: string[];
+  commitChannel: string | undefined;
   environment: Record<string, string | undefined>;
   executable: string;
   home: string;
@@ -77,6 +78,13 @@ export function sandboxArguments(input: SandboxArgumentsInput): string[] {
     ...(input.project === undefined ? [] : [join(resolve(input.project), ".git")]),
   ]).map((path) => ({ destination: path, source: path, writable: false }));
   const sourceMounts = input.sourceMounts.map((mount) => ({ ...mount, writable: false }));
+  // The run asks for commits through this directory, so it must be able to
+  // write requests into it. It sits under the state directory, which is a
+  // tmpfs here, so without an explicit mount the channel the run is told to
+  // use would not exist.
+  const channelMounts = existingMounts(
+    input.commitChannel === undefined ? [] : [input.commitChannel],
+  ).map((path) => ({ destination: path, source: path, writable: true }));
   const protectedSourceDirectories = sourceProtectionRoots(
     input.readonlySourceDirectories,
     input.home,
@@ -85,6 +93,7 @@ export function sandboxArguments(input: SandboxArgumentsInput): string[] {
     ...stateMounts,
     ...worktreeMount,
     ...writableMounts,
+    ...channelMounts,
     ...readonlyMounts,
     ...sourceMounts,
   ];
@@ -92,6 +101,7 @@ export function sandboxArguments(input: SandboxArgumentsInput): string[] {
     { destination: input.stateDirectory, source: input.stateDirectory, writable: true },
     ...worktreeMount,
     ...writableMounts,
+    ...channelMounts,
   ];
   for (const directory of protectedSourceDirectories) {
     for (const mount of writableAreas) {
@@ -170,6 +180,7 @@ export function sandboxArguments(input: SandboxArgumentsInput): string[] {
   addMounts(arguments_, stateMounts);
   addMounts(arguments_, worktreeMount);
   addMounts(arguments_, writableMounts);
+  addMounts(arguments_, channelMounts);
   addMounts(arguments_, readonlyMounts);
   addMounts(arguments_, sourceMounts);
   for (const directory of protectedSourceDirectories) {
@@ -200,12 +211,17 @@ export function sandboxArguments(input: SandboxArgumentsInput): string[] {
     "ECOSYM_BWRAP",
     "--unsetenv",
     "ECOSYM_SANDBOX_EXEC",
-    "--chdir",
-    input.worktree,
-    "--",
-    input.executable,
-    ...input.childArguments,
   );
+  // The run is told to write requests to $ECOSYM_COMMIT_CHANNEL. Mounting the
+  // directory writable is not enough — without this the run has no name for
+  // it and cannot find the channel it was just given write access to. Only
+  // set it when the directory actually exists and was mounted: an unset
+  // variable is a clear "no channel" the run's own instructions already
+  // handle, where a name pointing at nothing would not be.
+  if (channelMounts.length > 0) {
+    arguments_.push("--setenv", "ECOSYM_COMMIT_CHANNEL", channelMounts[0]!.destination);
+  }
+  arguments_.push("--chdir", input.worktree, "--", input.executable, ...input.childArguments);
   return arguments_;
 }
 
