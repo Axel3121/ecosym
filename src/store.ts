@@ -143,7 +143,8 @@ const CREATE_FORGET_RECORDS = `
 //
 // A mandate revision is never updated in place. Redrawing appends a row; the
 // previous revision stays readable, because history and current truth are
-// distinct. `dissolved_at` retires a civilization without erasing what it was.
+// distinct. Dissolution appends a `status = 'dissolved'` revision without
+// erasing what the civilization was.
 const CREATE_INSTITUTION = `
   CREATE TABLE IF NOT EXISTS civilizations (
     civilization_id TEXT PRIMARY KEY,
@@ -2531,7 +2532,16 @@ export class ObservationStore {
         )
         .all()
         .map((value) => {
-          const row = value as Record<string, JsonValue> & { mandate_json: string };
+          const row = value as Record<string, JsonValue> & {
+            civilization_id: string;
+            mandate_digest: string;
+            mandate_json: string;
+          };
+          const mandate = parseStoredMandate(row.mandate_json, row.civilization_id);
+          const derivedDigest = mandateDigest(mandate as unknown as JsonValue);
+          if (derivedDigest !== row.mandate_digest) {
+            throw new MandateUnreadableError(row.civilization_id);
+          }
           return {
             revisionOrder: row.revision_order,
             civilizationId: row.civilization_id,
@@ -2539,8 +2549,8 @@ export class ObservationStore {
             revision: row.revision,
             previousRevision: row.previous_revision,
             status: row.status,
-            mandate: JSON.parse(row.mandate_json) as JsonValue,
-            mandateDigest: row.mandate_digest,
+            mandate: mandate as unknown as JsonValue,
+            mandateDigest: derivedDigest,
             recordedAt: row.recorded_at,
           } as Record<string, JsonValue>;
         }),

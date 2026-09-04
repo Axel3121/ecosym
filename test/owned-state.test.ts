@@ -15,6 +15,7 @@ import {
   ForgetConnectionActiveError,
   ForgetExportCoverageError,
   ForgetStateChangedError,
+  MandateUnreadableError,
   ObservationStore,
   type FactInput,
 } from "../src/store.ts";
@@ -350,6 +351,37 @@ test("owned state exports institutional history and fingerprints its changes", (
       founded.mandateId,
     );
     assert.equal(after.bytes.includes("confirmationToken"), false);
+  } finally {
+    store.close();
+  }
+});
+
+test("owned state export refuses a mandate whose stored digest disagrees", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-owned-institution-tamper-"));
+  const store = new ObservationStore(directory);
+  try {
+    const founded = store.foundCivilization(
+      parseCivilizationConfig({
+        schemaVersion: 1,
+        name: "Engineering",
+        domain: "the software this person builds",
+        sources: ["cli-source"],
+        mayActAlone: ["read.source"],
+        mustEscalate: ["spend.money"],
+      }),
+    );
+    const database = new DatabaseSync(store.path);
+    try {
+      database
+        .prepare(
+          "UPDATE mandate_revisions SET mandate_digest = 'sha256:wrong' WHERE civilization_id = ?",
+        )
+        .run(founded.civilizationId);
+    } finally {
+      database.close();
+    }
+
+    assert.throws(() => store.exportOwnedState(), MandateUnreadableError);
   } finally {
     store.close();
   }
