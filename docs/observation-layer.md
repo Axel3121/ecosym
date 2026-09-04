@@ -187,6 +187,9 @@ npm run ecosym -- resolve-record-index CONNECTION_ID CONNECTION_VERSION physical
 npm run ecosym -- resolve-record-index CONNECTION_ID CONNECTION_VERSION physical-line|record-ordinal --confirm TOKEN
 npm run ecosym -- retire-collection-attempt ATTEMPT_ID --by ACTOR
 npm run ecosym -- retire-collection-attempt ATTEMPT_ID --by ACTOR --confirm TOKEN
+npm run ecosym -- export DESTINATION
+npm run ecosym -- forget CONNECTION_ID --by ACTOR
+npm run ecosym -- forget CONNECTION_ID --by ACTOR --export-digest DIGEST --confirm TOKEN
 ```
 
 Registration stores a canonical configuration revision and its hash in one
@@ -214,7 +217,78 @@ Status also includes every collection attempt under `collectionAttempts` and
 every durable retirement under `collectionAttemptRetirements`, including the
 actor and retirement time. It continues to include every recorded user
 resolution under `recordIndexModeResolutions`, scoped by connection ID and
-configuration hash.
+configuration hash. Completed deletion records appear under `forgetRecords`;
+they retain the actor, time, connection, exact identifiers and counts, inventory
+digest, and presented export digest, but no deleted configuration or fact
+payload.
+
+## Export and deletion
+
+`export DESTINATION` writes one canonical JSON bundle to the named path with
+mode `0600`. Standard output remains one schema-version-one command envelope:
+`outcome` is `exported`, and `destination`, `digest`, `exportedAt`, and `counts`
+describe the file. The digest is `sha256:` followed by SHA-256 of the exact
+canonical file bytes. Re-exporting unchanged owned state writes byte-identical
+content and reports the original snapshot instant; a change to exported state
+creates a new snapshot instant and digest.
+
+The bundle has its own `schemaVersion`, the observation store schema version,
+and sections for every connection version and canonical registered
+configuration, active connection, fact, collection attempt, attempt retirement,
+record-index-mode resolution, and completed forget record. Facts retain their
+stored provenance, epistemic status, source and collection times, source-time
+ordering key, payload and payload digest, attempt order, and derived temporal
+status without upgrading unknown values. The top-level shape leaves the
+observation store in its own section so a later institution section can be
+added without changing these records.
+
+Attempt retirements and record-index-mode resolutions carry the SHA-256 digest
+of the confirmation token as `confirmationTokenDigest`, preserving the link to
+the preview that authorized the operation. Confirmation tokens are never
+exported in plaintext.
+
+The bundle deliberately omits `confirmationPreviews`, because approval-gate
+records are operational state and exporting them could disclose confirmation
+material. Confirmation material in exported operation records is carried only
+as the digest described above, never in plaintext. The bundle also omits the
+operational `ownedStateExports` evidence ledger so creating an export does not
+recursively change the next bundle. Both omissions and their reasons are stated
+in every bundle.
+
+An export is a complete copy of owned state at the stated instant and evidence
+for deletion. Ecosym has no import or restore command: an export is not a way to
+undo `forget`.
+
+`forget CONNECTION_ID --by ACTOR` is only a preview. The connection must already
+be inactive. The preview lists all versions, fact IDs, collection-attempt IDs,
+attempt-retirement IDs, and record-index-resolution IDs, gives exact counts and
+an inventory digest, states the permanent consequence, and issues the existing
+random single-use confirmation token. It deletes nothing.
+
+Confirmation additionally requires `--export-digest DIGEST`. Export coverage
+is decided by comparing the previewed connection inventory digest with the
+inventory digest recorded atomically when that exact export was produced. The
+inventory includes every identifier in the deletion scope, so an export made
+before a later collection or decision does not cover the changed inventory.
+Changes to unrelated connections do not invalidate coverage of the named
+connection. Confirmation first rechecks the preview fingerprint, then checks
+export coverage, deletes the listed rows in one transaction, spends the token,
+and appends the payload-free forget record.
+
+Forget refusal codes are:
+
+| Code | Meaning |
+| --- | --- |
+| `forget_connection_active` | The named connection is still active. |
+| `forget_connection_not_found` | No connection versions exist for that ID. |
+| `confirmation_preview_not_found` | No matching forget preview issued this token. |
+| `confirmation_already_spent` | This confirmation was already used. |
+| `forget_state_changed` | The exact inventory or active state changed after preview. |
+| `forget_export_coverage_mismatch` | The digest is unknown or covers a different inventory. |
+
+An export destination that cannot be written is reported as
+`export_unwritable`. Invalid command shapes continue to report
+`invalid_arguments`.
 
 ## Verification result
 
