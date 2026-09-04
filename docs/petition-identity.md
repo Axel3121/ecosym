@@ -7,9 +7,10 @@ be followed later. It is subordinate to `PRODUCT.md`, `ARCHITECTURE.md`, and
 
 This is a design, not evidence that a consequential petition path exists. No
 connected runtime is known to provide the mandatory, non-bypassable admission
-boundary, no user credential owner or proof profile has been selected, and no
-consequential request type exists. A path missing any of those remains
-unavailable for consequential petitions.
+boundary, and no user credential owner or proof profile has been selected. A
+consequential request-type definition, validator, and deterministic authority
+projection exist and are tested, but nothing is configured to consume them. A
+path missing any of those remains unavailable for consequential petitions.
 
 This document does not design jurisdiction or mandate resolution, admission,
 the council, durable cases, or the physical petition store. It names the values
@@ -745,7 +746,8 @@ load-bearing gaps rather than hidden implementation freedom:
   physical source of record;
 - no trusted transaction-confirmation credential owner or proof profile has
   been selected;
-- no consequential request type and deterministic authority projection exists;
+- a consequential request-type definition, validator, and deterministic authority
+  projection exist and are tested, but nothing is configured to consume them;
 - mandate resolution and authoritative delivery to a control plane remain
   undesigned outside this boundary;
 - no runtime is known to provide non-bypassable admission; and
