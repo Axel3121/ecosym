@@ -143,18 +143,18 @@ function markStoreAsSchemaSix(stateDirectory: string): void {
   database.close();
 }
 
-function resolveRecordIndexMode(
+async function resolveRecordIndexMode(
   store: ObservationStore,
   connectionId: string,
   connectionVersion: string,
   mode: "physical-line" | "record-ordinal",
-): void {
+): Promise<void> {
   const plan = store.planRecordIndexModeResolution(
     connectionId,
     connectionVersion,
     mode,
   );
-  store.resolveRecordIndexMode(
+  await store.resolveRecordIndexMode(
     connectionId,
     connectionVersion,
     mode,
@@ -557,7 +557,7 @@ test("verification and collection refuse a replaced record-index mode", async ()
 
   const migrated = new ObservationStore(stateDirectory);
   try {
-    resolveRecordIndexMode(
+    await resolveRecordIndexMode(
       migrated,
       parsed.config.id,
       parsed.hash,
@@ -565,19 +565,24 @@ test("verification and collection refuse a replaced record-index mode", async ()
     );
     const physicalConnection = migrated.getConnection(parsed.config.id);
     const snapshot = migrated.factsForVerification(physicalConnection);
+    let queuedResolution: Promise<void> | undefined;
     migrated.factsForVerification = () => {
       queueMicrotask(() => {
-        resolveRecordIndexMode(
-          migrated,
-          parsed.config.id,
-          parsed.hash,
-          "record-ordinal",
+        queuedResolution = assert.doesNotReject(
+          resolveRecordIndexMode(
+            migrated,
+            parsed.config.id,
+            parsed.hash,
+            "record-ordinal",
+          ),
         );
       });
       return snapshot;
     };
 
     const verification = await verifyConnection(migrated, physicalConnection);
+    assert.ok(queuedResolution);
+    await queuedResolution;
     assert.equal(verification.outcome, "unread");
     assert.equal(
       verification.unreadReason,
@@ -588,14 +593,14 @@ test("verification and collection refuse a replaced record-index mode", async ()
       "record-ordinal",
     );
 
-    resolveRecordIndexMode(
+    await resolveRecordIndexMode(
       migrated,
       parsed.config.id,
       parsed.hash,
       "physical-line",
     );
     const staleCollection = migrated.getConnection(parsed.config.id);
-    resolveRecordIndexMode(
+    await resolveRecordIndexMode(
       migrated,
       parsed.config.id,
       parsed.hash,
@@ -631,14 +636,13 @@ test("verification and collection refuse a replaced record-index mode", async ()
     });
     await started;
     try {
-      assert.throws(
-        () =>
-          migrated.resolveRecordIndexMode(
-            parsed.config.id,
-            parsed.hash,
-            "physical-line",
-            correction.confirmationToken,
-          ),
+      await assert.rejects(
+        migrated.resolveRecordIndexMode(
+          parsed.config.id,
+          parsed.hash,
+          "physical-line",
+          correction.confirmationToken,
+        ),
         { code: "record_index_resolution_collection_running" },
       );
     } finally {

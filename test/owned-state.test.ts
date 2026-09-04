@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { parseConnectionConfig } from "../src/config.ts";
+import { parseCivilizationConfig } from "../src/institution.ts";
 import { sha256 } from "../src/json.ts";
 import {
   ConfirmationAlreadySpentError,
@@ -110,7 +112,7 @@ test("owned state exports deterministically and forgets one exact covered invent
       "retired-target-attempt",
       "operator:test",
     );
-    store.retireCollectionAttempt(
+    await store.retireCollectionAttempt(
       "retired-target-attempt",
       "operator:test",
       retirementPlan.confirmationToken,
@@ -120,7 +122,7 @@ test("owned state exports deterministically and forgets one exact covered invent
       target.hash,
       "physical-line",
     );
-    store.resolveRecordIndexMode(
+    await store.resolveRecordIndexMode(
       "target",
       target.hash,
       "physical-line",
@@ -132,7 +134,7 @@ test("owned state exports deterministically and forgets one exact covered invent
       ForgetConnectionActiveError,
     );
     assert.equal(store.disconnect("target"), true);
-    assert.throws(
+    await assert.rejects(
       () =>
         store.forget(
           "target",
@@ -178,7 +180,7 @@ test("owned state exports deterministically and forgets one exact covered invent
     assert.equal(plan.counts.collectionAttempts, 3);
     assert.equal(plan.counts.collectionAttemptRetirements, 1);
     assert.equal(plan.counts.recordIndexModeResolutions, 1);
-    assert.throws(
+    await assert.rejects(
       () =>
         store.forget(
           "target",
@@ -191,7 +193,7 @@ test("owned state exports deterministically and forgets one exact covered invent
 
     const coveringExport = store.exportOwnedState(new Date("2026-09-01T03:00:00.000Z"));
     assert.notEqual(coveringExport.digest, staleExport.digest);
-    const forgotten = store.forget(
+    const forgotten = await store.forget(
       "target",
       "operator:test",
       coveringExport.digest,
@@ -206,7 +208,7 @@ test("owned state exports deterministically and forgets one exact covered invent
     assert.deepEqual(store.statuses().map((status) => status.connectionId), ["other"]);
     assert.equal(store.countFacts("other"), 1);
     assert.equal(store.factsForVerification(store.getConnection("other")).facts.length, 1);
-    assert.throws(
+    await assert.rejects(
       () =>
         store.forget(
           "target",
@@ -246,7 +248,7 @@ test("owned state exports deterministically and forgets one exact covered invent
   }
 });
 
-test("owned state exports confirmation digests without confirmation tokens", () => {
+test("owned state exports confirmation digests without confirmation tokens", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-owned-state-confirmations-"));
   const store = new ObservationStore(directory);
   const parsed = connection("confirmation-export");
@@ -278,7 +280,7 @@ test("owned state exports confirmation digests without confirmation tokens", () 
       "confirmation-export-attempt",
       "operator:test",
     );
-    store.retireCollectionAttempt(
+    await store.retireCollectionAttempt(
       retirementPreview.attemptId,
       retirementPreview.retiredBy,
       retirementPreview.confirmationToken,
@@ -288,7 +290,7 @@ test("owned state exports confirmation digests without confirmation tokens", () 
       parsed.hash,
       "physical-line",
     );
-    store.resolveRecordIndexMode(
+    await store.resolveRecordIndexMode(
       resolutionPreview.connectionId,
       resolutionPreview.connectionVersion,
       resolutionPreview.recordIndexMode,
@@ -318,7 +320,42 @@ test("owned state exports confirmation digests without confirmation tokens", () 
   }
 });
 
-test("forget confirmation refuses when the previewed inventory moves", () => {
+test("owned state exports institutional history and fingerprints its changes", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-owned-institution-"));
+  const store = new ObservationStore(directory);
+  try {
+    const before = store.exportOwnedState(new Date("2026-09-04T00:00:00.000Z"));
+    const founded = store.foundCivilization(
+      parseCivilizationConfig({
+        schemaVersion: 1,
+        name: "Engineering",
+        domain: "the software this person builds",
+        sources: ["cli-source"],
+        mayActAlone: ["read.source"],
+        mustEscalate: ["spend.money"],
+      }),
+      new Date("2026-09-04T01:00:00.000Z"),
+    );
+    const after = store.exportOwnedState(new Date("2026-09-04T02:00:00.000Z"));
+
+    assert.notEqual(after.digest, before.digest);
+    assert.equal(after.counts.civilizations, 1);
+    assert.equal(after.counts.mandateRevisions, 1);
+    assert.equal(
+      after.bundle.institutionStore.civilizations[0]?.civilizationId,
+      founded.civilizationId,
+    );
+    assert.equal(
+      after.bundle.institutionStore.mandateRevisions[0]?.mandateId,
+      founded.mandateId,
+    );
+    assert.equal(after.bytes.includes("confirmationToken"), false);
+  } finally {
+    store.close();
+  }
+});
+
+test("forget confirmation refuses when the previewed inventory moves", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-forget-stale-"));
   const store = new ObservationStore(directory);
   const parsed = connection("moving");
@@ -340,7 +377,7 @@ test("forget confirmation refuses when the previewed inventory moves", () => {
       .run(parsed.hash);
     database.close();
     const exported = store.exportOwnedState();
-    assert.throws(
+    await assert.rejects(
       () =>
         store.forget(
           "moving",
@@ -356,7 +393,139 @@ test("forget confirmation refuses when the previewed inventory moves", () => {
   }
 });
 
-test("schema eleven stores gain forget and export evidence without losing previews", () => {
+test("confirmed forget retries through store contention without double-applying", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-forget-contention-"));
+  const store = new ObservationStore(directory, 20);
+  const parsed = connection("contended-forget");
+  store.register(parsed);
+  store.disconnect(parsed.config.id);
+  const exported = store.exportOwnedState();
+  const plan = store.planForget(parsed.config.id, "operator:test");
+  const blocker = new DatabaseSync(store.path);
+  blocker.exec("BEGIN IMMEDIATE");
+  blocker
+    .prepare("UPDATE connection_versions SET registered_at = registered_at WHERE connection_id = ?")
+    .run(parsed.config.id);
+  const forgetting = store.forget(
+    parsed.config.id,
+    "operator:test",
+    exported.digest,
+    plan.confirmationToken,
+  );
+  await delay(75);
+  blocker.exec("ROLLBACK");
+  blocker.close();
+
+  try {
+    const forgotten = await forgetting;
+    assert.equal(forgotten.connectionId, parsed.config.id);
+    assert.equal(store.forgetRecords().length, 1);
+    await assert.rejects(
+      store.forget(
+        parsed.config.id,
+        "operator:test",
+        exported.digest,
+        plan.confirmationToken,
+      ),
+      ConfirmationAlreadySpentError,
+    );
+    assert.equal(store.forgetRecords().length, 1);
+  } finally {
+    store.close();
+  }
+});
+
+test("either branch's schema twelve converges without losing confirmations", async (context) => {
+  for (const source of ["institution", "owned-state"] as const) {
+    await context.test(source, async () => {
+      const directory = mkdtempSync(join(tmpdir(), `ecosym-schema-twelve-${source}-`));
+      const initial = new ObservationStore(directory);
+      const parsed = connection(`schema-twelve-${source}`);
+      initial.register(parsed);
+      const setup = new DatabaseSync(initial.path);
+      setup
+        .prepare(
+          "UPDATE connection_versions SET jsonl_record_index_mode = 'unknown' WHERE connection_id = ?",
+        )
+        .run(parsed.config.id);
+      setup.close();
+      const preview = initial.planRecordIndexModeResolution(
+        parsed.config.id,
+        parsed.hash,
+        "physical-line",
+      );
+      initial.close();
+
+      const downgraded = new DatabaseSync(join(directory, "observations.sqlite"));
+      if (source === "institution") {
+        downgraded.exec(`
+          ALTER TABLE confirmation_previews RENAME TO confirmation_previews_v13;
+          CREATE TABLE confirmation_previews (
+            confirmation_token_hash TEXT NOT NULL PRIMARY KEY,
+            operation TEXT NOT NULL
+              CHECK (operation IN ('resolve-record-index', 'retire-collection-attempt')),
+            arguments_json TEXT NOT NULL,
+            state_fingerprint TEXT NOT NULL,
+            issued_at TEXT NOT NULL,
+            consumed_at TEXT
+          ) STRICT;
+          INSERT INTO confirmation_previews SELECT * FROM confirmation_previews_v13;
+          DROP TABLE confirmation_previews_v13;
+          DROP TABLE owned_state_exports;
+          DROP TABLE forget_records;
+        `);
+      } else {
+        downgraded.exec(`
+          DROP INDEX mandate_revisions_current;
+          DROP TABLE mandate_revisions;
+          DROP TABLE civilizations;
+        `);
+      }
+      downgraded.exec("PRAGMA user_version = 12");
+      downgraded.close();
+
+      const migrated = new ObservationStore(directory);
+      try {
+        await migrated.resolveRecordIndexMode(
+          parsed.config.id,
+          parsed.hash,
+          "physical-line",
+          preview.confirmationToken,
+        );
+        const inspected = new DatabaseSync(migrated.path, { readOnly: true });
+        try {
+          assert.equal(
+            (inspected.prepare("PRAGMA user_version").get() as { user_version: number })
+              .user_version,
+            13,
+          );
+          for (const table of [
+            "civilizations",
+            "mandate_revisions",
+            "owned_state_exports",
+            "forget_records",
+          ]) {
+            assert.equal(
+              (inspected
+                .prepare(
+                  "SELECT count(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?",
+                )
+                .get(table) as { count: number }).count,
+              1,
+              table,
+            );
+          }
+        } finally {
+          inspected.close();
+        }
+      } finally {
+        migrated.close();
+      }
+    });
+  }
+});
+
+test("schema eleven stores gain forget and export evidence without losing previews", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-owned-state-migration-"));
   const initial = new ObservationStore(directory);
   const parsed = connection("migration");
@@ -397,7 +566,7 @@ test("schema eleven stores gain forget and export evidence without losing previe
 
   const migrated = new ObservationStore(directory);
   try {
-    migrated.resolveRecordIndexMode(
+    await migrated.resolveRecordIndexMode(
       "migration",
       parsed.hash,
       "physical-line",
@@ -409,7 +578,7 @@ test("schema eleven stores gain forget and export evidence without losing previe
       const version = inspected.prepare("PRAGMA user_version").get() as {
         user_version: number;
       };
-      assert.equal(version.user_version, 12);
+      assert.equal(version.user_version, 13);
       for (const table of ["owned_state_exports", "forget_records"]) {
         const row = inspected
           .prepare(

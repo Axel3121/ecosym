@@ -5,9 +5,11 @@ import { basename, dirname, join } from "node:path";
 
 import { collectConnection } from "./collect.ts";
 import { parseConnectionConfig } from "./config.ts";
+import { parseCivilizationConfig, parseMandateConfig } from "./institution.ts";
 import type { OwnedStateExport } from "./owned-state.ts";
 import {
   CollectionFailedError,
+  isSqliteContentionError,
   ObservationStore,
   type QueryOptions,
 } from "./store.ts";
@@ -34,6 +36,10 @@ async function run(arguments_: string[]): Promise<CommandResult> {
         commands: [
           "connect",
           "disconnect",
+          "found",
+          "redraw",
+          "dissolve",
+          "resolve-authority",
           "collect",
           "status",
           "query",
@@ -55,6 +61,14 @@ async function run(arguments_: string[]): Promise<CommandResult> {
         return await connect(store, arguments_.slice(1));
       case "disconnect":
         return disconnect(store, arguments_.slice(1));
+      case "found":
+        return await found(store, arguments_.slice(1));
+      case "redraw":
+        return await redraw(store, arguments_.slice(1));
+      case "dissolve":
+        return dissolve(store, arguments_.slice(1));
+      case "resolve-authority":
+        return resolveAuthority(store, arguments_.slice(1));
       case "collect":
         return await collect(store, arguments_.slice(1));
       case "status":
@@ -64,13 +78,13 @@ async function run(arguments_: string[]): Promise<CommandResult> {
       case "verify":
         return await verify(store, arguments_.slice(1));
       case "resolve-record-index":
-        return resolveRecordIndex(store, arguments_.slice(1));
+        return await resolveRecordIndex(store, arguments_.slice(1));
       case "retire-collection-attempt":
-        return retireCollectionAttempt(store, arguments_.slice(1));
+        return await retireCollectionAttempt(store, arguments_.slice(1));
       case "export":
         return exportOwnedState(store, arguments_.slice(1));
       case "forget":
-        return forget(store, arguments_.slice(1));
+        return await forget(store, arguments_.slice(1));
       default:
         return invalidArguments(command);
     }
@@ -116,6 +130,86 @@ async function connect(store: ObservationStore, arguments_: string[]): Promise<C
       outcome,
       connectionId: parsed.config.id,
       connectionVersion: parsed.hash,
+    },
+  };
+}
+
+async function found(store: ObservationStore, arguments_: string[]): Promise<CommandResult> {
+  if (arguments_.length !== 1) {
+    return invalidArguments("found");
+  }
+  const parsed = parseCivilizationConfig(await readInstitutionInput(arguments_[0] as string));
+  const founded = store.foundCivilization(parsed);
+  return {
+    exitCode: 0,
+    output: {
+      schemaVersion: 1,
+      command: "found",
+      outcome: "founded",
+      ...founded,
+    },
+  };
+}
+
+async function redraw(store: ObservationStore, arguments_: string[]): Promise<CommandResult> {
+  if (arguments_.length !== 2) {
+    return invalidArguments("redraw");
+  }
+  const civilizationId = arguments_[0] as string;
+  const parsed = parseMandateConfig(await readInstitutionInput(arguments_[1] as string));
+  const mandateRevision = store.redrawMandate(civilizationId, parsed);
+  return {
+    exitCode: 0,
+    output: {
+      schemaVersion: 1,
+      command: "redraw",
+      outcome: "redrawn",
+      civilizationId,
+      mandateRevision,
+    },
+  };
+}
+
+async function readInstitutionInput(path: string): Promise<unknown> {
+  const input = await readConfig(path);
+  try {
+    return JSON.parse(input) as unknown;
+  } catch {
+    throw Object.assign(new Error("mandate input is not JSON"), {
+      code: "invalid_mandate",
+    });
+  }
+}
+
+function dissolve(store: ObservationStore, arguments_: string[]): CommandResult {
+  if (arguments_.length !== 1) {
+    return invalidArguments("dissolve");
+  }
+  const civilizationId = arguments_[0] as string;
+  return {
+    exitCode: 0,
+    output: {
+      schemaVersion: 1,
+      command: "dissolve",
+      outcome: store.dissolveCivilization(civilizationId) ? "dissolved" : "not-founded",
+      civilizationId,
+    },
+  };
+}
+
+function resolveAuthority(store: ObservationStore, arguments_: string[]): CommandResult {
+  if (arguments_.length !== 1) {
+    return invalidArguments("resolve-authority");
+  }
+  const resolved = store.resolveAuthorityContext(arguments_[0] as string);
+  return {
+    exitCode: 0,
+    output: {
+      schemaVersion: 1,
+      command: "resolve-authority",
+      outcome: "resolved",
+      authorityContext: resolved.authorityContext,
+      mandate: resolved.mandate,
     },
   };
 }
@@ -230,10 +324,10 @@ async function verify(store: ObservationStore, arguments_: string[]): Promise<Co
   };
 }
 
-function resolveRecordIndex(
+async function resolveRecordIndex(
   store: ObservationStore,
   arguments_: string[],
-): CommandResult {
+): Promise<CommandResult> {
   const connectionId = arguments_[0];
   const connectionVersion = arguments_[1];
   const recordIndexMode = arguments_[2];
@@ -274,7 +368,7 @@ function resolveRecordIndex(
   ) {
     return invalidArguments("resolve-record-index");
   }
-  const resolution = store.resolveRecordIndexMode(
+  const resolution = await store.resolveRecordIndexMode(
     connectionId,
     connectionVersion,
     recordIndexMode,
@@ -291,7 +385,10 @@ function resolveRecordIndex(
   };
 }
 
-function retireCollectionAttempt(store: ObservationStore, arguments_: string[]): CommandResult {
+async function retireCollectionAttempt(
+  store: ObservationStore,
+  arguments_: string[],
+): Promise<CommandResult> {
   const attemptId = arguments_[0];
   const retiredBy = arguments_[2];
   if (
@@ -325,7 +422,11 @@ function retireCollectionAttempt(store: ObservationStore, arguments_: string[]):
   ) {
     return invalidArguments("retire-collection-attempt");
   }
-  const retirement = store.retireCollectionAttempt(attemptId, retiredBy, confirmationToken);
+  const retirement = await store.retireCollectionAttempt(
+    attemptId,
+    retiredBy,
+    confirmationToken,
+  );
   return {
     exitCode: 0,
     output: {
@@ -379,7 +480,10 @@ function exportOwnedState(
   };
 }
 
-function forget(store: ObservationStore, arguments_: string[]): CommandResult {
+async function forget(
+  store: ObservationStore,
+  arguments_: string[],
+): Promise<CommandResult> {
   const connectionId = arguments_[0];
   const forgottenBy = arguments_[2];
   if (
@@ -414,7 +518,7 @@ function forget(store: ObservationStore, arguments_: string[]): CommandResult {
   ) {
     return invalidArguments("forget");
   }
-  const record = store.forget(
+  const record = await store.forget(
     connectionId,
     forgottenBy,
     exportDigest,
@@ -513,6 +617,9 @@ function invalidArguments(command: string): CommandResult {
 }
 
 function safeErrorCode(error: unknown): string {
+  if (isSqliteContentionError(error)) {
+    return "store_contention";
+  }
   if (
     error !== null &&
     typeof error === "object" &&

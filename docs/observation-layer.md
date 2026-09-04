@@ -232,15 +232,14 @@ canonical file bytes. Re-exporting unchanged owned state writes byte-identical
 content and reports the original snapshot instant; a change to exported state
 creates a new snapshot instant and digest.
 
-The bundle has its own `schemaVersion`, the observation store schema version,
-and sections for every connection version and canonical registered
+The bundle has its own `schemaVersion`, the store schema version, an institution
+section containing every civilization and mandate revision, and an observation
+section containing every connection version and canonical registered
 configuration, active connection, fact, collection attempt, attempt retirement,
 record-index-mode resolution, and completed forget record. Facts retain their
 stored provenance, epistemic status, source and collection times, source-time
 ordering key, payload and payload digest, attempt order, and derived temporal
-status without upgrading unknown values. The top-level shape leaves the
-observation store in its own section so a later institution section can be
-added without changing these records.
+status without upgrading unknown values.
 
 Attempt retirements and record-index-mode resolutions carry the SHA-256 digest
 of the confirmation token as `confirmationTokenDigest`, preserving the link to

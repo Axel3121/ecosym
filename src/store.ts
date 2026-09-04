@@ -14,6 +14,13 @@ import {
 } from "./config.ts";
 import { canonicalJson, type JsonScalar, type JsonValue, sha256 } from "./json.ts";
 import {
+  mandateDigest,
+  parseMandateConfig,
+  type ParsedCivilizationConfig,
+  type MandateConfig,
+  type ParsedMandateConfig,
+} from "./institution.ts";
+import {
   createOwnedStateExport,
   type OwnedStateBundle,
   type OwnedStateExport,
@@ -26,9 +33,11 @@ import {
   verificationFactFromInput,
 } from "./verification-facts.ts";
 
-const STORE_SCHEMA_VERSION = 12;
+const STORE_SCHEMA_VERSION = 13;
+const LEGACY_REBUILD_SCHEMA_VERSION = 9;
 const STORE_FILENAME = "observations.sqlite";
 const BUSY_RETRY_WINDOW_MILLISECONDS = 250;
+const CONFIRMATION_CONTENTION_BUDGET_MILLISECONDS = 2_000;
 const CREATE_COLLECTION_ATTEMPTS = `
   CREATE TABLE collection_attempts (
     attempt_order INTEGER PRIMARY KEY,
@@ -125,6 +134,46 @@ const CREATE_FORGET_RECORDS = `
     inventory_digest TEXT NOT NULL,
     export_digest TEXT NOT NULL
   ) STRICT;
+`;
+
+// Institutional state. Kept in tables distinct from `facts`: SECURITY.md names
+// institutional records and observations as one protected class, so they share a
+// store, but institutional state says what *should* exist while a fact says what
+// was observed, and the two must never be queried as one thing.
+//
+// A mandate revision is never updated in place. Redrawing appends a row; the
+// previous revision stays readable, because history and current truth are
+// distinct. `dissolved_at` retires a civilization without erasing what it was.
+const CREATE_INSTITUTION = `
+  CREATE TABLE IF NOT EXISTS civilizations (
+    civilization_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    founded_at TEXT NOT NULL
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS mandate_revisions (
+    revision_order INTEGER PRIMARY KEY,
+    civilization_id TEXT NOT NULL,
+    mandate_id TEXT NOT NULL,
+    revision TEXT NOT NULL,
+    previous_revision TEXT,
+    status TEXT NOT NULL CHECK (status IN ('active', 'dissolved')),
+    mandate_json TEXT NOT NULL,
+    mandate_digest TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    UNIQUE (civilization_id, revision),
+    UNIQUE (mandate_id, revision),
+    FOREIGN KEY (civilization_id) REFERENCES civilizations(civilization_id),
+    FOREIGN KEY (mandate_id, previous_revision)
+      REFERENCES mandate_revisions(mandate_id, revision),
+    CHECK (
+      (revision = 'revision:1' AND previous_revision IS NULL) OR
+      (revision <> 'revision:1' AND previous_revision IS NOT NULL)
+    )
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS mandate_revisions_current
+    ON mandate_revisions(civilization_id, revision_order DESC);
 `;
 
 export interface ActiveConnection {
@@ -313,6 +362,49 @@ type RecordIndexModeResolutionSnapshot = Omit<
 
 export interface CollectionSink {
   recordSourceRecord(facts: () => readonly FactInput[]): void;
+}
+
+export interface ResolvedAuthorityContext {
+  authorityContext: {
+    civilizationId: string;
+    authorityContext: {
+      mandateId: string;
+      mandateRevision: string;
+      mandateDigest: string;
+    };
+  };
+  mandate: MandateConfig;
+}
+
+export class CivilizationNotFoundError extends Error {
+  readonly code = "civilization_not_found";
+
+  constructor(_civilizationId: string) {
+    super("No civilization is founded under this id");
+    this.name = "CivilizationNotFoundError";
+  }
+}
+
+export class CivilizationDissolvedError extends Error {
+  readonly code = "civilization_dissolved";
+
+  constructor(_civilizationId: string) {
+    super("This civilization has been dissolved");
+    this.name = "CivilizationDissolvedError";
+  }
+}
+
+/**
+ * A stored mandate that cannot be read back as the thing it was written as is
+ * an unknown territory, and an unknown territory cannot authorize anything.
+ */
+export class MandateUnreadableError extends Error {
+  readonly code = "mandate_unreadable";
+
+  constructor(_civilizationId: string) {
+    super("The stored mandate could not be read as a mandate");
+    this.name = "MandateUnreadableError";
+  }
 }
 
 export class ConnectionConflictError extends Error {
@@ -560,11 +652,212 @@ export class ObservationStore {
     });
   }
 
+  foundCivilization(
+    parsed: ParsedCivilizationConfig,
+    now = new Date(),
+  ): { civilizationId: string; mandateId: string } {
+    const timestamp = now.toISOString();
+    const civilizationId = `civilization:${randomUUID()}`;
+    const mandateId = `mandate:${randomUUID()}`;
+    return this.#transaction(() => {
+      this.#database
+        .prepare(
+          `INSERT INTO civilizations (civilization_id, name, founded_at)
+           VALUES (?, ?, ?)`,
+        )
+        .run(civilizationId, parsed.config.name, timestamp);
+      this.#insertMandateRevision(
+        civilizationId,
+        mandateId,
+        "revision:1",
+        null,
+        "active",
+        parsed.mandate,
+        timestamp,
+      );
+      return { civilizationId, mandateId };
+    });
+  }
+
+  redrawMandate(
+    civilizationId: string,
+    parsed: ParsedMandateConfig,
+    now = new Date(),
+  ): string {
+    const timestamp = now.toISOString();
+    return this.#transaction(() => {
+      const existing = this.#database
+        .prepare("SELECT 1 AS found FROM civilizations WHERE civilization_id = ?")
+        .get(civilizationId) as { found: 1 } | undefined;
+      if (existing === undefined) {
+        throw new CivilizationNotFoundError(civilizationId);
+      }
+      const previous = this.#database
+        .prepare(
+          `SELECT mandate_id, revision, status FROM mandate_revisions
+            WHERE civilization_id = ?
+            ORDER BY revision_order DESC LIMIT 1`,
+        )
+        .get(civilizationId) as
+        | { mandate_id: string; revision: string; status: "active" | "dissolved" }
+        | undefined;
+      if (previous === undefined) {
+        throw new MandateUnreadableError(civilizationId);
+      }
+      if (previous.status === "dissolved") {
+        throw new CivilizationDissolvedError(civilizationId);
+      }
+      const previousNumber = Number.parseInt(previous.revision.replace("revision:", ""), 10);
+      if (!Number.isSafeInteger(previousNumber) || `revision:${previousNumber}` !== previous.revision) {
+        throw new MandateUnreadableError(civilizationId);
+      }
+      const revision = `revision:${previousNumber + 1}`;
+      this.#insertMandateRevision(
+        civilizationId,
+        previous.mandate_id,
+        revision,
+        previous.revision,
+        "active",
+        parsed,
+        timestamp,
+      );
+      return revision;
+    });
+  }
+
+  /**
+   * Resolve a civilization's current authority context.
+   *
+   * The digest is derived here, from the bytes actually stored, on every read.
+   * It is deliberately not a column: a cached digest agrees with its content
+   * only until someone edits the content underneath it, and that is precisely
+   * the drift this boundary exists to detect.
+   */
+  resolveAuthorityContext(civilizationId: string): ResolvedAuthorityContext {
+    const civilization = this.#database
+      .prepare("SELECT 1 AS found FROM civilizations WHERE civilization_id = ?")
+      .get(civilizationId) as { found: 1 } | undefined;
+    if (civilization === undefined) {
+      throw new CivilizationNotFoundError(civilizationId);
+    }
+    const row = this.#database
+      .prepare(
+        `SELECT mandate_id, revision, status, mandate_json, mandate_digest
+           FROM mandate_revisions
+          WHERE civilization_id = ?
+          ORDER BY revision_order DESC LIMIT 1`,
+      )
+      .get(civilizationId) as
+      | {
+          mandate_digest: string;
+          mandate_id: string;
+          mandate_json: string;
+          revision: string;
+          status: "active" | "dissolved";
+        }
+      | undefined;
+    if (row === undefined) {
+      throw new CivilizationNotFoundError(civilizationId);
+    }
+    if (row.status === "dissolved") {
+      throw new CivilizationDissolvedError(civilizationId);
+    }
+    const mandate = parseStoredMandate(row.mandate_json, civilizationId);
+    const derivedDigest = mandateDigest(mandate as unknown as JsonValue);
+    if (derivedDigest !== row.mandate_digest) {
+      throw new MandateUnreadableError(civilizationId);
+    }
+    return {
+      authorityContext: {
+        civilizationId,
+        authorityContext: {
+          mandateId: row.mandate_id,
+          mandateRevision: row.revision,
+          mandateDigest: derivedDigest,
+        },
+      },
+      mandate,
+    };
+  }
+
+  dissolveCivilization(civilizationId: string, now = new Date()): boolean {
+    return this.#transaction(() => {
+      const current = this.#database
+        .prepare(
+          `SELECT mandate_id, revision, status, mandate_json, mandate_digest
+             FROM mandate_revisions
+            WHERE civilization_id = ?
+            ORDER BY revision_order DESC LIMIT 1`,
+        )
+        .get(civilizationId) as
+        | {
+            mandate_digest: string;
+            mandate_id: string;
+            mandate_json: string;
+            revision: string;
+            status: "active" | "dissolved";
+          }
+        | undefined;
+      if (current === undefined || current.status === "dissolved") {
+        return false;
+      }
+      const mandate = parseStoredMandate(current.mandate_json, civilizationId);
+      if (mandateDigest(mandate as unknown as JsonValue) !== current.mandate_digest) {
+        throw new MandateUnreadableError(civilizationId);
+      }
+      const previousNumber = Number.parseInt(current.revision.replace("revision:", ""), 10);
+      if (!Number.isSafeInteger(previousNumber) || `revision:${previousNumber}` !== current.revision) {
+        throw new MandateUnreadableError(civilizationId);
+      }
+      this.#insertMandateRevision(
+        civilizationId,
+        current.mandate_id,
+        `revision:${previousNumber + 1}`,
+        current.revision,
+        "dissolved",
+        parseMandateConfig(mandate),
+        now.toISOString(),
+      );
+      return true;
+    });
+  }
+
+  #insertMandateRevision(
+    civilizationId: string,
+    mandateId: string,
+    revision: string,
+    previousRevision: null | string,
+    status: "active" | "dissolved",
+    parsed: ParsedMandateConfig,
+    recordedAt: string,
+  ): void {
+    const mandateJson = canonicalJson(parsed.config as unknown as JsonValue);
+    const derivedDigest = mandateDigest(parsed.config as unknown as JsonValue);
+    this.#database
+      .prepare(
+        `INSERT INTO mandate_revisions (
+           civilization_id, mandate_id, revision, previous_revision,
+           status, mandate_json, mandate_digest, recorded_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        civilizationId,
+        mandateId,
+        revision,
+        previousRevision,
+        status,
+        mandateJson,
+        derivedDigest,
+        recordedAt,
+      );
+  }
+
   exportOwnedState(
     now = new Date(),
     write?: (exported: OwnedStateExport) => void,
   ): OwnedStateExport {
     return this.#transaction(() => {
+      const institutionStore = this.#ownedInstitutionState();
       const observationStore = this.#ownedObservationState();
       const omitted = [
         {
@@ -579,7 +872,7 @@ export class ObservationStore {
         },
       ];
       const stateFingerprint = `sha256:${sha256(
-        canonicalJson({ observationStore, omitted } as unknown as JsonValue),
+        canonicalJson({ institutionStore, observationStore, omitted } as unknown as JsonValue),
       )}`;
       const existing = this.#database
         .prepare(
@@ -590,6 +883,7 @@ export class ObservationStore {
       const bundle: OwnedStateBundle = {
         schemaVersion: 1,
         exportedAt,
+        institutionStore,
         observationStore,
         omitted,
       };
@@ -660,16 +954,16 @@ export class ObservationStore {
     });
   }
 
-  forget(
+  async forget(
     connectionId: string,
     forgottenBy: string,
     exportDigest: string,
     confirmationToken: string,
     now = new Date(),
-  ): ForgetRecord {
+  ): Promise<ForgetRecord> {
     validateActor(forgottenBy, "forget");
     const forgottenAt = now.toISOString();
-    return this.#transaction(() => {
+    const forget = () => {
       const preview = this.#confirmationPreview(
         "forget",
         canonicalJson([connectionId, forgottenBy]),
@@ -758,7 +1052,11 @@ export class ObservationStore {
         forgottenAt,
         forgottenBy,
       };
-    });
+    };
+    return this.#retryTransactionWithinContentionBudget(
+      { remainingMilliseconds: CONFIRMATION_CONTENTION_BUDGET_MILLISECONDS },
+      forget,
+    );
   }
 
   planRecordIndexModeResolution(
@@ -789,18 +1087,18 @@ export class ObservationStore {
     });
   }
 
-  resolveRecordIndexMode(
+  async resolveRecordIndexMode(
     connectionId: string,
     connectionVersion: string,
     recordIndexMode: JsonlRecordIndexMode,
     confirmationToken: string,
     now = new Date(),
-  ): RecordIndexModeResolution {
+  ): Promise<RecordIndexModeResolution> {
     if (recordIndexMode !== "physical-line" && recordIndexMode !== "record-ordinal") {
       throw new TypeError("A record-index resolution must select a supported mode");
     }
     const resolvedAt = now.toISOString();
-    return this.#transaction(() => {
+    const resolve = () => {
       const preview = this.#confirmationPreview(
         "resolve-record-index",
         canonicalJson([connectionId, connectionVersion, recordIndexMode]),
@@ -884,7 +1182,11 @@ export class ObservationStore {
         resolutionId,
         resolvedAt,
       };
-    });
+    };
+    return this.#retryTransactionWithinContentionBudget(
+      { remainingMilliseconds: CONFIRMATION_CONTENTION_BUDGET_MILLISECONDS },
+      resolve,
+    );
   }
 
   planCollectionAttemptRetirement(
@@ -909,15 +1211,15 @@ export class ObservationStore {
     });
   }
 
-  retireCollectionAttempt(
+  async retireCollectionAttempt(
     attemptId: string,
     retiredBy: string,
     confirmationToken: string,
     now = new Date(),
-  ): CollectionAttemptRetirement {
+  ): Promise<CollectionAttemptRetirement> {
     validateRetirementActor(retiredBy);
     const retiredAt = now.toISOString();
-    return this.#transaction(() => {
+    const retire = () => {
       const preview = this.#confirmationPreview(
         "retire-collection-attempt",
         canonicalJson([attemptId, retiredBy]),
@@ -983,7 +1285,11 @@ export class ObservationStore {
         retiredBy,
         retirementId,
       };
-    });
+    };
+    return this.#retryTransactionWithinContentionBudget(
+      { remainingMilliseconds: CONFIRMATION_CONTENTION_BUDGET_MILLISECONDS },
+      retire,
+    );
   }
 
   collectionAttempts(): CollectionAttempt[] {
@@ -1085,7 +1391,7 @@ export class ObservationStore {
     let sourceRecordsSeen = 0;
     let factsSeen = 0;
     const preparedFacts: PreparedFact[] = [];
-    const contentionBudget: CollectionContentionBudget = {
+    const contentionBudget: ContentionBudget = {
       remainingMilliseconds: BUSY_RETRY_WINDOW_MILLISECONDS,
     };
     let admitted: { attemptOrder: number; startedAt: string };
@@ -1757,6 +2063,22 @@ export class ObservationStore {
     if (version.user_version === STORE_SCHEMA_VERSION) {
       return;
     }
+    if (version.user_version === 12) {
+      this.#transaction(() => {
+        this.#database.exec(`
+          ALTER TABLE confirmation_previews RENAME TO confirmation_previews_v12;
+          ${CREATE_CONFIRMATION_PREVIEWS}
+          INSERT INTO confirmation_previews
+            SELECT * FROM confirmation_previews_v12;
+          DROP TABLE confirmation_previews_v12;
+          ${CREATE_INSTITUTION}
+          ${CREATE_OWNED_STATE_EXPORTS}
+          ${CREATE_FORGET_RECORDS}
+          PRAGMA user_version = ${STORE_SCHEMA_VERSION};
+        `);
+      });
+      return;
+    }
     if (version.user_version === 11) {
       this.#transaction(() => {
         this.#database.exec(`
@@ -1765,6 +2087,7 @@ export class ObservationStore {
           INSERT INTO confirmation_previews
             SELECT * FROM confirmation_previews_v11;
           DROP TABLE confirmation_previews_v11;
+          ${CREATE_INSTITUTION}
           ${CREATE_OWNED_STATE_EXPORTS}
           ${CREATE_FORGET_RECORDS}
           PRAGMA user_version = ${STORE_SCHEMA_VERSION};
@@ -1776,6 +2099,7 @@ export class ObservationStore {
       this.#transaction(() => {
         this.#database.exec(`
           ${CREATE_CONFIRMATION_PREVIEWS}
+          ${CREATE_INSTITUTION}
           ${CREATE_OWNED_STATE_EXPORTS}
           ${CREATE_FORGET_RECORDS}
           PRAGMA user_version = ${STORE_SCHEMA_VERSION};
@@ -1797,7 +2121,7 @@ export class ObservationStore {
       if (row.user_version === 8) {
         this.#database.exec(`
           ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
-          PRAGMA user_version = ${STORE_SCHEMA_VERSION};
+          PRAGMA user_version = ${LEGACY_REBUILD_SCHEMA_VERSION};
         `);
         return;
       }
@@ -1843,6 +2167,7 @@ export class ObservationStore {
 
         ${CREATE_CONFIRMATION_PREVIEWS}
 
+        ${CREATE_INSTITUTION}
         ${CREATE_OWNED_STATE_EXPORTS}
         ${CREATE_FORGET_RECORDS}
 
@@ -1932,7 +2257,7 @@ export class ObservationStore {
         }
         this.#database.exec(`
           ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
-          PRAGMA user_version = ${STORE_SCHEMA_VERSION};
+          PRAGMA user_version = ${LEGACY_REBUILD_SCHEMA_VERSION};
         `);
         return;
       }
@@ -1948,7 +2273,7 @@ export class ObservationStore {
             NOT NULL DEFAULT 'physical-line'
             CHECK (jsonl_record_index_mode IN ('physical-line', 'record-ordinal', 'unknown'));
           ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
-          PRAGMA user_version = ${STORE_SCHEMA_VERSION};
+          PRAGMA user_version = ${LEGACY_REBUILD_SCHEMA_VERSION};
         `);
         return;
       }
@@ -2116,7 +2441,7 @@ export class ObservationStore {
             source_time_key
           );
         ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
-        PRAGMA user_version = ${STORE_SCHEMA_VERSION};
+        PRAGMA user_version = ${LEGACY_REBUILD_SCHEMA_VERSION};
       `);
     });
     if (version.user_version !== 0) {
@@ -2151,6 +2476,7 @@ export class ObservationStore {
         this.#database.exec(CREATE_COLLECTION_ATTEMPTS_LATEST_INDEX);
         this.#database.exec(CREATE_COLLECTION_ATTEMPT_RETIREMENTS);
         this.#database.exec(CREATE_CONFIRMATION_PREVIEWS);
+        this.#database.exec(CREATE_INSTITUTION);
         this.#database.exec(CREATE_OWNED_STATE_EXPORTS);
         this.#database.exec(CREATE_FORGET_RECORDS);
         this.#database.exec(`PRAGMA user_version = ${STORE_SCHEMA_VERSION}`);
@@ -2188,6 +2514,37 @@ export class ObservationStore {
       throw new Error("Registered connection configuration is missing");
     }
     return parseStoredConfig(row.config_json, connection.configHash);
+  }
+
+  #ownedInstitutionState(): OwnedStateBundle["institutionStore"] {
+    return {
+      schemaVersion: STORE_SCHEMA_VERSION,
+      civilizations: this.#exportRows(
+        `SELECT civilization_id AS civilizationId, name, founded_at AS foundedAt
+           FROM civilizations ORDER BY civilization_id`,
+      ),
+      mandateRevisions: this.#database
+        .prepare(
+          `SELECT revision_order, civilization_id, mandate_id, revision,
+                  previous_revision, status, mandate_json, mandate_digest, recorded_at
+             FROM mandate_revisions ORDER BY revision_order`,
+        )
+        .all()
+        .map((value) => {
+          const row = value as Record<string, JsonValue> & { mandate_json: string };
+          return {
+            revisionOrder: row.revision_order,
+            civilizationId: row.civilization_id,
+            mandateId: row.mandate_id,
+            revision: row.revision,
+            previousRevision: row.previous_revision,
+            status: row.status,
+            mandate: JSON.parse(row.mandate_json) as JsonValue,
+            mandateDigest: row.mandate_digest,
+            recordedAt: row.recorded_at,
+          } as Record<string, JsonValue>;
+        }),
+    };
   }
 
   #ownedObservationState(): OwnedStateBundle["observationStore"] {
@@ -2695,7 +3052,7 @@ export class ObservationStore {
     connection: ActiveConnection,
     attemptId: string,
     now: () => Date,
-    contentionBudget: CollectionContentionBudget,
+    contentionBudget: ContentionBudget,
   ): Promise<{ attemptOrder: number; startedAt: string }> {
     return this.#retryTransactionWithinContentionBudget(contentionBudget, () => {
       this.#assertActive(connection);
@@ -2726,7 +3083,7 @@ export class ObservationStore {
   }
 
   async #retryTransactionWithinContentionBudget<T>(
-    contentionBudget: CollectionContentionBudget,
+    contentionBudget: ContentionBudget,
     retryableOperation: () => T,
   ): Promise<T> {
     while (true) {
@@ -2744,7 +3101,7 @@ export class ObservationStore {
           }),
         );
       } catch (error) {
-        if (!isSqliteBusy(error)) {
+        if (!isSqliteContentionError(error)) {
           throw error;
         }
         consumeContentionBudget(
@@ -2802,6 +3159,11 @@ export class ObservationStore {
     const startedAt = performance.now();
     try {
       this.#database.exec("BEGIN IMMEDIATE");
+    } catch (error) {
+      if (isSqliteContentionError(error)) {
+        throw new StoreContentionError(error);
+      }
+      throw error;
     } finally {
       recordWait?.(performance.now() - startedAt);
     }
@@ -2812,6 +3174,9 @@ export class ObservationStore {
     } catch (error) {
       if (this.#database.isTransaction) {
         this.#database.exec("ROLLBACK");
+      }
+      if (isSqliteContentionError(error)) {
+        throw new StoreContentionError(error);
       }
       throw error;
     }
@@ -2888,7 +3253,7 @@ interface StoredFactRow {
   temporal_status: "current" | "historical" | "unknown";
 }
 
-interface CollectionContentionBudget {
+interface ContentionBudget {
   remainingMilliseconds: number;
 }
 
@@ -3158,11 +3523,40 @@ function safeFailureCode(error: unknown): string {
   return "internal_error";
 }
 
+/**
+ * Read a stored mandate back as a mandate, or refuse.
+ *
+ * Re-parsing on the read path is what makes the digest honest: it is derived
+ * from bytes that have been proven to still be a mandate, so content edited
+ * underneath the store fails closed here rather than producing a confident
+ * digest of something nobody validated.
+ */
+function parseStoredMandate(mandateJson: string, civilizationId: string): MandateConfig {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(mandateJson) as unknown;
+  } catch {
+    throw new MandateUnreadableError(civilizationId);
+  }
+  try {
+    const parsed = parseMandateConfig(decoded);
+    if (parsed.canonical !== mandateJson) {
+      throw new MandateUnreadableError(civilizationId);
+    }
+    return parsed.config;
+  } catch {
+    throw new MandateUnreadableError(civilizationId);
+  }
+}
+
 function numberOfChanges(result: StatementResultingChanges): number {
   return Number(result.changes);
 }
 
-function isSqliteBusy(error: unknown): boolean {
+export function isSqliteContentionError(error: unknown): boolean {
+  if (error instanceof StoreContentionError) {
+    return true;
+  }
   if (
     error === null ||
     typeof error !== "object" ||
@@ -3176,7 +3570,7 @@ function isSqliteBusy(error: unknown): boolean {
 }
 
 function consumeContentionBudget(
-  budget: CollectionContentionBudget,
+  budget: ContentionBudget,
   elapsedMilliseconds: number,
 ): void {
   budget.remainingMilliseconds = Math.max(
