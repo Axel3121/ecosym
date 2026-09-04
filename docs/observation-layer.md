@@ -242,11 +242,18 @@ status without upgrading unknown values. The top-level shape leaves the
 observation store in its own section so a later institution section can be
 added without changing these records.
 
+Attempt retirements and record-index-mode resolutions carry the SHA-256 digest
+of the confirmation token as `confirmationTokenDigest`, preserving the link to
+the preview that authorized the operation. Confirmation tokens are never
+exported in plaintext.
+
 The bundle deliberately omits `confirmationPreviews`, because approval-gate
 records are operational state and exporting them could disclose confirmation
-material. It also omits the operational `ownedStateExports` evidence ledger so
-creating an export does not recursively change the next bundle. Both omissions
-and their reasons are stated in every bundle.
+material. Confirmation material in exported operation records is carried only
+as the digest described above, never in plaintext. The bundle also omits the
+operational `ownedStateExports` evidence ledger so creating an export does not
+recursively change the next bundle. Both omissions and their reasons are stated
+in every bundle.
 
 An export is a complete copy of owned state at the stated instant and evidence
 for deletion. Ecosym has no import or restore command: an export is not a way to

@@ -2320,7 +2320,13 @@ export class ObservationStore {
                 config_hash AS connectionVersion, retired_at AS retiredAt,
                 retired_by AS retiredBy, confirmation_token AS confirmationToken
            FROM collection_attempt_retirements ORDER BY retirement_order`,
-      ),
+      ).map((row) => {
+        const { confirmationToken, ...retirement } = row;
+        return {
+          ...retirement,
+          confirmationTokenDigest: sha256(confirmationToken as string),
+        };
+      }),
       collectionAttempts: this.#exportRows(
         `SELECT attempt_order AS attemptOrder, attempt_id AS attemptId,
                 connection_id AS connectionId, config_hash AS connectionVersion,
@@ -2365,6 +2371,7 @@ export class ObservationStore {
           const row = value as Record<string, JsonValue> & {
             affected_fact_ids_json: string;
             collection_attempt_ids_json: string;
+            confirmation_token: string;
           };
           return {
             resolutionOrder: row.resolution_order,
@@ -2376,7 +2383,7 @@ export class ObservationStore {
             resolvedAt: row.resolved_at,
             affectedFactIds: JSON.parse(row.affected_fact_ids_json) as JsonValue,
             collectionAttemptIds: JSON.parse(row.collection_attempt_ids_json) as JsonValue,
-            confirmationToken: row.confirmation_token,
+            confirmationTokenDigest: sha256(row.confirmation_token),
           } as Record<string, JsonValue>;
         }),
     };

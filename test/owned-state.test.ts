@@ -246,6 +246,78 @@ test("owned state exports deterministically and forgets one exact covered invent
   }
 });
 
+test("owned state exports confirmation digests without confirmation tokens", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-owned-state-confirmations-"));
+  const store = new ObservationStore(directory);
+  const parsed = connection("confirmation-export");
+  try {
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+    const setup = new DatabaseSync(store.path);
+    try {
+      setup
+        .prepare(
+          "UPDATE connection_versions SET jsonl_record_index_mode = 'unknown' WHERE connection_id = ?",
+        )
+        .run(parsed.config.id);
+      setup
+        .prepare(
+          `INSERT INTO collection_attempts
+             (attempt_order, attempt_id, connection_id, config_hash, activation_id,
+              started_at, completed_at, outcome, source_records_seen, facts_seen,
+              facts_added, facts_changed, failure_code)
+           VALUES (1, 'confirmation-export-attempt', ?, ?, ?,
+                   '2026-09-03T00:00:00.000Z', NULL, 'running', 0, 0, 0, 0, NULL)`,
+        )
+        .run(parsed.config.id, parsed.hash, active.activationId);
+    } finally {
+      setup.close();
+    }
+
+    const retirementPreview = store.planCollectionAttemptRetirement(
+      "confirmation-export-attempt",
+      "operator:test",
+    );
+    store.retireCollectionAttempt(
+      retirementPreview.attemptId,
+      retirementPreview.retiredBy,
+      retirementPreview.confirmationToken,
+    );
+    const resolutionPreview = store.planRecordIndexModeResolution(
+      parsed.config.id,
+      parsed.hash,
+      "physical-line",
+    );
+    store.resolveRecordIndexMode(
+      resolutionPreview.connectionId,
+      resolutionPreview.connectionVersion,
+      resolutionPreview.recordIndexMode,
+      resolutionPreview.confirmationToken,
+    );
+
+    const exported = store.exportOwnedState();
+    assert.equal(
+      exported.bundle.observationStore.collectionAttemptRetirements[0]
+        ?.confirmationTokenDigest,
+      sha256(retirementPreview.confirmationToken),
+    );
+    assert.equal(
+      exported.bundle.observationStore.recordIndexModeResolutions[0]
+        ?.confirmationTokenDigest,
+      sha256(resolutionPreview.confirmationToken),
+    );
+    for (const confirmationToken of [
+      retirementPreview.confirmationToken,
+      resolutionPreview.confirmationToken,
+    ]) {
+      assert.equal(exported.bytes.includes(confirmationToken), false);
+      assert.equal(exported.bytes.includes(sha256(confirmationToken)), true);
+    }
+  } finally {
+    store.close();
+  }
+});
+
 test("forget confirmation refuses when the previewed inventory moves", () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-forget-stale-"));
   const store = new ObservationStore(directory);
