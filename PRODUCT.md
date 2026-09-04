@@ -255,6 +255,19 @@ private archive of everything other systems own. What it keeps, for how long,
 and what happens to conclusions when a source is disconnected are decisions with
 an owner — not an accident of never deleting.
 
+For observation-store state specifically — facts, collection attempts, attempt
+retirements, record-index-mode resolutions, and completed forget records —
+export is evidence only and `forget` is irreversible. It is not a backup or a
+read-back path. After forgetting an externally owned fact, the user's path is to
+reconnect and re-collect from the source that owns it. The accepted permanent
+losses are the user's recorded record-index-mode resolutions, attempt
+retirements, and `retention: "history"` fact versions whose source has moved on;
+re-collection cannot recover those decisions or historical payloads. This is the
+observation-store retention decision required by
+[SECURITY.md's destructive-change rules](SECURITY.md#destructive-changes-to-owned-history),
+not a decision about institutional state, whose recoverability is decided by a
+later specification.
+
 ## How the institution becomes real
 
 A civilization, a mandate, or a council is only real if something enforces it.

@@ -158,7 +158,13 @@ Deleting or semantically reinterpreting historical Ecosym-owned state requires:
 
 - an exact inventory of affected state;
 - a clear statement of scope and consequence;
-- export, backup, or recovery evidence where recovery is expected;
+- export, backup, or recovery evidence where recovery is expected; for
+  observation-store-owned state, the export Ecosym produces is evidence of what
+  was deleted — proof of the prior state — not a backup from which state can be
+  restored. The recovery path for an externally owned fact is to reconnect to
+  and re-collect from its source. Re-collection cannot recover record-index-mode
+  resolutions, attempt retirements, or `retention: "history"` fact versions
+  whose source has moved on;
 - explicit approval for that destructive operation;
 - verification that deleted or archived state does not silently re-enter
   retrieval or active context.
