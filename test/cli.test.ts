@@ -164,7 +164,10 @@ test("the command surface exports and forgets only disconnected covered state", 
   assert.equal(preview.code, 0);
   assert.equal(preview.output.outcome, "confirmation-required");
   assert.equal(typeof preview.output.consequence, "string");
-  assert.match(preview.output.recoverability as string, /no import or restore path/);
+  assert.match(
+    preview.output.recoverability as string,
+    /no provenance-preserving import or restore command/,
+  );
   const forgotten = await runCli(
     [
       "forget",
