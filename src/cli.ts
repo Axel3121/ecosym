@@ -1,8 +1,12 @@
+import { randomUUID } from "node:crypto";
+import { chmodSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 
 import { collectConnection } from "./collect.ts";
 import { parseConnectionConfig } from "./config.ts";
 import { parseCivilizationConfig, parseMandateConfig } from "./institution.ts";
+import type { OwnedStateExport } from "./owned-state.ts";
 import {
   CollectionFailedError,
   isSqliteContentionError,
@@ -42,6 +46,8 @@ async function run(arguments_: string[]): Promise<CommandResult> {
           "verify",
           "resolve-record-index",
           "retire-collection-attempt",
+          "export",
+          "forget",
         ],
       },
     };
@@ -75,6 +81,10 @@ async function run(arguments_: string[]): Promise<CommandResult> {
         return await resolveRecordIndex(store, arguments_.slice(1));
       case "retire-collection-attempt":
         return await retireCollectionAttempt(store, arguments_.slice(1));
+      case "export":
+        return exportOwnedState(store, arguments_.slice(1));
+      case "forget":
+        return await forget(store, arguments_.slice(1));
       default:
         return invalidArguments(command);
     }
@@ -276,6 +286,7 @@ function status(store: ObservationStore, arguments_: string[]): CommandResult {
       collectionAttempts: store.collectionAttempts(),
       collectionAttemptRetirements: store.collectionAttemptRetirements(),
       recordIndexModeResolutions: store.recordIndexModeResolutions(),
+      forgetRecords: store.forgetRecords(),
     },
   };
 }
@@ -423,6 +434,103 @@ async function retireCollectionAttempt(
       command: "retire-collection-attempt",
       outcome: "retired",
       ...retirement,
+    },
+  };
+}
+
+function exportOwnedState(
+  store: ObservationStore,
+  arguments_: string[],
+): CommandResult {
+  const destination = arguments_[0];
+  if (arguments_.length !== 1 || destination === undefined) {
+    return invalidArguments("export");
+  }
+  const exported: OwnedStateExport = store.exportOwnedState(new Date(), (result) => {
+    const temporaryPath = join(
+      dirname(destination),
+      `.${basename(destination)}.ecosym-${randomUUID()}.tmp`,
+    );
+    try {
+      writeFileSync(temporaryPath, result.bytes, { flag: "wx", mode: 0o600 });
+      chmodSync(temporaryPath, 0o600);
+      renameSync(temporaryPath, destination);
+    } catch (error) {
+      try {
+        unlinkSync(temporaryPath);
+      } catch {
+        // The temporary file may not have been created or may already have been renamed.
+      }
+      throw Object.assign(new Error("export destination is unwritable", { cause: error }), {
+        code: "export_unwritable",
+      });
+    }
+  });
+  return {
+    exitCode: 0,
+    output: {
+      schemaVersion: 1,
+      command: "export",
+      outcome: "exported",
+      destination,
+      digest: exported.digest,
+      exportedAt: exported.bundle.exportedAt,
+      counts: exported.counts,
+    },
+  };
+}
+
+async function forget(
+  store: ObservationStore,
+  arguments_: string[],
+): Promise<CommandResult> {
+  const connectionId = arguments_[0];
+  const forgottenBy = arguments_[2];
+  if (
+    connectionId === undefined ||
+    forgottenBy === undefined ||
+    arguments_[1] !== "--by"
+  ) {
+    return invalidArguments("forget");
+  }
+  if (arguments_.length === 3) {
+    const plan = store.planForget(connectionId, forgottenBy);
+    return {
+      exitCode: 0,
+      output: {
+        schemaVersion: 1,
+        command: "forget",
+        outcome: "confirmation-required",
+        ...plan,
+        recoverability:
+          "The presented export is evidence of the state before deletion. Ecosym has no import or restore path for it.",
+      },
+    };
+  }
+  const exportDigest = arguments_[4];
+  const confirmationToken = arguments_[6];
+  if (
+    arguments_.length !== 7 ||
+    arguments_[3] !== "--export-digest" ||
+    exportDigest === undefined ||
+    arguments_[5] !== "--confirm" ||
+    confirmationToken === undefined
+  ) {
+    return invalidArguments("forget");
+  }
+  const record = await store.forget(
+    connectionId,
+    forgottenBy,
+    exportDigest,
+    confirmationToken,
+  );
+  return {
+    exitCode: 0,
+    output: {
+      schemaVersion: 1,
+      command: "forget",
+      outcome: "forgotten",
+      ...record,
     },
   };
 }

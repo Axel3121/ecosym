@@ -20,6 +20,11 @@ import {
   type MandateConfig,
   type ParsedMandateConfig,
 } from "./institution.ts";
+import {
+  createOwnedStateExport,
+  type OwnedStateBundle,
+  type OwnedStateExport,
+} from "./owned-state.ts";
 import { defaultStateDirectory } from "./paths.ts";
 import type { JsonlRecordIndexMode } from "./readers.ts";
 import { utcInstantOrderingKey } from "./time.ts";
@@ -28,7 +33,7 @@ import {
   verificationFactFromInput,
 } from "./verification-facts.ts";
 
-const STORE_SCHEMA_VERSION = 12;
+const STORE_SCHEMA_VERSION = 13;
 const LEGACY_REBUILD_SCHEMA_VERSION = 9;
 const STORE_FILENAME = "observations.sqlite";
 const BUSY_RETRY_WINDOW_MILLISECONDS = 250;
@@ -103,11 +108,31 @@ const CREATE_CONFIRMATION_PREVIEWS = `
   CREATE TABLE IF NOT EXISTS confirmation_previews (
     confirmation_token_hash TEXT NOT NULL PRIMARY KEY,
     operation TEXT NOT NULL
-      CHECK (operation IN ('resolve-record-index', 'retire-collection-attempt')),
+      CHECK (operation IN ('resolve-record-index', 'retire-collection-attempt', 'forget')),
     arguments_json TEXT NOT NULL,
     state_fingerprint TEXT NOT NULL,
     issued_at TEXT NOT NULL,
     consumed_at TEXT
+  ) STRICT;
+`;
+const CREATE_OWNED_STATE_EXPORTS = `
+  CREATE TABLE IF NOT EXISTS owned_state_exports (
+    state_fingerprint TEXT NOT NULL PRIMARY KEY,
+    export_digest TEXT NOT NULL UNIQUE,
+    exported_at TEXT NOT NULL,
+    connection_inventories_json TEXT NOT NULL
+  ) STRICT;
+`;
+const CREATE_FORGET_RECORDS = `
+  CREATE TABLE IF NOT EXISTS forget_records (
+    forget_order INTEGER PRIMARY KEY,
+    forget_id TEXT NOT NULL UNIQUE,
+    connection_id TEXT NOT NULL,
+    forgotten_at TEXT NOT NULL,
+    forgotten_by TEXT NOT NULL,
+    inventory_json TEXT NOT NULL,
+    inventory_digest TEXT NOT NULL,
+    export_digest TEXT NOT NULL
   ) STRICT;
 `;
 
@@ -294,6 +319,42 @@ export interface RecordIndexModeResolutionPlan {
   recordIndexMode: JsonlRecordIndexMode;
 }
 
+export interface ForgetInventory {
+  collectionAttemptIds: string[];
+  collectionAttemptRetirementIds: string[];
+  connectionId: string;
+  connectionVersions: string[];
+  counts: {
+    collectionAttemptRetirements: number;
+    collectionAttempts: number;
+    connectionVersions: number;
+    facts: number;
+    recordIndexModeResolutions: number;
+  };
+  factIds: number[];
+  recordIndexModeResolutionIds: string[];
+}
+
+export interface ForgetPlan extends ForgetInventory {
+  confirmationToken: string;
+  consequence: string;
+  inventoryDigest: string;
+  forgottenBy: string;
+}
+
+export interface ForgetRecord extends ForgetInventory {
+  exportDigest: string;
+  forgetId: string;
+  forgottenAt: string;
+  forgottenBy: string;
+  inventoryDigest: string;
+}
+
+type ForgetSnapshot = ForgetInventory & {
+  inventoryDigest: string;
+  stateFingerprint: string;
+};
+
 type RecordIndexModeResolutionSnapshot = Omit<
   RecordIndexModeResolutionPlan,
   "confirmationToken"
@@ -415,6 +476,42 @@ export class ConfirmationAlreadySpentError extends Error {
   constructor() {
     super("The confirmation preview has already been spent");
     this.name = "ConfirmationAlreadySpentError";
+  }
+}
+
+export class ForgetConnectionActiveError extends Error {
+  readonly code = "forget_connection_active";
+
+  constructor(_connectionId: string) {
+    super("An active connection cannot be forgotten");
+    this.name = "ForgetConnectionActiveError";
+  }
+}
+
+export class ForgetConnectionNotFoundError extends Error {
+  readonly code = "forget_connection_not_found";
+
+  constructor(_connectionId: string) {
+    super("No owned state exists for this connection");
+    this.name = "ForgetConnectionNotFoundError";
+  }
+}
+
+export class ForgetExportCoverageError extends Error {
+  readonly code = "forget_export_coverage_mismatch";
+
+  constructor() {
+    super("The presented export does not cover the exact forget inventory");
+    this.name = "ForgetExportCoverageError";
+  }
+}
+
+export class ForgetStateChangedError extends Error {
+  readonly code = "forget_state_changed";
+
+  constructor() {
+    super("The forget scope changed after confirmation was requested");
+    this.name = "ForgetStateChangedError";
   }
 }
 
@@ -753,6 +850,213 @@ export class ObservationStore {
         derivedDigest,
         recordedAt,
       );
+  }
+
+  exportOwnedState(
+    now = new Date(),
+    write?: (exported: OwnedStateExport) => void,
+  ): OwnedStateExport {
+    return this.#transaction(() => {
+      const institutionStore = this.#ownedInstitutionState();
+      const observationStore = this.#ownedObservationState();
+      const omitted = [
+        {
+          section: "confirmationPreviews",
+          reason:
+            "Operational approval-gate records are omitted because they are not personal observation history and exporting them could disclose confirmation material.",
+        },
+        {
+          section: "ownedStateExports",
+          reason:
+            "Operational export-evidence records are omitted so exporting unchanged owned state is deterministic and does not recursively change the bundle.",
+        },
+      ];
+      const stateFingerprint = `sha256:${sha256(
+        canonicalJson({ institutionStore, observationStore, omitted } as unknown as JsonValue),
+      )}`;
+      const existing = this.#database
+        .prepare(
+          `SELECT exported_at FROM owned_state_exports WHERE state_fingerprint = ?`,
+        )
+        .get(stateFingerprint) as undefined | { exported_at: string };
+      const exportedAt = existing?.exported_at ?? now.toISOString();
+      const bundle: OwnedStateBundle = {
+        schemaVersion: 1,
+        exportedAt,
+        institutionStore,
+        observationStore,
+        omitted,
+      };
+      const exported = createOwnedStateExport(bundle);
+      write?.(exported);
+      if (existing === undefined) {
+        const connectionIds = (
+          this.#database
+            .prepare(
+              `SELECT connection_id FROM connection_versions
+               UNION
+               SELECT connection_id FROM forget_records
+               ORDER BY connection_id`,
+            )
+            .all() as { connection_id: string }[]
+        ).map((row) => row.connection_id);
+        const inventories = connectionIds.flatMap((connectionId) => {
+          try {
+            return [{
+              connectionId,
+              inventoryDigest: this.#forgetSnapshot(connectionId, false).inventoryDigest,
+            }];
+          } catch (error) {
+            if (error instanceof ForgetConnectionNotFoundError) {
+              return [];
+            }
+            throw error;
+          }
+        });
+        this.#database
+          .prepare(
+            `INSERT INTO owned_state_exports
+               (state_fingerprint, export_digest, exported_at, connection_inventories_json)
+             VALUES (?, ?, ?, ?)`,
+          )
+          .run(
+            stateFingerprint,
+            exported.digest,
+            exportedAt,
+            canonicalJson(inventories),
+          );
+      }
+      return exported;
+    });
+  }
+
+  planForget(
+    connectionId: string,
+    forgottenBy: string,
+    now = new Date(),
+  ): ForgetPlan {
+    validateActor(forgottenBy, "forget");
+    return this.#transaction(() => {
+      const snapshot = this.#forgetSnapshot(connectionId);
+      const { stateFingerprint, ...inventory } = snapshot;
+      return {
+        ...inventory,
+        confirmationToken: this.#issueConfirmationPreview(
+          "forget",
+          canonicalJson([connectionId, forgottenBy]),
+          stateFingerprint,
+          now.toISOString(),
+        ),
+        consequence:
+          "This permanently deletes every connection version, fact, collection attempt, attempt retirement, and record-index resolution in the listed inventory. The deletion record remains, but the deleted payloads cannot be restored by Ecosym.",
+        forgottenBy,
+      };
+    });
+  }
+
+  async forget(
+    connectionId: string,
+    forgottenBy: string,
+    exportDigest: string,
+    confirmationToken: string,
+    now = new Date(),
+  ): Promise<ForgetRecord> {
+    validateActor(forgottenBy, "forget");
+    const forgottenAt = now.toISOString();
+    const forget = () => {
+      const preview = this.#confirmationPreview(
+        "forget",
+        canonicalJson([connectionId, forgottenBy]),
+        confirmationToken,
+      );
+      if (preview.consumed_at !== null) {
+        throw new ConfirmationAlreadySpentError();
+      }
+      let snapshot: ForgetSnapshot;
+      try {
+        snapshot = this.#forgetSnapshot(connectionId);
+      } catch (error) {
+        if (
+          error instanceof ForgetConnectionActiveError ||
+          error instanceof ForgetConnectionNotFoundError
+        ) {
+          throw new ForgetStateChangedError();
+        }
+        throw error;
+      }
+      if (preview.state_fingerprint !== snapshot.stateFingerprint) {
+        throw new ForgetStateChangedError();
+      }
+      const evidence = this.#database
+        .prepare(
+          `SELECT connection_inventories_json
+             FROM owned_state_exports
+            WHERE export_digest = ?`,
+        )
+        .get(exportDigest) as undefined | { connection_inventories_json: string };
+      const covered = evidence === undefined
+        ? undefined
+        : parseExportInventories(evidence.connection_inventories_json).find(
+            (item) => item.connectionId === connectionId,
+          );
+      if (covered?.inventoryDigest !== snapshot.inventoryDigest) {
+        throw new ForgetExportCoverageError();
+      }
+
+      const { stateFingerprint: _stateFingerprint, inventoryDigest, ...inventory } = snapshot;
+
+      this.#database.prepare("DELETE FROM facts WHERE connection_id = ?").run(connectionId);
+      this.#database
+        .prepare("DELETE FROM collection_attempt_retirements WHERE connection_id = ?")
+        .run(connectionId);
+      this.#database
+        .prepare("DELETE FROM record_index_mode_resolutions WHERE connection_id = ?")
+        .run(connectionId);
+      this.#database
+        .prepare("DELETE FROM collection_attempts WHERE connection_id = ?")
+        .run(connectionId);
+      this.#database
+        .prepare("DELETE FROM connection_versions WHERE connection_id = ?")
+        .run(connectionId);
+
+      const forgetOrder = (
+        this.#database
+          .prepare("SELECT COALESCE(MAX(forget_order), 0) + 1 AS next FROM forget_records")
+          .get() as { next: number }
+      ).next;
+      const forgetId = randomUUID();
+      const inventoryJson = canonicalJson(inventory as unknown as JsonValue);
+      this.#database
+        .prepare(
+          `INSERT INTO forget_records
+             (forget_order, forget_id, connection_id, forgotten_at, forgotten_by,
+              inventory_json, inventory_digest, export_digest)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          forgetOrder,
+          forgetId,
+          connectionId,
+          forgottenAt,
+          forgottenBy,
+          inventoryJson,
+          inventoryDigest,
+          exportDigest,
+        );
+      this.#spendConfirmationPreview(confirmationToken, forgottenAt);
+      return {
+        ...inventory,
+        inventoryDigest,
+        exportDigest,
+        forgetId,
+        forgottenAt,
+        forgottenBy,
+      };
+    };
+    return this.#retryTransactionWithinContentionBudget(
+      { remainingMilliseconds: CONFIRMATION_CONTENTION_BUDGET_MILLISECONDS },
+      forget,
+    );
   }
 
   planRecordIndexModeResolution(
@@ -1459,6 +1763,33 @@ export class ObservationStore {
     });
   }
 
+  forgetRecords(): ForgetRecord[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT forget_id, connection_id, forgotten_at, forgotten_by,
+                inventory_json, inventory_digest, export_digest
+           FROM forget_records
+          ORDER BY forget_order`,
+      )
+      .all() as {
+      connection_id: string;
+      export_digest: string;
+      forget_id: string;
+      forgotten_at: string;
+      forgotten_by: string;
+      inventory_digest: string;
+      inventory_json: string;
+    }[];
+    return rows.map((row) => ({
+      ...parseForgetInventory(row.inventory_json),
+      exportDigest: row.export_digest,
+      forgetId: row.forget_id,
+      forgottenAt: row.forgotten_at,
+      forgottenBy: row.forgotten_by,
+      inventoryDigest: row.inventory_digest,
+    }));
+  }
+
   queryObservations(options: QueryOptions = {}): StoredFact[] {
     return this.#queryFacts("observation", options);
   }
@@ -1732,10 +2063,33 @@ export class ObservationStore {
     if (version.user_version === STORE_SCHEMA_VERSION) {
       return;
     }
+    if (version.user_version === 12) {
+      this.#transaction(() => {
+        this.#database.exec(`
+          ALTER TABLE confirmation_previews RENAME TO confirmation_previews_v12;
+          ${CREATE_CONFIRMATION_PREVIEWS}
+          INSERT INTO confirmation_previews
+            SELECT * FROM confirmation_previews_v12;
+          DROP TABLE confirmation_previews_v12;
+          ${CREATE_INSTITUTION}
+          ${CREATE_OWNED_STATE_EXPORTS}
+          ${CREATE_FORGET_RECORDS}
+          PRAGMA user_version = ${STORE_SCHEMA_VERSION};
+        `);
+      });
+      return;
+    }
     if (version.user_version === 11) {
       this.#transaction(() => {
         this.#database.exec(`
+          ALTER TABLE confirmation_previews RENAME TO confirmation_previews_v11;
+          ${CREATE_CONFIRMATION_PREVIEWS}
+          INSERT INTO confirmation_previews
+            SELECT * FROM confirmation_previews_v11;
+          DROP TABLE confirmation_previews_v11;
           ${CREATE_INSTITUTION}
+          ${CREATE_OWNED_STATE_EXPORTS}
+          ${CREATE_FORGET_RECORDS}
           PRAGMA user_version = ${STORE_SCHEMA_VERSION};
         `);
       });
@@ -1746,6 +2100,8 @@ export class ObservationStore {
         this.#database.exec(`
           ${CREATE_CONFIRMATION_PREVIEWS}
           ${CREATE_INSTITUTION}
+          ${CREATE_OWNED_STATE_EXPORTS}
+          ${CREATE_FORGET_RECORDS}
           PRAGMA user_version = ${STORE_SCHEMA_VERSION};
         `);
       });
@@ -1812,6 +2168,8 @@ export class ObservationStore {
         ${CREATE_CONFIRMATION_PREVIEWS}
 
         ${CREATE_INSTITUTION}
+        ${CREATE_OWNED_STATE_EXPORTS}
+        ${CREATE_FORGET_RECORDS}
 
         ${CREATE_COLLECTION_ATTEMPTS}
         ${CREATE_COLLECTION_ATTEMPTS_LATEST_INDEX}
@@ -2119,6 +2477,8 @@ export class ObservationStore {
         this.#database.exec(CREATE_COLLECTION_ATTEMPT_RETIREMENTS);
         this.#database.exec(CREATE_CONFIRMATION_PREVIEWS);
         this.#database.exec(CREATE_INSTITUTION);
+        this.#database.exec(CREATE_OWNED_STATE_EXPORTS);
+        this.#database.exec(CREATE_FORGET_RECORDS);
         this.#database.exec(`PRAGMA user_version = ${STORE_SCHEMA_VERSION}`);
       });
     } finally {
@@ -2154,6 +2514,308 @@ export class ObservationStore {
       throw new Error("Registered connection configuration is missing");
     }
     return parseStoredConfig(row.config_json, connection.configHash);
+  }
+
+  #ownedInstitutionState(): OwnedStateBundle["institutionStore"] {
+    return {
+      schemaVersion: STORE_SCHEMA_VERSION,
+      civilizations: this.#exportRows(
+        `SELECT civilization_id AS civilizationId, name, founded_at AS foundedAt
+           FROM civilizations ORDER BY civilization_id`,
+      ),
+      mandateRevisions: this.#database
+        .prepare(
+          `SELECT revision_order, civilization_id, mandate_id, revision,
+                  previous_revision, status, mandate_json, mandate_digest, recorded_at
+             FROM mandate_revisions ORDER BY revision_order`,
+        )
+        .all()
+        .map((value) => {
+          const row = value as Record<string, JsonValue> & { mandate_json: string };
+          return {
+            revisionOrder: row.revision_order,
+            civilizationId: row.civilization_id,
+            mandateId: row.mandate_id,
+            revision: row.revision,
+            previousRevision: row.previous_revision,
+            status: row.status,
+            mandate: JSON.parse(row.mandate_json) as JsonValue,
+            mandateDigest: row.mandate_digest,
+            recordedAt: row.recorded_at,
+          } as Record<string, JsonValue>;
+        }),
+    };
+  }
+
+  #ownedObservationState(): OwnedStateBundle["observationStore"] {
+    const connectionVersions = this.#database
+      .prepare(
+        `SELECT connection_id, config_hash, config_json, registered_at,
+                jsonl_record_index_mode
+           FROM connection_versions
+          ORDER BY connection_id, config_hash`,
+      )
+      .all()
+      .map((value) => {
+        const row = value as Record<string, JsonValue> & { config_json: string };
+        return {
+          connectionId: row.connection_id,
+          connectionVersion: row.config_hash,
+          config: JSON.parse(row.config_json) as JsonValue,
+          registeredAt: row.registered_at,
+          jsonlRecordIndexMode: row.jsonl_record_index_mode,
+        } as Record<string, JsonValue>;
+      });
+    const activeConnections = this.#database
+      .prepare(
+        `SELECT connection_id, config_hash, activation_id, connected_at
+           FROM active_connections
+          ORDER BY connection_id`,
+      )
+      .all()
+      .map((value) => {
+        const row = value as Record<string, JsonValue>;
+        return {
+          connectionId: row.connection_id,
+          connectionVersion: row.config_hash,
+          activationId: row.activation_id,
+          connectedAt: row.connected_at,
+        } as Record<string, JsonValue>;
+      });
+    const facts = this.#database
+      .prepare(
+        `SELECT f.fact_id, f.connection_id, f.config_hash, f.attempt_id,
+                f.fact_owner, f.kind, f.subject, f.epistemic_status,
+                f.source_record_id, f.source_recorded_at, f.source_time_key,
+                f.payload_json, f.payload_hash, f.collected_at,
+                f.last_seen_attempt_order,
+                CASE
+                  WHEN f.source_recorded_at IS NULL THEN 'unknown'
+                  WHEN EXISTS (
+                    SELECT 1 FROM facts newer
+                     WHERE newer.connection_id = f.connection_id
+                       AND newer.fact_owner = f.fact_owner
+                       AND newer.kind = f.kind
+                       AND newer.subject = f.subject
+                       AND newer.epistemic_status = f.epistemic_status
+                       AND newer.source_time_key > f.source_time_key
+                  ) THEN 'historical'
+                  WHEN (
+                    SELECT MAX(known.last_seen_attempt_order) FROM facts known
+                     WHERE known.connection_id = f.connection_id
+                       AND known.fact_owner = f.fact_owner
+                       AND known.kind = f.kind
+                       AND known.subject = f.subject
+                       AND known.epistemic_status = f.epistemic_status
+                       AND known.source_record_id = f.source_record_id
+                       AND known.source_time_key = f.source_time_key
+                  ) = 0 THEN 'unknown'
+                  WHEN (
+                    SELECT COUNT(*) FROM facts tied
+                     WHERE tied.connection_id = f.connection_id
+                       AND tied.fact_owner = f.fact_owner
+                       AND tied.kind = f.kind
+                       AND tied.subject = f.subject
+                       AND tied.epistemic_status = f.epistemic_status
+                       AND tied.source_record_id = f.source_record_id
+                       AND tied.source_time_key = f.source_time_key
+                       AND tied.last_seen_attempt_order = (
+                         SELECT MAX(latest.last_seen_attempt_order) FROM facts latest
+                          WHERE latest.connection_id = f.connection_id
+                            AND latest.fact_owner = f.fact_owner
+                            AND latest.kind = f.kind
+                            AND latest.subject = f.subject
+                            AND latest.epistemic_status = f.epistemic_status
+                            AND latest.source_record_id = f.source_record_id
+                            AND latest.source_time_key = f.source_time_key
+                       )
+                  ) > 1 THEN 'unknown'
+                  WHEN EXISTS (
+                    SELECT 1 FROM facts corrected
+                     WHERE corrected.connection_id = f.connection_id
+                       AND corrected.fact_owner = f.fact_owner
+                       AND corrected.kind = f.kind
+                       AND corrected.subject = f.subject
+                       AND corrected.epistemic_status = f.epistemic_status
+                       AND corrected.source_record_id = f.source_record_id
+                       AND corrected.source_time_key = f.source_time_key
+                       AND corrected.last_seen_attempt_order > f.last_seen_attempt_order
+                  ) THEN 'historical'
+                  ELSE 'current'
+                END AS temporal_status
+           FROM facts f
+          ORDER BY f.fact_id`,
+      )
+      .all()
+      .map((value) => {
+        const row = value as Record<string, JsonValue> & { payload_json: string };
+        return {
+          id: row.fact_id,
+          connectionId: row.connection_id,
+          connectionVersion: row.config_hash,
+          attemptId: row.attempt_id,
+          factOwner: row.fact_owner,
+          kind: row.kind,
+          subject: row.subject,
+          epistemicStatus: row.epistemic_status,
+          sourceRecordId: row.source_record_id,
+          sourceRecordedAt: row.source_recorded_at,
+          sourceTimeKey: row.source_time_key,
+          payload: JSON.parse(row.payload_json) as JsonValue,
+          payloadHash: row.payload_hash,
+          collectedAt: row.collected_at,
+          lastSeenAttemptOrder: row.last_seen_attempt_order,
+          temporalStatus: row.temporal_status,
+        } as Record<string, JsonValue>;
+      });
+    return {
+      schemaVersion: STORE_SCHEMA_VERSION,
+      activeConnections,
+      collectionAttemptRetirements: this.#exportRows(
+        `SELECT retirement_order AS retirementOrder, retirement_id AS retirementId,
+                attempt_id AS attemptId, connection_id AS connectionId,
+                config_hash AS connectionVersion, retired_at AS retiredAt,
+                retired_by AS retiredBy, confirmation_token AS confirmationToken
+           FROM collection_attempt_retirements ORDER BY retirement_order`,
+      ).map((row) => {
+        const { confirmationToken, ...retirement } = row;
+        return {
+          ...retirement,
+          confirmationTokenDigest: sha256(confirmationToken as string),
+        };
+      }),
+      collectionAttempts: this.#exportRows(
+        `SELECT attempt_order AS attemptOrder, attempt_id AS attemptId,
+                connection_id AS connectionId, config_hash AS connectionVersion,
+                activation_id AS activationId, started_at AS startedAt,
+                completed_at AS completedAt, outcome, source_records_seen AS sourceRecordsSeen,
+                facts_seen AS factsSeen, facts_added AS factsAdded,
+                facts_changed AS factsChanged, failure_code AS failureCode
+           FROM collection_attempts ORDER BY attempt_order`,
+      ),
+      connectionVersions,
+      facts,
+      forgetRecords: this.#database
+        .prepare(
+          `SELECT forget_order, forget_id, connection_id, forgotten_at, forgotten_by,
+                  inventory_json, inventory_digest, export_digest
+             FROM forget_records ORDER BY forget_order`,
+        )
+        .all()
+        .map((value) => {
+          const row = value as Record<string, JsonValue> & { inventory_json: string };
+          return {
+            forgetOrder: row.forget_order,
+            forgetId: row.forget_id,
+            connectionId: row.connection_id,
+            forgottenAt: row.forgotten_at,
+            forgottenBy: row.forgotten_by,
+            inventory: JSON.parse(row.inventory_json) as JsonValue,
+            inventoryDigest: row.inventory_digest,
+            exportDigest: row.export_digest,
+          } as Record<string, JsonValue>;
+        }),
+      recordIndexModeResolutions: this.#database
+        .prepare(
+          `SELECT resolution_order, resolution_id, connection_id, config_hash,
+                  previous_mode, record_index_mode, resolved_at,
+                  affected_fact_ids_json, collection_attempt_ids_json,
+                  confirmation_token
+             FROM record_index_mode_resolutions ORDER BY resolution_order`,
+        )
+        .all()
+        .map((value) => {
+          const row = value as Record<string, JsonValue> & {
+            affected_fact_ids_json: string;
+            collection_attempt_ids_json: string;
+            confirmation_token: string;
+          };
+          return {
+            resolutionOrder: row.resolution_order,
+            resolutionId: row.resolution_id,
+            connectionId: row.connection_id,
+            connectionVersion: row.config_hash,
+            previousRecordIndexMode: row.previous_mode,
+            recordIndexMode: row.record_index_mode,
+            resolvedAt: row.resolved_at,
+            affectedFactIds: JSON.parse(row.affected_fact_ids_json) as JsonValue,
+            collectionAttemptIds: JSON.parse(row.collection_attempt_ids_json) as JsonValue,
+            confirmationTokenDigest: sha256(row.confirmation_token),
+          } as Record<string, JsonValue>;
+        }),
+    };
+  }
+
+  #exportRows(sql: string): Record<string, JsonValue>[] {
+    return this.#database.prepare(sql).all() as Record<string, JsonValue>[];
+  }
+
+  #forgetSnapshot(connectionId: string, requireInactive = true): ForgetSnapshot {
+    const active = this.#database
+      .prepare("SELECT 1 AS active FROM active_connections WHERE connection_id = ?")
+      .get(connectionId);
+    if (requireInactive && active !== undefined) {
+      throw new ForgetConnectionActiveError(connectionId);
+    }
+    const connectionVersions = (
+      this.#database
+        .prepare(
+          `SELECT config_hash FROM connection_versions
+            WHERE connection_id = ? ORDER BY config_hash`,
+        )
+        .all(connectionId) as { config_hash: string }[]
+    ).map((row) => row.config_hash);
+    if (connectionVersions.length === 0) {
+      throw new ForgetConnectionNotFoundError(connectionId);
+    }
+    const factIds = (
+      this.#database
+        .prepare("SELECT fact_id FROM facts WHERE connection_id = ? ORDER BY fact_id")
+        .all(connectionId) as { fact_id: number }[]
+    ).map((row) => row.fact_id);
+    const collectionAttemptIds = (
+      this.#database
+        .prepare(
+          `SELECT attempt_id FROM collection_attempts
+            WHERE connection_id = ? ORDER BY attempt_order`,
+        )
+        .all(connectionId) as { attempt_id: string }[]
+    ).map((row) => row.attempt_id);
+    const collectionAttemptRetirementIds = (
+      this.#database
+        .prepare(
+          `SELECT retirement_id FROM collection_attempt_retirements
+            WHERE connection_id = ? ORDER BY retirement_order`,
+        )
+        .all(connectionId) as { retirement_id: string }[]
+    ).map((row) => row.retirement_id);
+    const recordIndexModeResolutionIds = (
+      this.#database
+        .prepare(
+          `SELECT resolution_id FROM record_index_mode_resolutions
+            WHERE connection_id = ? ORDER BY resolution_order`,
+        )
+        .all(connectionId) as { resolution_id: string }[]
+    ).map((row) => row.resolution_id);
+    const inventory: ForgetInventory = {
+      collectionAttemptIds,
+      collectionAttemptRetirementIds,
+      connectionId,
+      connectionVersions,
+      counts: {
+        collectionAttemptRetirements: collectionAttemptRetirementIds.length,
+        collectionAttempts: collectionAttemptIds.length,
+        connectionVersions: connectionVersions.length,
+        facts: factIds.length,
+        recordIndexModeResolutions: recordIndexModeResolutionIds.length,
+      },
+      factIds,
+      recordIndexModeResolutionIds,
+    };
+    const inventoryDigest = `sha256:${sha256(
+      canonicalJson(inventory as unknown as JsonValue),
+    )}`;
+    return { ...inventory, inventoryDigest, stateFingerprint: inventoryDigest };
   }
 
   #collectionAttemptRetirementSnapshot(
@@ -2297,7 +2959,7 @@ export class ObservationStore {
   }
 
   #issueConfirmationPreview(
-    operation: "resolve-record-index" | "retire-collection-attempt",
+    operation: "forget" | "resolve-record-index" | "retire-collection-attempt",
     argumentsJson: string,
     stateFingerprint: string,
     issuedAt: string,
@@ -2321,7 +2983,7 @@ export class ObservationStore {
   }
 
   #confirmationPreview(
-    operation: "resolve-record-index" | "retire-collection-attempt",
+    operation: "forget" | "resolve-record-index" | "retire-collection-attempt",
     argumentsJson: string,
     confirmationToken: string,
   ): ConfirmationPreviewRow {
@@ -2800,9 +3462,52 @@ function validateFactAndDeriveSourceTimeKey(
 }
 
 function validateRetirementActor(value: string): void {
+  validateActor(value, "retirement");
+}
+
+function validateActor(value: string, operation: "forget" | "retirement"): void {
   if (!/^[a-z][a-z0-9_.:-]{0,127}$/.test(value)) {
-    throw new TypeError("A retirement actor must be a stable machine identifier");
+    throw new TypeError(`A ${operation} actor must be a stable machine identifier`);
   }
+}
+
+function parseExportInventories(
+  value: string,
+): { connectionId: string; inventoryDigest: string }[] {
+  const parsed = JSON.parse(value) as unknown;
+  if (
+    !Array.isArray(parsed) ||
+    parsed.some(
+      (item) =>
+        item === null ||
+        typeof item !== "object" ||
+        Array.isArray(item) ||
+        typeof (item as Record<string, unknown>).connectionId !== "string" ||
+        typeof (item as Record<string, unknown>).inventoryDigest !== "string",
+    )
+  ) {
+    throw new Error("Stored export coverage is invalid");
+  }
+  return parsed as { connectionId: string; inventoryDigest: string }[];
+}
+
+function parseForgetInventory(value: string): ForgetInventory {
+  const parsed = JSON.parse(value) as ForgetInventory;
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    typeof parsed.connectionId !== "string" ||
+    !Array.isArray(parsed.connectionVersions) ||
+    !Array.isArray(parsed.factIds) ||
+    !Array.isArray(parsed.collectionAttemptIds) ||
+    !Array.isArray(parsed.collectionAttemptRetirementIds) ||
+    !Array.isArray(parsed.recordIndexModeResolutionIds) ||
+    parsed.counts === null ||
+    typeof parsed.counts !== "object"
+  ) {
+    throw new Error("Stored forget inventory is invalid");
+  }
+  return parsed;
 }
 
 function safeFailureCode(error: unknown): string {

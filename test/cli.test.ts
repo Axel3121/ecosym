@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -93,6 +99,98 @@ test("the command surface connects, collects, queries, and verifies", async () =
   assert.equal(disagreement.code, 1);
   assert.equal(disagreement.output.outcome, "disagreement");
   assert.equal(disagreement.stderr, "");
+});
+
+test("the command surface exports and forgets only disconnected covered state", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-cli-forget-"));
+  const sourcePath = join(directory, "source.jsonl");
+  const configPath = join(directory, "connection.json");
+  const exportPath = join(directory, "owned-state.json");
+  const xdgDataHome = join(directory, "data");
+  writeFileSync(
+    sourcePath,
+    '{"id":"record-1","subject":"subject-1","value":7}\n',
+  );
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      schemaVersion: 1,
+      id: "forgettable-source",
+      factOwner: "external-owner",
+      reader: { type: "jsonl", path: sourcePath },
+      sourceRecord: {
+        identity: [{ scope: "record", path: "id" }],
+        retention: "history",
+        recordedAt: { unavailable: true },
+      },
+      facts: [
+        {
+          epistemicStatus: "observation",
+          kind: "api.value",
+          subject: { scope: "record", path: "subject" },
+          payload: { value: { scope: "record", path: "value" } },
+        },
+      ],
+    }),
+  );
+
+  assert.equal((await runCli(["connect", configPath], xdgDataHome)).code, 0);
+  assert.equal((await runCli(["collect"], xdgDataHome)).code, 0);
+  const activeRefusal = await runCli(
+    ["forget", "forgettable-source", "--by", "operator:test"],
+    xdgDataHome,
+  );
+  assert.equal(activeRefusal.code, 1);
+  assert.equal(activeRefusal.output.error, "forget_connection_active");
+  assert.equal(
+    (await runCli(["disconnect", "forgettable-source"], xdgDataHome)).code,
+    0,
+  );
+
+  writeFileSync(exportPath, "pre-existing permissive file");
+  chmodSync(exportPath, 0o666);
+  const exported = await runCli(["export", exportPath], xdgDataHome);
+  assert.equal(exported.code, 0);
+  assert.equal(exported.output.outcome, "exported");
+  assert.equal(exported.output.destination, exportPath);
+  assert.equal(statSync(exportPath).mode & 0o777, 0o600);
+  assert.equal(
+    exported.output.digest,
+    `sha256:${sha256(readFileSync(exportPath, "utf8"))}`,
+  );
+  const preview = await runCli(
+    ["forget", "forgettable-source", "--by", "operator:test"],
+    xdgDataHome,
+  );
+  assert.equal(preview.code, 0);
+  assert.equal(preview.output.outcome, "confirmation-required");
+  assert.equal(typeof preview.output.consequence, "string");
+  assert.match(preview.output.recoverability as string, /no import or restore path/);
+  const forgotten = await runCli(
+    [
+      "forget",
+      "forgettable-source",
+      "--by",
+      "operator:test",
+      "--export-digest",
+      exported.output.digest as string,
+      "--confirm",
+      preview.output.confirmationToken as string,
+    ],
+    xdgDataHome,
+  );
+  assert.equal(forgotten.code, 0);
+  assert.equal(forgotten.output.outcome, "forgotten");
+  assert.deepEqual(
+    (await runCli(["query", "observations"], xdgDataHome)).output.records,
+    [],
+  );
+  const status = await runCli(["status"], xdgDataHome);
+  assert.deepEqual(status.output.connections, []);
+  assert.equal((status.output.forgetRecords as unknown[]).length, 1);
+  const verification = await runCli(["verify"], xdgDataHome);
+  assert.equal(verification.code, 4);
+  assert.equal(verification.output.unverifiedReason, "no_connections");
 });
 
 test("the query limit accepts its own boundaries", async (t) => {
