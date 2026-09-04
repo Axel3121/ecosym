@@ -565,19 +565,24 @@ test("verification and collection refuse a replaced record-index mode", async ()
     );
     const physicalConnection = migrated.getConnection(parsed.config.id);
     const snapshot = migrated.factsForVerification(physicalConnection);
+    let queuedResolution: Promise<void> | undefined;
     migrated.factsForVerification = () => {
       queueMicrotask(() => {
-        void resolveRecordIndexMode(
-          migrated,
-          parsed.config.id,
-          parsed.hash,
-          "record-ordinal",
+        queuedResolution = assert.doesNotReject(
+          resolveRecordIndexMode(
+            migrated,
+            parsed.config.id,
+            parsed.hash,
+            "record-ordinal",
+          ),
         );
       });
       return snapshot;
     };
 
     const verification = await verifyConnection(migrated, physicalConnection);
+    assert.ok(queuedResolution);
+    await queuedResolution;
     assert.equal(verification.outcome, "unread");
     assert.equal(
       verification.unreadReason,

@@ -883,7 +883,7 @@ test("a confirmed retirement retries through a SQLite write lock", async () => {
     .prepare("UPDATE collection_attempts SET facts_seen = facts_seen WHERE attempt_id = ?")
     .run("contended-attempt");
   const confirmation = runCli(confirmationArguments, xdgDataHome);
-  await delay(1_500);
+  await delay(750);
   blocker.exec("ROLLBACK");
   blocker.close();
 
