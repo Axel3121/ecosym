@@ -14,6 +14,7 @@ import { defaultStateDirectory } from "../src/paths.ts";
 import {
   CollectionFailedError,
   ConnectionConflictError,
+  isSqliteContentionError,
   ObservationStore,
   type FactInput,
 } from "../src/store.ts";
@@ -1065,7 +1066,7 @@ test("retiring one explicitly named running attempt leaves another concurrent at
       running[0]?.attemptId as string,
       "operator:recovery",
     );
-    const retirement = store.retireCollectionAttempt(
+    const retirement = await store.retireCollectionAttempt(
       retirementPlan.attemptId,
       retirementPlan.retiredBy,
       retirementPlan.confirmationToken,
@@ -1105,7 +1106,7 @@ test("retiring one explicitly named running attempt leaves another concurrent at
       parsed.hash,
       "record-ordinal",
     );
-    store.resolveRecordIndexMode(
+    await store.resolveRecordIndexMode(
       parsed.config.id,
       parsed.hash,
       "record-ordinal",
@@ -1318,6 +1319,56 @@ test("store contention waits until a failed attempt can be recorded", async () =
   }
 });
 
+test("confirmed record-index resolution retries contention without double-applying", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-resolution-contention-"));
+  const store = new ObservationStore(directory, 20);
+  const parsed = connection();
+  store.register(parsed);
+  const database = new DatabaseSync(store.path);
+  database
+    .prepare(
+      "UPDATE connection_versions SET jsonl_record_index_mode = 'unknown' WHERE connection_id = ?",
+    )
+    .run(parsed.config.id);
+  const plan = store.planRecordIndexModeResolution(
+    parsed.config.id,
+    parsed.hash,
+    "record-ordinal",
+  );
+  database.exec("BEGIN IMMEDIATE");
+  database
+    .prepare(
+      "UPDATE connection_versions SET registered_at = registered_at WHERE connection_id = ?",
+    )
+    .run(parsed.config.id);
+  const resolving = store.resolveRecordIndexMode(
+    parsed.config.id,
+    parsed.hash,
+    "record-ordinal",
+    plan.confirmationToken,
+  );
+  await delay(75);
+  database.exec("ROLLBACK");
+  database.close();
+
+  try {
+    await resolving;
+    assert.equal(store.recordIndexModeResolutions().length, 1);
+    await assert.rejects(
+      store.resolveRecordIndexMode(
+        parsed.config.id,
+        parsed.hash,
+        "record-ordinal",
+        plan.confirmationToken,
+      ),
+      { code: "confirmation_already_spent" },
+    );
+    assert.equal(store.recordIndexModeResolutions().length, 1);
+  } finally {
+    store.close();
+  }
+});
+
 test("failure-marker contention retries within the collection budget", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-failure-marker-contention-"));
   const store = new ObservationStore(directory, 20);
@@ -1505,6 +1556,11 @@ test("extended SQLite busy snapshots retain the contention failure code", async 
   }
 });
 
+test("an unrelated error wrapping SQLite contention remains unrelated", () => {
+  const busy = Object.assign(new Error("database is locked"), { errcode: 5 });
+  assert.equal(isSqliteContentionError(new Error("unrelated failure", { cause: busy })), false);
+});
+
 test("historical ordering uses an index for identity and source time", (t) => {
   const { store } = temporaryStore();
   const database = new DatabaseSync(store.path, { readOnly: true });
@@ -1682,7 +1738,7 @@ test("schema-ten stores gain an empty confirmation-preview ledger without rewrit
     "operator:migration-fixture",
     new Date("2026-09-01T09:01:00.000Z"),
   );
-  store.retireCollectionAttempt(
+  await store.retireCollectionAttempt(
     retirementPlan.attemptId,
     retirementPlan.retiredBy,
     retirementPlan.confirmationToken,
@@ -1694,7 +1750,7 @@ test("schema-ten stores gain an empty confirmation-preview ledger without rewrit
     "physical-line",
     new Date("2026-09-01T09:03:00.000Z"),
   );
-  store.resolveRecordIndexMode(
+  await store.resolveRecordIndexMode(
     parsed.config.id,
     parsed.hash,
     "physical-line",
@@ -2153,8 +2209,8 @@ test("a retirement actor must be a bounded machine identifier", async () => {
     // so an unbounded string is not an identifier. Validation happens before
     // the confirmation token is examined, so an unused token is enough.
     for (const actor of ["a".repeat(129), "a".repeat(200), "a".repeat(1024)]) {
-      assert.throws(
-        () => store.retireCollectionAttempt("absent-attempt", actor, "unused-token"),
+      await assert.rejects(
+        store.retireCollectionAttempt("absent-attempt", actor, "unused-token"),
         /stable machine identifier/,
         `length ${actor.length}`,
       );
@@ -2162,13 +2218,12 @@ test("a retirement actor must be a bounded machine identifier", async () => {
     // The longest permitted identifier passes the grammar, so the assertions
     // above are about the bound rather than rejecting everything. It fails for
     // the unrelated reason that no such confirmation exists.
-    assert.throws(
-      () =>
-        store.retireCollectionAttempt(
-          "absent-attempt",
-          `a${"b".repeat(127)}`,
-          "unused-token",
-        ),
+    await assert.rejects(
+      store.retireCollectionAttempt(
+        "absent-attempt",
+        `a${"b".repeat(127)}`,
+        "unused-token",
+      ),
       (error: Error) => !/stable machine identifier/.test(error.message),
     );
   } finally {

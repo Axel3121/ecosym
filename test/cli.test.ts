@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 import { parseConnectionConfig } from "../src/config.ts";
@@ -725,6 +726,80 @@ test("retirement is an explicit, durable CLI recovery for an abandoned attempt",
     [["abandoned-attempt", "operator:recovery"]],
   );
   assert.match(retirementAudit[0]?.retiredAt as string, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test("a confirmed retirement retries through a SQLite write lock", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-cli-retire-contention-"));
+  const xdgDataHome = join(directory, "data");
+  const stateDirectory = join(xdgDataHome, "ecosym");
+  const parsed = parseConnectionConfig({
+    schemaVersion: 1,
+    id: "contended-retirement-source",
+    factOwner: "external-owner",
+    reader: { type: "jsonl", path: "/unused.jsonl" },
+    sourceRecord: {
+      identity: [{ scope: "meta", value: "record-index" }],
+      retention: "history",
+      recordedAt: { unavailable: true },
+    },
+    facts: [
+      {
+        epistemicStatus: "observation",
+        kind: "api.value",
+        subject: { scope: "record", path: "subject" },
+        payload: { value: { scope: "record", path: "value" } },
+      },
+    ],
+  });
+  const store = new ObservationStore(stateDirectory);
+  store.register(parsed);
+  const active = store.getConnection(parsed.config.id);
+  const database = new DatabaseSync(store.path);
+  database
+    .prepare(
+      `INSERT INTO collection_attempts (
+         attempt_order, attempt_id, connection_id, config_hash, activation_id,
+         started_at, completed_at, outcome, source_records_seen, facts_seen,
+         facts_added, facts_changed, failure_code
+       ) VALUES (1, 'contended-attempt', ?, ?, ?, ?, NULL, 'running', 0, 0, 0, 0, NULL)`,
+    )
+    .run(parsed.config.id, parsed.hash, active.activationId, "2026-09-01T10:00:00.000Z");
+  database.close();
+  store.close();
+
+  const preview = await runCli(
+    ["retire-collection-attempt", "contended-attempt", "--by", "operator:recovery"],
+    xdgDataHome,
+  );
+  const confirmationArguments = [
+    "retire-collection-attempt",
+    "contended-attempt",
+    "--by",
+    "operator:recovery",
+    "--confirm",
+    preview.output.confirmationToken as string,
+  ];
+  const blocker = new DatabaseSync(join(stateDirectory, "observations.sqlite"));
+  blocker.exec("BEGIN IMMEDIATE");
+  blocker
+    .prepare("UPDATE collection_attempts SET facts_seen = facts_seen WHERE attempt_id = ?")
+    .run("contended-attempt");
+  const confirmation = runCli(confirmationArguments, xdgDataHome);
+  await delay(1_500);
+  blocker.exec("ROLLBACK");
+  blocker.close();
+
+  const retired = await confirmation;
+  assert.equal(retired.code, 0);
+  assert.equal(retired.output.outcome, "retired");
+  const replay = await runCli(confirmationArguments, xdgDataHome);
+  assert.equal(replay.code, 1);
+  assert.equal(replay.output.error, "confirmation_already_spent");
+  const status = await runCli(["status"], xdgDataHome);
+  assert.equal(
+    (status.output.collectionAttemptRetirements as unknown[]).length,
+    1,
+  );
 });
 
 async function runCli(arguments_: string[], xdgDataHome: string): Promise<CliResult> {

@@ -5,6 +5,7 @@ import { parseConnectionConfig } from "./config.ts";
 import { parseCivilizationConfig, parseMandateConfig } from "./institution.ts";
 import {
   CollectionFailedError,
+  isSqliteContentionError,
   ObservationStore,
   type QueryOptions,
 } from "./store.ts";
@@ -71,9 +72,9 @@ async function run(arguments_: string[]): Promise<CommandResult> {
       case "verify":
         return await verify(store, arguments_.slice(1));
       case "resolve-record-index":
-        return resolveRecordIndex(store, arguments_.slice(1));
+        return await resolveRecordIndex(store, arguments_.slice(1));
       case "retire-collection-attempt":
-        return retireCollectionAttempt(store, arguments_.slice(1));
+        return await retireCollectionAttempt(store, arguments_.slice(1));
       default:
         return invalidArguments(command);
     }
@@ -312,10 +313,10 @@ async function verify(store: ObservationStore, arguments_: string[]): Promise<Co
   };
 }
 
-function resolveRecordIndex(
+async function resolveRecordIndex(
   store: ObservationStore,
   arguments_: string[],
-): CommandResult {
+): Promise<CommandResult> {
   const connectionId = arguments_[0];
   const connectionVersion = arguments_[1];
   const recordIndexMode = arguments_[2];
@@ -356,7 +357,7 @@ function resolveRecordIndex(
   ) {
     return invalidArguments("resolve-record-index");
   }
-  const resolution = store.resolveRecordIndexMode(
+  const resolution = await store.resolveRecordIndexMode(
     connectionId,
     connectionVersion,
     recordIndexMode,
@@ -373,7 +374,10 @@ function resolveRecordIndex(
   };
 }
 
-function retireCollectionAttempt(store: ObservationStore, arguments_: string[]): CommandResult {
+async function retireCollectionAttempt(
+  store: ObservationStore,
+  arguments_: string[],
+): Promise<CommandResult> {
   const attemptId = arguments_[0];
   const retiredBy = arguments_[2];
   if (
@@ -407,7 +411,11 @@ function retireCollectionAttempt(store: ObservationStore, arguments_: string[]):
   ) {
     return invalidArguments("retire-collection-attempt");
   }
-  const retirement = store.retireCollectionAttempt(attemptId, retiredBy, confirmationToken);
+  const retirement = await store.retireCollectionAttempt(
+    attemptId,
+    retiredBy,
+    confirmationToken,
+  );
   return {
     exitCode: 0,
     output: {
@@ -501,6 +509,9 @@ function invalidArguments(command: string): CommandResult {
 }
 
 function safeErrorCode(error: unknown): string {
+  if (isSqliteContentionError(error)) {
+    return "store_contention";
+  }
   if (
     error !== null &&
     typeof error === "object" &&

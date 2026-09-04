@@ -32,6 +32,7 @@ const STORE_SCHEMA_VERSION = 12;
 const LEGACY_REBUILD_SCHEMA_VERSION = 9;
 const STORE_FILENAME = "observations.sqlite";
 const BUSY_RETRY_WINDOW_MILLISECONDS = 250;
+const CONFIRMATION_CONTENTION_BUDGET_MILLISECONDS = 2_000;
 const CREATE_COLLECTION_ATTEMPTS = `
   CREATE TABLE collection_attempts (
     attempt_order INTEGER PRIMARY KEY,
@@ -782,18 +783,18 @@ export class ObservationStore {
     });
   }
 
-  resolveRecordIndexMode(
+  async resolveRecordIndexMode(
     connectionId: string,
     connectionVersion: string,
     recordIndexMode: JsonlRecordIndexMode,
     confirmationToken: string,
     now = new Date(),
-  ): RecordIndexModeResolution {
+  ): Promise<RecordIndexModeResolution> {
     if (recordIndexMode !== "physical-line" && recordIndexMode !== "record-ordinal") {
       throw new TypeError("A record-index resolution must select a supported mode");
     }
     const resolvedAt = now.toISOString();
-    return this.#transaction(() => {
+    const resolve = () => {
       const preview = this.#confirmationPreview(
         "resolve-record-index",
         canonicalJson([connectionId, connectionVersion, recordIndexMode]),
@@ -877,7 +878,11 @@ export class ObservationStore {
         resolutionId,
         resolvedAt,
       };
-    });
+    };
+    return this.#retryTransactionWithinContentionBudget(
+      { remainingMilliseconds: CONFIRMATION_CONTENTION_BUDGET_MILLISECONDS },
+      resolve,
+    );
   }
 
   planCollectionAttemptRetirement(
@@ -902,15 +907,15 @@ export class ObservationStore {
     });
   }
 
-  retireCollectionAttempt(
+  async retireCollectionAttempt(
     attemptId: string,
     retiredBy: string,
     confirmationToken: string,
     now = new Date(),
-  ): CollectionAttemptRetirement {
+  ): Promise<CollectionAttemptRetirement> {
     validateRetirementActor(retiredBy);
     const retiredAt = now.toISOString();
-    return this.#transaction(() => {
+    const retire = () => {
       const preview = this.#confirmationPreview(
         "retire-collection-attempt",
         canonicalJson([attemptId, retiredBy]),
@@ -976,7 +981,11 @@ export class ObservationStore {
         retiredBy,
         retirementId,
       };
-    });
+    };
+    return this.#retryTransactionWithinContentionBudget(
+      { remainingMilliseconds: CONFIRMATION_CONTENTION_BUDGET_MILLISECONDS },
+      retire,
+    );
   }
 
   collectionAttempts(): CollectionAttempt[] {
@@ -1078,7 +1087,7 @@ export class ObservationStore {
     let sourceRecordsSeen = 0;
     let factsSeen = 0;
     const preparedFacts: PreparedFact[] = [];
-    const contentionBudget: CollectionContentionBudget = {
+    const contentionBudget: ContentionBudget = {
       remainingMilliseconds: BUSY_RETRY_WINDOW_MILLISECONDS,
     };
     let admitted: { attemptOrder: number; startedAt: string };
@@ -2381,7 +2390,7 @@ export class ObservationStore {
     connection: ActiveConnection,
     attemptId: string,
     now: () => Date,
-    contentionBudget: CollectionContentionBudget,
+    contentionBudget: ContentionBudget,
   ): Promise<{ attemptOrder: number; startedAt: string }> {
     return this.#retryTransactionWithinContentionBudget(contentionBudget, () => {
       this.#assertActive(connection);
@@ -2412,7 +2421,7 @@ export class ObservationStore {
   }
 
   async #retryTransactionWithinContentionBudget<T>(
-    contentionBudget: CollectionContentionBudget,
+    contentionBudget: ContentionBudget,
     retryableOperation: () => T,
   ): Promise<T> {
     while (true) {
@@ -2430,7 +2439,7 @@ export class ObservationStore {
           }),
         );
       } catch (error) {
-        if (!isSqliteBusy(error)) {
+        if (!isSqliteContentionError(error)) {
           throw error;
         }
         consumeContentionBudget(
@@ -2488,6 +2497,11 @@ export class ObservationStore {
     const startedAt = performance.now();
     try {
       this.#database.exec("BEGIN IMMEDIATE");
+    } catch (error) {
+      if (isSqliteContentionError(error)) {
+        throw new StoreContentionError(error);
+      }
+      throw error;
     } finally {
       recordWait?.(performance.now() - startedAt);
     }
@@ -2498,6 +2512,9 @@ export class ObservationStore {
     } catch (error) {
       if (this.#database.isTransaction) {
         this.#database.exec("ROLLBACK");
+      }
+      if (isSqliteContentionError(error)) {
+        throw new StoreContentionError(error);
       }
       throw error;
     }
@@ -2574,7 +2591,7 @@ interface StoredFactRow {
   temporal_status: "current" | "historical" | "unknown";
 }
 
-interface CollectionContentionBudget {
+interface ContentionBudget {
   remainingMilliseconds: number;
 }
 
@@ -2831,7 +2848,10 @@ function numberOfChanges(result: StatementResultingChanges): number {
   return Number(result.changes);
 }
 
-function isSqliteBusy(error: unknown): boolean {
+export function isSqliteContentionError(error: unknown): boolean {
+  if (error instanceof StoreContentionError) {
+    return true;
+  }
   if (
     error === null ||
     typeof error !== "object" ||
@@ -2845,7 +2865,7 @@ function isSqliteBusy(error: unknown): boolean {
 }
 
 function consumeContentionBudget(
-  budget: CollectionContentionBudget,
+  budget: ContentionBudget,
   elapsedMilliseconds: number,
 ): void {
   budget.remainingMilliseconds = Math.max(
