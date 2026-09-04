@@ -503,7 +503,7 @@ async function forget(
         outcome: "confirmation-required",
         ...plan,
         recoverability:
-          "The presented export is evidence of the state before deletion. Ecosym has no import or restore path for it.",
+          "The presented export is evidence of the state before deletion. Ecosym has no provenance-preserving import or restore command that reinstates records with their original epistemic status, provenance, source timing, and temporal status. A bundle cannot be read back as the observations it once held. To recover an externally owned fact, reconnect and re-collect from the source that owns it. Record-index-mode resolutions, attempt retirements, and retention-history fact versions whose source has moved on are not recoverable.",
       },
     };
   }

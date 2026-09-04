@@ -255,8 +255,11 @@ recursively change the next bundle. Both omissions and their reasons are stated
 in every bundle.
 
 An export is a complete copy of owned state at the stated instant and evidence
-for deletion. Ecosym has no import or restore command: an export is not a way to
-undo `forget`.
+for deletion. Ecosym has no import or restore command that reinstates records
+with their original epistemic status, provenance, source timing, and temporal
+status. A bundle cannot be read back as the observations it once held; connecting
+it as a JSON file creates new observations of that file instead. An export is not
+a way to undo `forget`.
 
 `forget CONNECTION_ID --by ACTOR` is only a preview. The connection must already
 be inactive. The preview lists all versions, fact IDs, collection-attempt IDs,

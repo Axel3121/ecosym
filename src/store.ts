@@ -948,7 +948,7 @@ export class ObservationStore {
           now.toISOString(),
         ),
         consequence:
-          "This permanently deletes every connection version, fact, collection attempt, attempt retirement, and record-index resolution in the listed inventory. The deletion record remains, but the deleted payloads cannot be restored by Ecosym.",
+          "This permanently deletes every connection version, fact, collection attempt, attempt retirement, and record-index resolution in the listed inventory. The deletion record remains, but the deleted payloads cannot be restored by Ecosym. To recover an externally owned fact, reconnect and re-collect from the source that owns it. Record-index-mode resolutions, attempt retirements, and retention-history fact versions whose source has moved on are not recoverable.",
         forgottenBy,
       };
     });
