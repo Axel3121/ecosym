@@ -1619,6 +1619,9 @@ test("post-admission contention has one bounded machine-readable failure", async
 
   try {
     assert.equal(outcome, "store_contention");
+    // SQLite's busy handler blocks the event loop synchronously, so the 750 ms
+    // race deadline cannot fire during contention and is not this test's guard.
+    // The outcome equality and elapsed-time bound below catch regressions.
     assert.ok(elapsedMilliseconds < 350);
     assert.equal(store.statuses()[0]?.reason, "incomplete");
   } finally {
@@ -1730,6 +1733,9 @@ test("store contention returns a bounded machine-readable failure", async () => 
 
   try {
     assert.equal(outcome, "store_contention");
+    // The synchronous SQLite busy handler prevents the 750 ms race timer from
+    // firing while contention is active, so that deadline does not guard this test.
+    // Regression coverage comes from the outcome equality and this time bound.
     assert.ok(elapsedMilliseconds < 350);
   } finally {
     store.close();

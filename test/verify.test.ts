@@ -149,6 +149,58 @@ test("mixed connection outcomes remain mixed when one connection is unverified",
   }
 });
 
+// Pin docs/observation-layer.md's mixed-outcome rule so aggregation changes
+// cannot let a disagreement hide behind a homogeneous outcome.
+test("heterogeneous outcomes are mixed without an unverified connection", async (t) => {
+  for (const scenario of [
+    { first: "agreement", name: "agreement + disagreement", second: "disagreement" },
+    { first: "agreement", name: "agreement + unread", second: "unread" },
+    { first: "unread", name: "unread + disagreement", second: "disagreement" },
+  ] as const) {
+    await t.test(scenario.name, async () => {
+      const { directory, parsed, sourcePath, store } = setup();
+      try {
+        const secondPath = join(directory, "second-source.jsonl");
+        copyFileSync(join(fixtures, "original.jsonl"), secondPath);
+        const secondInput = JSON.parse(parsed.canonical) as {
+          id: string;
+          reader: { path: string };
+        };
+        secondInput.id = "second-source";
+        secondInput.reader.path = secondPath;
+        const secondParsed = parseConnectionConfig(secondInput);
+        store.register(secondParsed);
+
+        await collectConnection(store, parsed.config.id);
+        await collectConnection(store, secondParsed.config.id);
+
+        for (const [outcome, path] of [
+          [scenario.first, sourcePath],
+          [scenario.second, secondPath],
+        ] as const) {
+          if (outcome === "disagreement") {
+            copyFileSync(join(fixtures, "corrupted.jsonl"), path);
+          } else if (outcome === "unread") {
+            rmSync(path);
+          }
+        }
+
+        const report = await verifyAll(store);
+        const outcomes = new Map(
+          report.connections.map((connection) => [connection.connectionId, connection.outcome]),
+        );
+        assert.equal(outcomes.get(parsed.config.id), scenario.first);
+        assert.equal(outcomes.get(secondParsed.config.id), scenario.second);
+        assert.equal(report.outcome, "mixed");
+        assert.equal(report.unverifiedReason, null);
+        assert.equal(exitCodeForVerification(report), 3);
+      } finally {
+        store.close();
+      }
+    });
+  }
+});
+
 test("an empty store is unverified rather than agreement", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-empty-verify-"));
   const store = new ObservationStore(directory);
