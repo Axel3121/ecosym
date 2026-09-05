@@ -121,7 +121,7 @@ what was interrupted, and the traces of what finished. All of it time-bounded
 and stamped as a live operation.
 
 This is what can honestly be shown today, and it is why it is not called a town
-hall. Coordination inside a runtime exists only while a process runs.
+hall. No coordination that survives a process has been observed.
 
 **City hall** is reserved. The name may be used when a civilization has a
 lasting institution — identity, mandate, lifecycle, and coordination that
