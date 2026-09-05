@@ -138,6 +138,14 @@ token after the driver returns them and are checked as their exact binary
 values; precision already discarded by SQLite or its driver cannot be
 recovered.
 
+An ISO-8601 source time is stored exactly as the source spelled it, while a
+separate derived key provides ordering, so supplied values are not rewritten.
+Both `Z` and `+00:00` are accepted because they denote the same instant.
+Precision finer than a millisecond is refused rather than truncated, and a
+non-UTC offset is refused rather than converted. When the same instant is
+supplied again with a different spelling, the most recently supplied spelling
+is stored for that sighting.
+
 ### Identity and time without native fields
 
 Identity selectors are hashed into an opaque, deterministic source-record ID.
