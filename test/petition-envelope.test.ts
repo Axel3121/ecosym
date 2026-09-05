@@ -210,6 +210,20 @@ test("refuses unknown envelope and nested fields and delegated authority", () =>
   expectRefusal("authority_basis", () => createPetitionEnvelope(delegated));
 });
 
+test("proof profiles are checked structurally without selecting a profile", () => {
+  const structurallyDifferent = validEnvelope();
+  structurallyDifferent.proofProfile = {
+    id: "another.synthetic.profile",
+    revision: "unselected-revision",
+    definitionDigest: `sha256:${"e".repeat(64)}`,
+  };
+  assert.doesNotThrow(() => createPetitionEnvelope(structurallyDifferent));
+
+  const malformedDigest = validEnvelope();
+  setAt(malformedDigest, ["proofProfile", "definitionDigest"], "sha256:NOT-LOWERCASE-HEX");
+  expectRefusal("digest_format", () => createPetitionEnvelope(malformedDigest));
+});
+
 test("preserves request refusal rules, including unknown type distinctly", () => {
   const unknown = validEnvelope();
   setAt(unknown, ["request", "type", "id"], "synthetic.unknown");
