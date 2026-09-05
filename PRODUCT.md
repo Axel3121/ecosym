@@ -105,9 +105,8 @@ The user deciding that money exists as a domain is not.
 
 An agent. Agents live in the civilization whose domain they work in.
 
-Today every inhabitant is transient: work that arrives, acts, and leaves. The
-runtime has no identity that survives a process, so nothing else can honestly be
-shown.
+Today every inhabitant is transient: work that arrives, acts, and leaves. No
+durable identity has been observed, so nothing else can honestly be shown.
 
 A permanent inhabitant — a durable role that persists between sessions — is a
 future category, available once durable identity exists. Until then a
