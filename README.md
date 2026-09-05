@@ -3,10 +3,10 @@
 Ecosym is a world of civilizations: a living, inhabited representation of the
 domains one person cares about, and of the agents working inside them.
 
-A connected runtime is the brain and does the work. Ecosym reads what happens and gives it a
-form — a place to walk into rather than a report to read. It must be delightful
-and true at the same time; a city that looks healthy while its real work is
-failing is total failure, not a cosmetic bug.
+The thinking happens elsewhere, in whatever connects. Ecosym reads what
+happens and gives it a form — a place to walk into rather than a report to
+read. It must be delightful and true at the same time; a city that looks
+healthy while its real work is failing is total failure, not a cosmetic bug.
 
 ## Status
 
