@@ -3791,6 +3791,9 @@ function validateFactAndDeriveSourceTimeKey(
   config: ConnectionConfig,
 ): string {
   for (const [field, value] of [
+    ["epistemicStatus", fact.epistemicStatus],
+    ["factOwner", fact.factOwner],
+    ["kind", fact.kind],
     ["subject", fact.subject],
     ["sourceRecordId", fact.sourceRecordId],
   ] as const) {
@@ -3800,6 +3803,9 @@ function validateFactAndDeriveSourceTimeKey(
     ) {
       throw new TypeError(`Fact ${field} is not a lossless SQLite string`);
     }
+  }
+  if (!["claim", "observation"].includes(fact.epistemicStatus)) {
+    throw new TypeError("Fact epistemicStatus is not a valid value");
   }
   const payloadKeys = new Set(Object.keys(fact.payload));
   const isDeclared =

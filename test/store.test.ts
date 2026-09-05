@@ -720,7 +720,7 @@ test("payload scalars are persisted exactly or rejected", async () => {
     );
     assert.equal(store.countFacts(), 0);
 
-    const values = [null, true, 7, "7", "\ud800"] as const;
+    const values = [null, true, 7, "7", "\uD800"] as const;
     await store.collect(active, (sink) => {
       for (const [index, value] of values.entries()) {
         sink.recordSourceRecord(() => [
@@ -737,6 +737,57 @@ test("payload scalars are persisted exactly or rejected", async () => {
     for (const [index, value] of values.entries()) {
       assert.ok(Object.is(stored[index]?.payload.value, value));
     }
+  } finally {
+    store.close();
+  }
+});
+
+test("identity fields are rejected unless they are lossless strings", async () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+    const bad = (overrides: Partial<FactInput>) =>
+      fact({ ...overrides, payload: { value: 7 } });
+
+    const cases = [
+      { name: "subject as number", input: bad({ subject: 99 as any }) },
+      { name: "sourceRecordId as number", input: bad({ sourceRecordId: 42 as any }) },
+      { name: "factOwner as number", input: bad({ factOwner: 7 as any }) },
+      { name: "kind as number", input: bad({ kind: 7 as any }) },
+      { name: "epistemicStatus as number", input: bad({ epistemicStatus: 7 as any }) },
+    ] as const;
+    for (const { name, input } of cases) {
+      await assert.rejects(
+        store.collect(active, (sink) => {
+          sink.recordSourceRecord(() => [input]);
+        }),
+        CollectionFailedError,
+      );
+      assert.equal(store.countFacts(), 0);
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test("identity fields are rejected when they contain unpaired surrogates", async () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+
+    await assert.rejects(
+      store.collect(active, (sink) => {
+        sink.recordSourceRecord(() => [
+          fact({ subject: "\uD800" as any, sourceRecordId: "\uDC00" as any }),
+        ]);
+      }),
+      CollectionFailedError,
+    );
+    assert.equal(store.countFacts(), 0);
   } finally {
     store.close();
   }
