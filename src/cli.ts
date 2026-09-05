@@ -48,6 +48,7 @@ async function run(arguments_: string[]): Promise<CommandResult> {
           "retire-collection-attempt",
           "export",
           "forget",
+          "forget-civilization",
         ],
       },
     };
@@ -85,6 +86,8 @@ async function run(arguments_: string[]): Promise<CommandResult> {
         return exportOwnedState(store, arguments_.slice(1));
       case "forget":
         return await forget(store, arguments_.slice(1));
+      case "forget-civilization":
+        return await forgetCivilization(store, arguments_.slice(1));
       default:
         return invalidArguments(command);
     }
@@ -287,6 +290,7 @@ function status(store: ObservationStore, arguments_: string[]): CommandResult {
       collectionAttemptRetirements: store.collectionAttemptRetirements(),
       recordIndexModeResolutions: store.recordIndexModeResolutions(),
       forgetRecords: store.forgetRecords(),
+      civilizationForgetRecords: store.civilizationForgetRecords(),
     },
   };
 }
@@ -529,6 +533,61 @@ async function forget(
     output: {
       schemaVersion: 1,
       command: "forget",
+      outcome: "forgotten",
+      ...record,
+    },
+  };
+}
+
+async function forgetCivilization(
+  store: ObservationStore,
+  arguments_: string[],
+): Promise<CommandResult> {
+  const civilizationId = arguments_[0];
+  const forgottenBy = arguments_[2];
+  if (
+    civilizationId === undefined ||
+    forgottenBy === undefined ||
+    arguments_[1] !== "--by"
+  ) {
+    return invalidArguments("forget-civilization");
+  }
+  if (arguments_.length === 3) {
+    const plan = store.planForgetCivilization(civilizationId, forgottenBy);
+    return {
+      exitCode: 0,
+      output: {
+        schemaVersion: 1,
+        command: "forget-civilization",
+        outcome: "confirmation-required",
+        ...plan,
+        recoverability:
+          "The presented export is evidence of the institutional state before deletion, not a restore source. Ecosym has no import or restore command. The user can re-declare the exported mandate by founding a new civilization, but the original civilization ID, mandate ID, revision chain, recorded instants, and independently verifiable attribution are not recoverable.",
+      },
+    };
+  }
+  const exportDigest = arguments_[4];
+  const confirmationToken = arguments_[6];
+  if (
+    arguments_.length !== 7 ||
+    arguments_[3] !== "--export-digest" ||
+    exportDigest === undefined ||
+    arguments_[5] !== "--confirm" ||
+    confirmationToken === undefined
+  ) {
+    return invalidArguments("forget-civilization");
+  }
+  const record = await store.forgetCivilization(
+    civilizationId,
+    forgottenBy,
+    exportDigest,
+    confirmationToken,
+  );
+  return {
+    exitCode: 0,
+    output: {
+      schemaVersion: 1,
+      command: "forget-civilization",
       outcome: "forgotten",
       ...record,
     },

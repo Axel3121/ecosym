@@ -196,6 +196,62 @@ test("the command surface exports and forgets only disconnected covered state", 
   assert.equal(verification.output.unverifiedReason, "no_connections");
 });
 
+test("the command surface previews and forgets only a dissolved civilization", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-cli-forget-civilization-"));
+  const xdgDataHome = join(directory, "data");
+  const civilizationPath = join(directory, "civilization.json");
+  const exportPath = join(directory, "owned-state.json");
+  writeFileSync(
+    civilizationPath,
+    JSON.stringify({
+      schemaVersion: 1,
+      name: "Engineering",
+      domain: "the software this person builds",
+      sources: ["cli-source"],
+      mayActAlone: ["read.source"],
+      mustEscalate: ["spend.money"],
+    }),
+  );
+
+  const founded = await runCli(["found", civilizationPath], xdgDataHome);
+  const civilizationId = founded.output.civilizationId as string;
+  const liveRefusal = await runCli(
+    ["forget-civilization", civilizationId, "--by", "operator:test"],
+    xdgDataHome,
+  );
+  assert.equal(liveRefusal.code, 1);
+  assert.equal(liveRefusal.output.error, "forget_civilization_not_dissolved");
+  assert.equal((await runCli(["dissolve", civilizationId], xdgDataHome)).code, 0);
+  const exported = await runCli(["export", exportPath], xdgDataHome);
+  const preview = await runCli(
+    ["forget-civilization", civilizationId, "--by", "operator:test"],
+    xdgDataHome,
+  );
+  assert.equal(preview.code, 0);
+  assert.equal(preview.output.command, "forget-civilization");
+  assert.equal(preview.output.outcome, "confirmation-required");
+  assert.equal(typeof preview.output.consequence, "string");
+  assert.match(preview.output.recoverability as string, /no import or restore command/);
+  const forgotten = await runCli(
+    [
+      "forget-civilization",
+      civilizationId,
+      "--by",
+      "operator:test",
+      "--export-digest",
+      exported.output.digest as string,
+      "--confirm",
+      preview.output.confirmationToken as string,
+    ],
+    xdgDataHome,
+  );
+  assert.equal(forgotten.code, 0);
+  assert.equal(forgotten.output.command, "forget-civilization");
+  assert.equal(forgotten.output.outcome, "forgotten");
+  const status = await runCli(["status"], xdgDataHome);
+  assert.equal((status.output.civilizationForgetRecords as unknown[]).length, 1);
+});
+
 test("the query limit accepts its own boundaries", async (t) => {
   // Only rejected values were covered, so tightening the bound to exclude 1 and
   // 1000 would not have failed a single test.

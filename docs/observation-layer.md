@@ -190,6 +190,8 @@ npm run ecosym -- retire-collection-attempt ATTEMPT_ID --by ACTOR --confirm TOKE
 npm run ecosym -- export DESTINATION
 npm run ecosym -- forget CONNECTION_ID --by ACTOR
 npm run ecosym -- forget CONNECTION_ID --by ACTOR --export-digest DIGEST --confirm TOKEN
+npm run ecosym -- forget-civilization CIVILIZATION_ID --by ACTOR
+npm run ecosym -- forget-civilization CIVILIZATION_ID --by ACTOR --export-digest DIGEST --confirm TOKEN
 ```
 
 Registration stores a canonical configuration revision and its hash in one
@@ -220,7 +222,9 @@ resolution under `recordIndexModeResolutions`, scoped by connection ID and
 configuration hash. Completed deletion records appear under `forgetRecords`;
 they retain the actor, time, connection, exact identifiers and counts, inventory
 digest, and presented export digest, but no deleted configuration or fact
-payload.
+payload. Completed civilization deletion records appear under
+`civilizationForgetRecords`; they retain the actor, time, civilization ID,
+revision identities, counts, inventory digest, and presented export digest.
 
 ## Export and deletion
 
@@ -233,13 +237,19 @@ content and reports the original snapshot instant; a change to exported state
 creates a new snapshot instant and digest.
 
 The bundle has its own `schemaVersion`, the store schema version, an institution
-section containing every civilization and mandate revision, and an observation
+section containing every civilization, mandate revision, and completed
+civilization forget record, and an observation
 section containing every connection version and canonical registered
 configuration, active connection, fact, collection attempt, attempt retirement,
 record-index-mode resolution, and completed forget record. Facts retain their
 stored provenance, epistemic status, source and collection times, source-time
 ordering key, payload and payload digest, attempt order, and derived temporal
 status without upgrading unknown values.
+
+Each exported mandate digest is derived from the validated stored mandate bytes,
+not copied from the stored digest column. Export refuses with
+`mandate_unreadable` if either the mandate cannot be read canonically or its
+derived digest disagrees with the stored digest.
 
 Attempt retirements and record-index-mode resolutions carry the SHA-256 digest
 of the confirmation token as `confirmationTokenDigest`, preserving the link to
@@ -277,6 +287,45 @@ connection. Confirmation first rechecks the preview fingerprint, then checks
 export coverage, deletes the listed rows in one transaction, spends the token,
 and appends the payload-free forget record.
 
+`forget-civilization CIVILIZATION_ID --by ACTOR` follows the same gate and is
+also only a preview. Its schema-version-one stdout envelope has `command` set to
+`forget-civilization`, `outcome` set to `confirmation-required`, and contains
+the civilization ID, the exact list of every revision identity as
+`(civilizationId, mandateId, revision)`, counts, inventory digest, actor,
+consequence, recoverability statement, and single-use `confirmationToken`.
+Confirmation adds `--export-digest DIGEST --confirm TOKEN`; success returns the
+same envelope with `outcome` set to `forgotten` and the durable forget record.
+
+Requiring dissolution first is a design choice, not a requirement quoted from
+the product documents. Dissolution is the sovereign, recorded world act that
+ends the active mandate; forgetting is the later store operation that removes
+its residue. Allowing the store operation to delete a live civilization would
+end an active mandate without an institutional revision recording that act.
+
+The deletion unit is exactly the civilization row and its entire mandate
+revision chain, deleted together in one transaction. No command or argument can
+delete a revision or suffix of a chain. Removing a suffix could promote an older,
+wider mandate to current or remove the dissolved revision and resurrect a
+civilization, so partial deletion is not a supported variant. After successful
+deletion authority resolution reports `civilization_not_found`, not
+`civilization_dissolved`.
+
+The preview is covered only when its inventory digest equals the civilization
+inventory digest recorded atomically for the presented export digest. An export
+from before dissolution does not cover the appended dissolved revision. Changes
+to another civilization or to observation state do not change coverage for the
+named civilization.
+
+The durable record identifies each deleted revision only by
+`(civilizationId, mandateId, revision)`, never by `revision_order`, because the
+SQLite integer order can be reused after deletion. It carries no mandate payload
+and deliberately carries no mandate digest. Mandates are low-entropy,
+user-declared content, so retaining a digest could let deleted content be
+confirmed by guessing it. The retained export digest verifies the evidence file,
+not a mandate, and the inventory digest verifies deletion scope. Forgetting can
+make later petition attribution independently unverifiable because the
+institutional revision to which a petition was bound is gone.
+
 Forget refusal codes are:
 
 | Code | Meaning |
@@ -287,6 +336,17 @@ Forget refusal codes are:
 | `confirmation_already_spent` | This confirmation was already used. |
 | `forget_state_changed` | The exact inventory or active state changed after preview. |
 | `forget_export_coverage_mismatch` | The digest is unknown or covers a different inventory. |
+
+Civilization forget refusal codes are:
+
+| Code | Meaning |
+| --- | --- |
+| `forget_civilization_not_found` | No civilization exists under the named ID. |
+| `forget_civilization_not_dissolved` | The civilization is still live; dissolve it first. |
+| `confirmation_preview_not_found` | No matching civilization-forget preview issued this token. |
+| `confirmation_already_spent` | This confirmation was already used. |
+| `forget_civilization_state_changed` | The exact civilization or revision inventory changed after preview. |
+| `forget_civilization_export_coverage_mismatch` | The digest is unknown or covers a different civilization inventory. |
 
 An export destination that cannot be written is reported as
 `export_unwritable`. Invalid command shapes continue to report

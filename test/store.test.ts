@@ -1642,7 +1642,7 @@ test("the ordering-index migration does not rewrite version-five facts", async (
     const version = inspected.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(version.user_version, 13);
+    assert.equal(version.user_version, 14);
     const columns = (
       inspected.prepare("PRAGMA index_info(facts_identity_source_time)").all() as {
         name: string;
@@ -1693,7 +1693,7 @@ test("schema-eight stores gain an empty resolution log without rewriting facts",
     const version = inspected.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(version.user_version, 13);
+    assert.equal(version.user_version, 14);
     const resolutions = inspected
       .prepare("SELECT count(*) AS count FROM record_index_mode_resolutions")
       .get() as { count: number };
@@ -1786,7 +1786,7 @@ test("schema-ten stores gain an empty confirmation-preview ledger without rewrit
     const version = inspected.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(version.user_version, 13);
+    assert.equal(version.user_version, 14);
     const previews = inspected
       .prepare("SELECT count(*) AS count FROM confirmation_previews")
       .get() as { count: number };
@@ -1815,7 +1815,7 @@ test("schema-eleven stores gain institutional tables before WAL is enabled", () 
     assert.equal(
       (inspected.prepare("PRAGMA user_version").get() as { user_version: number })
         .user_version,
-      13,
+      14,
     );
     assert.deepEqual(
       inspected
@@ -1823,7 +1823,7 @@ test("schema-eleven stores gain institutional tables before WAL is enabled", () 
         .all()
         .map((row) => (row as { name: string }).name)
         .sort(),
-      ["civilizations", "mandate_revisions"],
+      ["civilization_forget_records", "civilizations", "mandate_revisions"],
     );
     assert.equal(
       (inspected.prepare("PRAGMA journal_mode").get() as { journal_mode: string })
@@ -1868,7 +1868,7 @@ test("an interrupted legacy rebuild remains resumable as schema nine", () => {
     assert.equal(
       (inspected.prepare("PRAGMA user_version").get() as { user_version: number })
         .user_version,
-      13,
+      14,
     );
     assert.equal(
       (inspected
