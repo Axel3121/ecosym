@@ -15,11 +15,60 @@ import { defaultStateDirectory } from "../src/paths.ts";
 import {
   CollectionFailedError,
   ConnectionConflictError,
+  createCollectionContentionBudget,
   isSqliteContentionError,
   ObservationStore,
   type EpistemicStatus,
   type FactInput,
 } from "../src/store.ts";
+
+function contendOnVirtualClock(configuredMilliseconds: number) {
+  const exec = DatabaseSync.prototype.exec;
+  const realNow = performance.now.bind(performance);
+  const grantedWaits: number[] = [];
+  let inForceMilliseconds = configuredMilliseconds;
+  let virtualNow = 0;
+  let contending = false;
+
+  performance.now = () => virtualNow;
+  DatabaseSync.prototype.exec = function (sql: string): void {
+    const pragma = /^PRAGMA busy_timeout = (\d+)$/.exec(sql);
+    if (pragma !== null) {
+      inForceMilliseconds = Number(pragma[1]);
+      exec.call(this, sql);
+      return;
+    }
+    if (!contending || sql !== "BEGIN IMMEDIATE") {
+      exec.call(this, sql);
+      return;
+    }
+    if (grantedWaits.length >= 32) {
+      throw new Error("The contention retry loop did not converge within 32 waits");
+    }
+    grantedWaits.push(inForceMilliseconds);
+    virtualNow += inForceMilliseconds;
+    throw Object.assign(new Error("database is locked"), {
+      code: "ERR_SQLITE_ERROR",
+      errcode: 517,
+      errstr: "database is locked",
+    });
+  };
+
+  return {
+    beginContending: () => {
+      contending = true;
+    },
+    grantedWaits,
+    inForceMilliseconds: () => inForceMilliseconds,
+    restore: () => {
+      DatabaseSync.prototype.exec = exec;
+      performance.now = realNow;
+    },
+  };
+}
+
+const contentionWindowMilliseconds =
+  createCollectionContentionBudget().remainingMilliseconds;
 
 function connection(id = "source-a", factOwner = "owner-a") {
   return parseConnectionConfig(JSON.parse(parseConnectionConfigInput(id, factOwner)) as unknown);
@@ -1592,37 +1641,40 @@ test("failure-marker contention retries within the collection budget", async () 
 });
 
 test("post-admission contention has one bounded machine-readable failure", async () => {
+  const configuredMilliseconds = 100;
   const directory = mkdtempSync(join(tmpdir(), "ecosym-completion-contention-"));
-  const store = new ObservationStore(directory);
+  const store = new ObservationStore(directory, configuredMilliseconds);
   const parsed = connection();
   store.register(parsed);
   const active = store.getConnection(parsed.config.id);
-  const blocker = new DatabaseSync(store.path);
-  const startedAt = Date.now();
-  const collection = store.collect(active, () => {
-    blocker.exec("BEGIN IMMEDIATE");
-  });
-  const outcome = await Promise.race([
-    collection.then(
-      () => "success",
-      (error: unknown) =>
-        error !== null && typeof error === "object" && "code" in error
-          ? String(error.code)
-          : "unclassified_failure",
-    ),
-    delay(750).then(() => "deadline"),
-  ]);
-  const elapsedMilliseconds = Date.now() - startedAt;
-  blocker.exec("ROLLBACK");
-  blocker.close();
-  await collection.catch(() => undefined);
+  // Contention is charged to a virtual clock, so the assertions below read the
+  // waits the store ASKED SQLite for, never how long the machine actually took.
+  const contention = contendOnVirtualClock(configuredMilliseconds);
+  let outcome = "success";
+  try {
+    await store.collect(active, () => {
+      contention.beginContending();
+    });
+  } catch (error: unknown) {
+    outcome =
+      error !== null && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : "unclassified_failure";
+  } finally {
+    contention.restore();
+  }
 
   try {
     assert.equal(outcome, "store_contention");
-    // SQLite's busy handler blocks the event loop synchronously, so the 750 ms
-    // race deadline cannot fire during contention and is not this test's guard.
-    // The outcome equality and elapsed-time bound below catch regressions.
-    assert.ok(elapsedMilliseconds < 350);
+    // Each wait is clamped to what remains of the shared window: 100, 100, then
+    // the final 50, then a zero-timeout probe. An unclamped implementation asks
+    // for the full 100 every time and overruns the window.
+    assert.deepEqual(contention.grantedWaits, [100, 100, 50, 0]);
+    assert.equal(
+      contention.grantedWaits.reduce((total, wait) => total + wait, 0),
+      contentionWindowMilliseconds,
+    );
+    assert.equal(contention.inForceMilliseconds(), configuredMilliseconds);
     assert.equal(store.statuses()[0]?.reason, "incomplete");
   } finally {
     store.close();
@@ -1748,23 +1800,36 @@ test("a configured SQLite timeout cannot outlive the contention window", () => {
 });
 
 test("configured SQLite waits share one contention window", async () => {
+  const configuredMilliseconds = 200;
   const directory = mkdtempSync(join(tmpdir(), "ecosym-store-timeout-total-"));
-  const store = new ObservationStore(directory, 200);
+  const store = new ObservationStore(directory, configuredMilliseconds);
   const parsed = connection();
   store.register(parsed);
   const active = store.getConnection(parsed.config.id);
-  const blocker = new DatabaseSync(store.path);
-  blocker.exec("BEGIN IMMEDIATE");
-  const startedAt = Date.now();
+  const contention = contendOnVirtualClock(configuredMilliseconds);
+  contention.beginContending();
+  let outcome = "success";
+  try {
+    await store.collect(active, () => undefined);
+  } catch (error: unknown) {
+    outcome =
+      error !== null && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : "unclassified_failure";
+  } finally {
+    contention.restore();
+  }
 
   try {
-    await assert.rejects(store.collect(active, () => undefined), {
-      code: "store_contention",
-    });
-    assert.ok(Date.now() - startedAt < 350);
+    assert.equal(outcome, "store_contention");
+    // 200 then the remaining 50 — never 200 twice.
+    assert.deepEqual(contention.grantedWaits, [200, 50]);
+    assert.equal(
+      contention.grantedWaits.reduce((total, wait) => total + wait, 0),
+      contentionWindowMilliseconds,
+    );
+    assert.equal(contention.inForceMilliseconds(), configuredMilliseconds);
   } finally {
-    blocker.exec("ROLLBACK");
-    blocker.close();
     store.close();
   }
 });
