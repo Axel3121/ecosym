@@ -413,6 +413,107 @@ An aggregate containing an unverified connection carries
 `connections_unverified`. An entirely unverified result uses exit code 4, so
 nothing checked is distinct from both agreement and disagreement.
 
+## Recorded risks
+
+Unbounded input buffering in the observation layer is recorded as a risk, not
+closed as a defect. No size limit, threshold, or other bound is set here because
+the acceptable input size is product policy, and none has been decided.
+
+In `src/readers.ts`, `readJsonFiles` collects every path matched by the glob into
+an array before sorting and reading any file. It then uses `handle.readFile` to
+read each entire matched file into a string before parsing it, and `JSON.parse`
+holds the whole document and its record array in memory at once. In the same
+file, `readCsv` likewise uses `handle.readFile` to read the entire file into a
+string, and `parseCsv` materialises every row into an array before the first
+record is yielded. The `readJsonLines` function instead streams the file line by
+line through `readline`, and the SQLite reader iterates its prepared statement,
+so those two readers do not hold a whole source in memory. They still
+materialise one complete JSONL line or SQLite row and its column values, so they
+are bounded by the largest single record rather than bounded absolutely.
+
+The other JSONL entry point, `readJsonlSourceWithRecordIndexModes`, builds
+complete `physicalLine` and `recordOrdinal` `SourceRecord` arrays over the entire
+file before returning. The arrays contain distinct wrapper objects and distinct
+`meta` objects, but each pair of wrappers spreads the same parsed source object,
+so its `record`, `root`, and `numericLexemes` payloads are shared rather than
+copied. In `src/record-index.ts`, `resolveLegacyRecordIndexMode` then flat-maps
+each array through `materializeFacts` into the whole-input `physicalLineFacts`
+and `recordOrdinalFacts` arrays. Its source-revision closure captures `source`,
+keeping both `SourceRecord` arrays reachable for the entire store transaction.
+Inside that transaction, `ObservationStore.resolveRecordIndexModeFromEquivalentFacts`
+builds two further whole-input arrays through `verificationFactsFromInputs`, and
+`sameVerificationFactSet` builds a whole-set key `Set` for each side on both of
+its calls. The transaction also calls `#verificationSnapshot`, so at peak the
+two `SourceRecord` arrays, two fact arrays, two verification-fact arrays, key
+sets, and the whole stored side are live together. Measured current behaviour
+for a 27.6 MB JSONL source of 200,000 records held 200,000 entries in each source
+array and cost about 159 MB of heap in
+`readJsonlSourceWithRecordIndexModes` alone, before the store-side arrays exist.
+
+Both `collectConnection` and `verifyConnection` call
+`resolveLegacyRecordIndexMode` when the stored `jsonlRecordIndexMode` is
+`"unknown"`. New registrations store `"record-ordinal"`; `"unknown"` arises only
+from the `user_version === 6` migration, and only for a pre-existing JSONL
+connection version that has stored facts and whose mapping uses a selector with
+`scope: "meta"` and `value: "record-index"`. A legacy JSONL mapping that does not
+use that record index is assigned `"record-ordinal"` and does not take this path.
+The buffer is not necessarily one-shot: if
+`resolveRecordIndexModeFromEquivalentFacts` returns false,
+`resolveLegacyRecordIndexMode` leaves the connection `"unknown"`, after which
+collection throws and verification reports `store_record_index_mode_unknown`.
+Every later collection or verification invocation reads and buffers the whole
+file again until the mode is resolved.
+
+In `src/store.ts`, `ObservationStore.collect` accumulates every prepared fact
+from an attempt before opening the write transaction, so peak memory for a
+source is proportional to its entire fact count rather than one record. At
+commit time it also builds the whole-attempt `correctionSlots` and
+`correctionStateBefore` maps over those facts. In `src/verify.ts`,
+`verifyConnection` materialises both the whole stored snapshot for the
+connection and every fact from the source before comparing them. The stored
+side includes a distinct integrity load in `#verificationSnapshot`:
+`integrityRows` uses `.all()` to materialise every fact row for the
+`connection_id`, without a `config_hash` filter, across all prior connection
+versions including superseded rows. Each row carries the full canonical
+`payload_json` string, while the current-fact snapshot immediately below is
+limited by both `connection_id` and `config_hash` and carries only payload
+hashes. The integrity load is therefore bounded by the connection's whole
+history multiplied by payload size, not by its current fact count. It is reached
+from `factsForVerification` during `verifyConnection` and again from the legacy
+record-index resolution transaction. In `src/cli.ts`, `readConfig` reads either
+a whole connection configuration file or all of standard input into memory
+before parsing it.
+
+An incremental CSV parser that yielded each row as it was completed and an
+incremental JSON reader would remove the reader-side peak. The `readJsonLines`
+JSONL reader already has that per-record streaming shape and is the model,
+subject to the largest-record bound described above. Bounding legacy JSONL
+record-index resolution has two available structural shapes, neither of which
+sets an input-size policy. When a source has no blank lines,
+`physicalLineIndex` and `recordOrdinalIndex` advance together, so the two
+interpretations are identical by construction and only one side needs to be
+materialised; a single streaming pass that notices the first blank line is
+enough to distinguish that case. In the general case, the question is set
+equality between both interpretations and the stored side, so each side could
+instead stream into the store's own open transaction and be compared there,
+moving the buffer into the store rather than retaining arrays on the heap. The
+integrity pass has no cross-row dependency or ordering requirement, so iterating
+its statement instead of calling `.all()` would bound that load. Committing
+collection in bounded batches within an attempt rather than buffering the whole
+attempt would bound the collector, but only if partial results were prevented
+from becoming visible at all, for example by staging rows scoped to the attempt
+and publishing them atomically on success or by another atomic publication
+mechanism. Merely marking the attempt incomplete is not enough: fact queries
+filter on `epistemic_status`, `fact_id`, `connection_id`, `fact_owner`, `kind`,
+and `subject`, never on attempt outcome, so committed batches would remain
+visible even if the attempt later failed. The current single-transaction shape
+guarantees that outcome without additional handling.
+Comparing a sorted stored side against a sorted source stream would bound
+verification per identity group, at the cost of requiring both sides to arrive
+in a comparable order. It would not make memory constant per record because
+`isStrictlyNewerThanHistory` needs the whole history of one identity at once;
+the resulting bound is the largest identity group.
+
 ## Adding a source
 
 Create a configuration in the state directory or pass it on standard input,
