@@ -874,7 +874,7 @@ function authorityBearingEvidence(
   };
 }
 
-function parseAuthorityContext(input: unknown, path: string): PetitionAuthorityContext {
+export function parseAuthorityContext(input: unknown, path: string): PetitionAuthorityContext {
   const binding = objectAt(input, path);
   exactKeys(binding, ["civilizationId", "authorityContext"], path);
   const authorityContext = objectAt(binding.authorityContext, `${path}.authorityContext`);
