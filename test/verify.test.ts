@@ -232,13 +232,15 @@ test("verification refuses a stable snapshot whose connection becomes inactive",
   }
 });
 
-test("a collection landing during the source read is not disagreement", async () => {
+test("a store change after the verification snapshot is not disagreement", async () => {
   const { parsed, store } = setup();
   const factsForVerification = store.factsForVerification.bind(store);
   let snapshotReads = 0;
   try {
     await collectConnection(store, parsed.config.id);
     const connection = store.getConnection(parsed.config.id);
+    // The first read is the seam: the row stays invisible to the compared snapshot
+    // but visible to any later read, catching a reintroduced second read anywhere.
     store.factsForVerification = (snapshotConnection) => {
       snapshotReads += 1;
       const snapshot = factsForVerification(snapshotConnection);
