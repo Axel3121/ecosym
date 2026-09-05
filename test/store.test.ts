@@ -17,6 +17,7 @@ import {
   ConnectionConflictError,
   isSqliteContentionError,
   ObservationStore,
+  type EpistemicStatus,
   type FactInput,
 } from "../src/store.ts";
 
@@ -66,6 +67,12 @@ function fact(overrides: Partial<FactInput> = {}): FactInput {
     subject: "subject-a",
     ...overrides,
   };
+}
+
+function allEpistemicStatuses<const Statuses extends readonly EpistemicStatus[]>(
+  statuses: Statuses & ([EpistemicStatus] extends [Statuses[number]] ? unknown : never),
+): Statuses {
+  return statuses;
 }
 
 function temporaryStore(): { directory: string; store: ObservationStore } {
@@ -209,6 +216,36 @@ test("observation queries exclude claims and preserve late historical points", a
       ],
     );
     assert.equal(store.queryClaims().length, 1);
+  } finally {
+    store.close();
+  }
+});
+
+test("every epistemic status round-trips through the store", async () => {
+  const epistemicStatuses = allEpistemicStatuses(["observation", "claim"]);
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+    await store.collect(active, (sink) => {
+      for (const epistemicStatus of epistemicStatuses) {
+        sink.recordSourceRecord(() => [
+          epistemicStatus === "observation"
+            ? fact({ epistemicStatus })
+            : fact({
+                epistemicStatus,
+                kind: "example.completion-report",
+                payload: { state: "completed" },
+              }),
+        ]);
+      }
+    });
+
+    const storedStatuses = [...store.queryObservations(), ...store.queryClaims()].map(
+      (stored) => stored.epistemicStatus,
+    );
+    assert.deepEqual(storedStatuses.sort(), [...epistemicStatuses].sort());
   } finally {
     store.close();
   }

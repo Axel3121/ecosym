@@ -1,4 +1,5 @@
 import { canonicalJson, type JsonScalar, type JsonValue, sha256 } from "./json.ts";
+import type { EpistemicStatus } from "./store.ts";
 
 const NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
 const PATH_SEGMENT_PATTERN = /^[a-zA-Z0-9_-]+$/;
@@ -18,7 +19,7 @@ export type SourceTime =
     };
 
 export interface FactConfig {
-  epistemicStatus: "claim" | "observation";
+  epistemicStatus: EpistemicStatus;
   kind: string;
   payload: Record<string, Selector>;
   required: Selector[];

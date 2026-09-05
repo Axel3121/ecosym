@@ -201,8 +201,10 @@ export interface ActiveConnection {
   jsonlRecordIndexMode: JsonlRecordIndexMode | "unknown";
 }
 
+export type EpistemicStatus = "claim" | "observation";
+
 export interface FactInput {
-  epistemicStatus: "claim" | "observation";
+  epistemicStatus: EpistemicStatus;
   factOwner: string;
   kind: string;
   payload: Record<string, JsonScalar>;
@@ -294,7 +296,7 @@ export interface ConnectionStatus {
 }
 
 export interface VerificationFact {
-  epistemicStatus: "claim" | "observation";
+  epistemicStatus: EpistemicStatus;
   factOwner: string;
   kind: string;
   payloadHash: string;
@@ -2229,7 +2231,7 @@ export class ObservationStore {
       .map((row) => {
         const record = row as Record<string, unknown>;
         return {
-          epistemicStatus: record.epistemic_status as "claim" | "observation",
+          epistemicStatus: record.epistemic_status as EpistemicStatus,
           factOwner: record.fact_owner as string,
           kind: record.kind as string,
           payloadHash: record.payload_hash as string,
@@ -2248,7 +2250,7 @@ export class ObservationStore {
   }
 
   #queryFacts(
-    epistemicStatus: "claim" | "observation",
+    epistemicStatus: EpistemicStatus,
     options: QueryOptions,
   ): StoredFact[] {
     const limit = options.limit ?? 100;
@@ -3637,7 +3639,7 @@ interface StoredFactRow {
   collected_at: string;
   config_hash: string;
   connection_id: string;
-  epistemic_status: "claim" | "observation";
+  epistemic_status: EpistemicStatus;
   fact_id: number;
   fact_owner: string;
   kind: string;
@@ -3827,6 +3829,8 @@ function validateFactAndDeriveSourceTimeKey(
     }
   }
   if (fact.epistemicStatus !== "claim" && fact.epistemicStatus !== "observation") {
+    const _exhaustive: never = fact.epistemicStatus;
+    void _exhaustive;
     throw new FactRejectedError("epistemicStatus", "is not a valid value");
   }
   const payloadKeys = new Set(Object.keys(fact.payload));
