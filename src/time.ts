@@ -29,7 +29,12 @@ export function isRepresentableUtcInstant(value: unknown): value is string {
 }
 
 export function isCanonicalUtcInstant(value: unknown): value is string {
-  return isRepresentableUtcInstant(value);
+  return (
+    typeof value === "string" &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) &&
+    Number.isFinite(Date.parse(value)) &&
+    new Date(value).toISOString() === value
+  );
 }
 
 export function utcInstantOrderingKey(value: unknown): null | string {

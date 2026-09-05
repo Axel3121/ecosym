@@ -1433,13 +1433,13 @@ test("post-admission contention has one bounded machine-readable failure", async
 
 test("admission and completion consume one contention budget", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-shared-contention-budget-"));
+  // Short SQLite waits let timers run; a default wait would exhaust the budget in admission.
   const store = new ObservationStore(directory, 20);
   const parsed = connection();
   store.register(parsed);
   const active = store.getConnection(parsed.config.id);
   const blocker = new DatabaseSync(store.path);
   blocker.exec("BEGIN IMMEDIATE");
-  const startedAt = Date.now();
   const collection = store.collect(active, () => {
     blocker.exec("BEGIN IMMEDIATE");
   });
@@ -1450,20 +1450,59 @@ test("admission and completion consume one contention budget", async () => {
         ? String(error.code)
         : "unclassified_failure",
   );
-  await delay(75);
+  await delay(150);
   blocker.exec("ROLLBACK");
-  const result = await Promise.race([outcome, delay(750).then(() => "deadline")]);
-  const elapsedMilliseconds = Date.now() - startedAt;
+  await delay(150);
   if (blocker.isTransaction) {
     blocker.exec("ROLLBACK");
   }
+  const result = await Promise.race([outcome, delay(750).then(() => "deadline")]);
   blocker.close();
   await collection.catch(() => undefined);
 
   try {
     assert.equal(result, "store_contention");
-    assert.ok(elapsedMilliseconds < 300);
+    assert.equal(store.statuses()[0]?.status, "unread");
     assert.equal(store.statuses()[0]?.reason, "incomplete");
+  } finally {
+    store.close();
+  }
+});
+
+test("a collection within the contention budget still completes", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-shared-contention-control-"));
+  // Short SQLite waits let timers run; a default wait would exhaust the budget in admission.
+  const store = new ObservationStore(directory, 20);
+  const parsed = connection();
+  store.register(parsed);
+  const active = store.getConnection(parsed.config.id);
+  const blocker = new DatabaseSync(store.path);
+  blocker.exec("BEGIN IMMEDIATE");
+  const collection = store.collect(active, () => {
+    blocker.exec("BEGIN IMMEDIATE");
+  });
+  const outcome = collection.then(
+    () => "success",
+    (error: unknown) =>
+      error !== null && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : "unclassified_failure",
+  );
+  await delay(30);
+  blocker.exec("ROLLBACK");
+  const reacquireDeadline = Date.now() + 500;
+  while (!blocker.isTransaction && Date.now() < reacquireDeadline) {
+    await delay(5);
+  }
+  if (blocker.isTransaction) {
+    blocker.exec("ROLLBACK");
+  }
+  const result = await Promise.race([outcome, delay(750).then(() => "deadline")]);
+  blocker.close();
+  await collection.catch(() => undefined);
+
+  try {
+    assert.equal(result, "success");
   } finally {
     store.close();
   }

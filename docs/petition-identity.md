@@ -7,9 +7,10 @@ be followed later. It is subordinate to `PRODUCT.md`, `ARCHITECTURE.md`, and
 
 This is a design, not evidence that a consequential petition path exists. No
 connected runtime is known to provide the mandatory, non-bypassable admission
-boundary, no user credential owner or proof profile has been selected, and no
-consequential request type exists. A path missing any of those remains
-unavailable for consequential petitions.
+boundary, and no user credential owner or proof profile has been selected. A
+consequential request-type definition, validator, and deterministic authority
+projection exist and are tested, but nothing is configured to consume them. A
+path missing any of those remains unavailable for consequential petitions.
 
 This document does not design jurisdiction or mandate resolution, admission,
 the council, durable cases, or the physical petition store. It names the values
@@ -731,7 +732,7 @@ implementation may not settle it silently.
 | Decision | Options and consequences | What settles it |
 | --- | --- | --- |
 | First user credential owner and proof profile | The profile needs trusted transaction confirmation derived from canonical envelope bytes, not just a signature or presence prompt. It must process content on-device without network disclosure or content retention. A transaction-signing platform authenticator may add enrollment, recovery, origin, and interaction design. OS peer credentials alone are insufficient wherever agents or unattended Ecosym code share the user's account. An Ecosym service key is prohibited. | Select the first runtime and empirically demonstrate canonical-byte parsing, the exact trusted display, digest binding, user verification, private-key isolation, durable verification, current revocation, mapping to its existing principal, outbound isolation, and bounded retention. Until then no consequential petition is implementable. |
-| First consequential request type | A narrow typed operation can define a total authority projection and consequence evidence. A free-form request whose authority depends on model interpretation cannot. | Specify one closed request schema and deterministic projection, then test conflicting text/parameters, civilization/mandate mismatches, destructive disclosures, and subset comparisons all fail closed. This does not choose jurisdiction or mandate rules. |
+| First consequential request type | **Settled.** A narrow typed operation defines a total authority projection and consequence evidence; a free-form request whose authority depends on model interpretation cannot. | The closed request schema, validator, and deterministic projection exist, with tests showing that conflicting text/parameters, civilization/mandate mismatches, destructive disclosures, and subset comparisons fail closed. Nothing is configured to consume the type yet. This does not choose jurisdiction or mandate rules. |
 | Credential bootstrap, rotation, recovery, and revocation | These may use the runtime's existing authenticated credential-management path. Building an Ecosym identity provider would create product and authority scope not approved here. | Document the selected runtime owner's current mechanism and test that an old or revoked credential fails closed without losing historical verification. |
 | Maximum petition lifetime and renewal interaction | A short interval limits stale authority but interrupts long work; a long interval approaches standing authority. The signed field, withdrawal path, and fail-closed behavior are fixed, but no duration is justified yet. | A user decision informed by the first real petition and runtime restart case. The trusted transaction surface must show the chosen absolute expiry; an implementation may not hide a default. |
 | Admission mechanism | A signed self-contained grant tolerates a temporarily unavailable control plane but still needs replay/revocation state. Online opaque redemption centralizes those checks but makes launch depend on that service. This document selects neither. | The later admission design identifies a non-bypassable launch owner and demonstrates denial of direct launch, whatever replay property it claims, and current-authority checks. |
@@ -745,7 +746,8 @@ load-bearing gaps rather than hidden implementation freedom:
   physical source of record;
 - no trusted transaction-confirmation credential owner or proof profile has
   been selected;
-- no consequential request type and deterministic authority projection exists;
+- a consequential request-type definition, validator, and deterministic authority
+  projection exist and are tested, but nothing is configured to consume them;
 - mandate resolution and authoritative delivery to a control plane remain
   undesigned outside this boundary;
 - no runtime is known to provide non-bypassable admission; and
@@ -755,5 +757,5 @@ This document fixes the logical identity record, proof semantics, validity,
 withdrawal, and exchanged references without pretending those mechanisms
 exist. Representation and storage tasks can now be written against it. A
 consequential dispatch task remains blocked until its credential profile,
-request type, runtime admission boundary, and effect correlation path are each
-selected and proven.
+runtime admission boundary, and effect correlation path are each selected and
+proven.
