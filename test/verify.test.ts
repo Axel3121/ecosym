@@ -232,6 +232,53 @@ test("verification refuses a stable snapshot whose connection becomes inactive",
   }
 });
 
+test("a store change after the verification snapshot is not disagreement", async () => {
+  const { parsed, store } = setup();
+  const factsForVerification = store.factsForVerification.bind(store);
+  let snapshotReads = 0;
+  try {
+    await collectConnection(store, parsed.config.id);
+    const connection = store.getConnection(parsed.config.id);
+    // The first read is the seam: the row stays invisible to the compared snapshot
+    // but visible to any later read, catching a reintroduced second read anywhere.
+    store.factsForVerification = (snapshotConnection) => {
+      snapshotReads += 1;
+      const snapshot = factsForVerification(snapshotConnection);
+      if (snapshotReads === 1) {
+        const database = new DatabaseSync(store.path);
+        try {
+          const result = database
+            .prepare(
+              `INSERT INTO facts
+                 (connection_id, config_hash, attempt_id, fact_owner, kind, subject,
+                  epistemic_status, source_record_id, source_recorded_at, source_time_key,
+                  payload_json, payload_hash, collected_at, last_seen_attempt_order)
+               SELECT connection_id, config_hash, attempt_id, fact_owner, kind, subject,
+                      epistemic_status, ?, source_recorded_at, source_time_key,
+                      payload_json, payload_hash, collected_at, last_seen_attempt_order
+                 FROM facts`,
+            )
+            .run("collected-while-source-was-read");
+          assert.equal(Number(result.changes), 1);
+        } finally {
+          database.close();
+        }
+      }
+      return snapshot;
+    };
+
+    const report = await verifyConnection(store, connection);
+
+    assert.equal(report.outcome, "agreement");
+    assert.equal(report.counts.missingAtSource, 0);
+    assert.equal(report.counts.storedFacts, 1);
+    assert.equal(snapshotReads, 1);
+  } finally {
+    store.factsForVerification = factsForVerification;
+    store.close();
+  }
+});
+
 test("payload bytes changed without their hash make verification unread", async () => {
   const { parsed, store } = setup();
   try {
