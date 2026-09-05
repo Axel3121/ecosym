@@ -33,7 +33,7 @@ import {
   verificationFactFromInput,
 } from "./verification-facts.ts";
 
-const STORE_SCHEMA_VERSION = 13;
+const STORE_SCHEMA_VERSION = 14;
 const LEGACY_REBUILD_SCHEMA_VERSION = 9;
 const STORE_FILENAME = "observations.sqlite";
 const BUSY_RETRY_WINDOW_MILLISECONDS = 250;
@@ -108,7 +108,10 @@ const CREATE_CONFIRMATION_PREVIEWS = `
   CREATE TABLE IF NOT EXISTS confirmation_previews (
     confirmation_token_hash TEXT NOT NULL PRIMARY KEY,
     operation TEXT NOT NULL
-      CHECK (operation IN ('resolve-record-index', 'retire-collection-attempt', 'forget')),
+      CHECK (operation IN (
+        'resolve-record-index', 'retire-collection-attempt', 'forget',
+        'forget-civilization'
+      )),
     arguments_json TEXT NOT NULL,
     state_fingerprint TEXT NOT NULL,
     issued_at TEXT NOT NULL,
@@ -120,7 +123,8 @@ const CREATE_OWNED_STATE_EXPORTS = `
     state_fingerprint TEXT NOT NULL PRIMARY KEY,
     export_digest TEXT NOT NULL UNIQUE,
     exported_at TEXT NOT NULL,
-    connection_inventories_json TEXT NOT NULL
+    connection_inventories_json TEXT NOT NULL,
+    civilization_inventories_json TEXT NOT NULL
   ) STRICT;
 `;
 const CREATE_FORGET_RECORDS = `
@@ -128,6 +132,18 @@ const CREATE_FORGET_RECORDS = `
     forget_order INTEGER PRIMARY KEY,
     forget_id TEXT NOT NULL UNIQUE,
     connection_id TEXT NOT NULL,
+    forgotten_at TEXT NOT NULL,
+    forgotten_by TEXT NOT NULL,
+    inventory_json TEXT NOT NULL,
+    inventory_digest TEXT NOT NULL,
+    export_digest TEXT NOT NULL
+  ) STRICT;
+`;
+const CREATE_CIVILIZATION_FORGET_RECORDS = `
+  CREATE TABLE IF NOT EXISTS civilization_forget_records (
+    forget_order INTEGER PRIMARY KEY,
+    forget_id TEXT NOT NULL UNIQUE,
+    civilization_id TEXT NOT NULL,
     forgotten_at TEXT NOT NULL,
     forgotten_by TEXT NOT NULL,
     inventory_json TEXT NOT NULL,
@@ -143,7 +159,8 @@ const CREATE_FORGET_RECORDS = `
 //
 // A mandate revision is never updated in place. Redrawing appends a row; the
 // previous revision stays readable, because history and current truth are
-// distinct. `dissolved_at` retires a civilization without erasing what it was.
+// distinct. Dissolution appends a `status = 'dissolved'` revision without
+// erasing what the civilization was.
 const CREATE_INSTITUTION = `
   CREATE TABLE IF NOT EXISTS civilizations (
     civilization_id TEXT PRIMARY KEY,
@@ -350,6 +367,41 @@ export interface ForgetRecord extends ForgetInventory {
   inventoryDigest: string;
 }
 
+export interface CivilizationRevisionIdentity {
+  civilizationId: string;
+  mandateId: string;
+  revision: string;
+}
+
+export interface CivilizationForgetInventory {
+  civilizationId: string;
+  counts: {
+    civilizations: 1;
+    mandateRevisions: number;
+  };
+  mandateRevisions: CivilizationRevisionIdentity[];
+}
+
+export interface CivilizationForgetPlan extends CivilizationForgetInventory {
+  confirmationToken: string;
+  consequence: string;
+  forgottenBy: string;
+  inventoryDigest: string;
+}
+
+export interface CivilizationForgetRecord extends CivilizationForgetInventory {
+  exportDigest: string;
+  forgetId: string;
+  forgottenAt: string;
+  forgottenBy: string;
+  inventoryDigest: string;
+}
+
+type CivilizationForgetSnapshot = CivilizationForgetInventory & {
+  inventoryDigest: string;
+  stateFingerprint: string;
+};
+
 type ForgetSnapshot = ForgetInventory & {
   inventoryDigest: string;
   stateFingerprint: string;
@@ -512,6 +564,42 @@ export class ForgetStateChangedError extends Error {
   constructor() {
     super("The forget scope changed after confirmation was requested");
     this.name = "ForgetStateChangedError";
+  }
+}
+
+export class ForgetCivilizationNotFoundError extends Error {
+  readonly code = "forget_civilization_not_found";
+
+  constructor(_civilizationId: string) {
+    super("No owned institutional state exists for this civilization");
+    this.name = "ForgetCivilizationNotFoundError";
+  }
+}
+
+export class ForgetCivilizationNotDissolvedError extends Error {
+  readonly code = "forget_civilization_not_dissolved";
+
+  constructor(_civilizationId: string) {
+    super("A civilization must be dissolved before it can be forgotten");
+    this.name = "ForgetCivilizationNotDissolvedError";
+  }
+}
+
+export class ForgetCivilizationExportCoverageError extends Error {
+  readonly code = "forget_civilization_export_coverage_mismatch";
+
+  constructor() {
+    super("The presented export does not cover the exact civilization inventory");
+    this.name = "ForgetCivilizationExportCoverageError";
+  }
+}
+
+export class ForgetCivilizationStateChangedError extends Error {
+  readonly code = "forget_civilization_state_changed";
+
+  constructor() {
+    super("The civilization forget scope changed after confirmation was requested");
+    this.name = "ForgetCivilizationStateChangedError";
   }
 }
 
@@ -913,17 +1001,30 @@ export class ObservationStore {
             throw error;
           }
         });
+        const civilizationInventories = (
+          this.#database
+            .prepare("SELECT civilization_id FROM civilizations ORDER BY civilization_id")
+            .all() as { civilization_id: string }[]
+        ).map((row) => ({
+          civilizationId: row.civilization_id,
+          inventoryDigest: this.#civilizationForgetSnapshot(
+            row.civilization_id,
+            false,
+          ).inventoryDigest,
+        }));
         this.#database
           .prepare(
             `INSERT INTO owned_state_exports
-               (state_fingerprint, export_digest, exported_at, connection_inventories_json)
-             VALUES (?, ?, ?, ?)`,
+               (state_fingerprint, export_digest, exported_at,
+                connection_inventories_json, civilization_inventories_json)
+             VALUES (?, ?, ?, ?, ?)`,
           )
           .run(
             stateFingerprint,
             exported.digest,
             exportedAt,
             canonicalJson(inventories),
+            canonicalJson(civilizationInventories),
           );
       }
       return exported;
@@ -1051,6 +1152,135 @@ export class ObservationStore {
         forgetId,
         forgottenAt,
         forgottenBy,
+      };
+    };
+    return this.#retryTransactionWithinContentionBudget(
+      { remainingMilliseconds: CONFIRMATION_CONTENTION_BUDGET_MILLISECONDS },
+      forget,
+    );
+  }
+
+  planForgetCivilization(
+    civilizationId: string,
+    forgottenBy: string,
+    now = new Date(),
+  ): CivilizationForgetPlan {
+    validateActor(forgottenBy, "forget-civilization");
+    return this.#transaction(() => {
+      const { stateFingerprint, ...inventory } =
+        this.#civilizationForgetSnapshot(civilizationId);
+      return {
+        ...inventory,
+        confirmationToken: this.#issueConfirmationPreview(
+          "forget-civilization",
+          canonicalJson([civilizationId, forgottenBy]),
+          stateFingerprint,
+          now.toISOString(),
+        ),
+        consequence:
+          "This permanently deletes the named civilization and its entire mandate revision chain. The deletion record remains, but Ecosym cannot restore the civilization's identifiers, revision chain, or recorded instants, and later petition attribution can become unverifiable.",
+        forgottenBy,
+      };
+    });
+  }
+
+  async forgetCivilization(
+    civilizationId: string,
+    forgottenBy: string,
+    exportDigest: string,
+    confirmationToken: string,
+    now = new Date(),
+  ): Promise<CivilizationForgetRecord> {
+    validateActor(forgottenBy, "forget-civilization");
+    const forgottenAt = now.toISOString();
+    const forget = () => {
+      const preview = this.#confirmationPreview(
+        "forget-civilization",
+        canonicalJson([civilizationId, forgottenBy]),
+        confirmationToken,
+      );
+      if (preview.consumed_at !== null) {
+        throw new ConfirmationAlreadySpentError();
+      }
+      let snapshot: CivilizationForgetSnapshot;
+      try {
+        snapshot = this.#civilizationForgetSnapshot(civilizationId);
+      } catch (error) {
+        if (
+          error instanceof ForgetCivilizationNotFoundError ||
+          error instanceof ForgetCivilizationNotDissolvedError
+        ) {
+          throw new ForgetCivilizationStateChangedError();
+        }
+        throw error;
+      }
+      if (preview.state_fingerprint !== snapshot.stateFingerprint) {
+        throw new ForgetCivilizationStateChangedError();
+      }
+      const evidence = this.#database
+        .prepare(
+          `SELECT civilization_inventories_json
+             FROM owned_state_exports
+            WHERE export_digest = ?`,
+        )
+        .get(exportDigest) as undefined | { civilization_inventories_json: string };
+      const covered = evidence === undefined
+        ? undefined
+        : parseCivilizationExportInventories(
+            evidence.civilization_inventories_json,
+          ).find((item) => item.civilizationId === civilizationId);
+      if (covered?.inventoryDigest !== snapshot.inventoryDigest) {
+        throw new ForgetCivilizationExportCoverageError();
+      }
+
+      const { stateFingerprint: _stateFingerprint, inventoryDigest, ...inventory } = snapshot;
+      const deletedRevisions = this.#database
+        .prepare("DELETE FROM mandate_revisions WHERE civilization_id = ?")
+        .run(civilizationId);
+      if (numberOfChanges(deletedRevisions) !== snapshot.mandateRevisions.length) {
+        throw new ForgetCivilizationStateChangedError();
+      }
+      const deleted = this.#database
+        .prepare("DELETE FROM civilizations WHERE civilization_id = ?")
+        .run(civilizationId);
+      if (numberOfChanges(deleted) !== 1) {
+        throw new ForgetCivilizationStateChangedError();
+      }
+
+      const forgetOrder = (
+        this.#database
+          .prepare(
+            `SELECT COALESCE(MAX(forget_order), 0) + 1 AS next
+               FROM civilization_forget_records`,
+          )
+          .get() as { next: number }
+      ).next;
+      const forgetId = randomUUID();
+      this.#database
+        .prepare(
+          `INSERT INTO civilization_forget_records
+             (forget_order, forget_id, civilization_id, forgotten_at, forgotten_by,
+              inventory_json, inventory_digest, export_digest)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          forgetOrder,
+          forgetId,
+          civilizationId,
+          forgottenAt,
+          forgottenBy,
+          canonicalJson(inventory as unknown as JsonValue),
+          inventoryDigest,
+          exportDigest,
+        );
+      this.#spendConfirmationPreview(confirmationToken, forgottenAt);
+      return {
+        ...inventory,
+        exportDigest,
+        forgetId,
+        forgottenAt,
+        forgottenBy,
+        inventoryDigest,
       };
     };
     return this.#retryTransactionWithinContentionBudget(
@@ -1790,6 +2020,33 @@ export class ObservationStore {
     }));
   }
 
+  civilizationForgetRecords(): CivilizationForgetRecord[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT forget_id, civilization_id, forgotten_at, forgotten_by,
+                inventory_json, inventory_digest, export_digest
+           FROM civilization_forget_records
+          ORDER BY forget_order`,
+      )
+      .all() as {
+      civilization_id: string;
+      export_digest: string;
+      forget_id: string;
+      forgotten_at: string;
+      forgotten_by: string;
+      inventory_digest: string;
+      inventory_json: string;
+    }[];
+    return rows.map((row) => ({
+      ...parseCivilizationForgetInventory(row.inventory_json),
+      exportDigest: row.export_digest,
+      forgetId: row.forget_id,
+      forgottenAt: row.forgotten_at,
+      forgottenBy: row.forgotten_by,
+      inventoryDigest: row.inventory_digest,
+    }));
+  }
+
   queryObservations(options: QueryOptions = {}): StoredFact[] {
     return this.#queryFacts("observation", options);
   }
@@ -2063,6 +2320,10 @@ export class ObservationStore {
     if (version.user_version === STORE_SCHEMA_VERSION) {
       return;
     }
+    if (version.user_version === 13) {
+      this.#migrateSchemaThirteen();
+      return;
+    }
     if (version.user_version === 12) {
       this.#transaction(() => {
         this.#database.exec(`
@@ -2074,9 +2335,10 @@ export class ObservationStore {
           ${CREATE_INSTITUTION}
           ${CREATE_OWNED_STATE_EXPORTS}
           ${CREATE_FORGET_RECORDS}
-          PRAGMA user_version = ${STORE_SCHEMA_VERSION};
+          PRAGMA user_version = 13;
         `);
       });
+      this.#migrateSchemaThirteen();
       return;
     }
     if (version.user_version === 11) {
@@ -2090,9 +2352,10 @@ export class ObservationStore {
           ${CREATE_INSTITUTION}
           ${CREATE_OWNED_STATE_EXPORTS}
           ${CREATE_FORGET_RECORDS}
-          PRAGMA user_version = ${STORE_SCHEMA_VERSION};
+          PRAGMA user_version = 13;
         `);
       });
+      this.#migrateSchemaThirteen();
       return;
     }
     if (version.user_version === 10) {
@@ -2102,9 +2365,10 @@ export class ObservationStore {
           ${CREATE_INSTITUTION}
           ${CREATE_OWNED_STATE_EXPORTS}
           ${CREATE_FORGET_RECORDS}
-          PRAGMA user_version = ${STORE_SCHEMA_VERSION};
+          PRAGMA user_version = 13;
         `);
       });
+      this.#migrateSchemaThirteen();
       return;
     }
     if (version.user_version === 9) {
@@ -2170,6 +2434,7 @@ export class ObservationStore {
         ${CREATE_INSTITUTION}
         ${CREATE_OWNED_STATE_EXPORTS}
         ${CREATE_FORGET_RECORDS}
+        ${CREATE_CIVILIZATION_FORGET_RECORDS}
 
         ${CREATE_COLLECTION_ATTEMPTS}
         ${CREATE_COLLECTION_ATTEMPTS_LATEST_INDEX}
@@ -2479,11 +2744,33 @@ export class ObservationStore {
         this.#database.exec(CREATE_INSTITUTION);
         this.#database.exec(CREATE_OWNED_STATE_EXPORTS);
         this.#database.exec(CREATE_FORGET_RECORDS);
+        this.#database.exec(CREATE_CIVILIZATION_FORGET_RECORDS);
         this.#database.exec(`PRAGMA user_version = ${STORE_SCHEMA_VERSION}`);
       });
     } finally {
       this.#database.exec("PRAGMA foreign_keys = ON");
     }
+  }
+
+  #migrateSchemaThirteen(): void {
+    const columns = this.#database.prepare("PRAGMA table_info(owned_state_exports)").all() as {
+      name: string;
+    }[];
+    this.#transaction(() => {
+      this.#database.exec(`
+        ALTER TABLE confirmation_previews RENAME TO confirmation_previews_v13;
+        ${CREATE_CONFIRMATION_PREVIEWS}
+        INSERT INTO confirmation_previews SELECT * FROM confirmation_previews_v13;
+        DROP TABLE confirmation_previews_v13;
+      `);
+      if (!columns.some((column) => column.name === "civilization_inventories_json")) {
+        this.#database.exec(
+          "ALTER TABLE owned_state_exports ADD COLUMN civilization_inventories_json TEXT NOT NULL DEFAULT '[]'",
+        );
+      }
+      this.#database.exec(CREATE_CIVILIZATION_FORGET_RECORDS);
+      this.#database.exec(`PRAGMA user_version = ${STORE_SCHEMA_VERSION}`);
+    });
   }
 
   #assertActive(connection: ActiveConnection): void {
@@ -2523,6 +2810,26 @@ export class ObservationStore {
         `SELECT civilization_id AS civilizationId, name, founded_at AS foundedAt
            FROM civilizations ORDER BY civilization_id`,
       ),
+      civilizationForgetRecords: this.#database
+        .prepare(
+          `SELECT forget_order, forget_id, civilization_id, forgotten_at,
+                  forgotten_by, inventory_json, inventory_digest, export_digest
+             FROM civilization_forget_records ORDER BY forget_order`,
+        )
+        .all()
+        .map((value) => {
+          const row = value as Record<string, JsonValue> & { inventory_json: string };
+          return {
+            forgetOrder: row.forget_order,
+            forgetId: row.forget_id,
+            civilizationId: row.civilization_id,
+            forgottenAt: row.forgotten_at,
+            forgottenBy: row.forgotten_by,
+            inventory: JSON.parse(row.inventory_json) as JsonValue,
+            inventoryDigest: row.inventory_digest,
+            exportDigest: row.export_digest,
+          } as Record<string, JsonValue>;
+        }),
       mandateRevisions: this.#database
         .prepare(
           `SELECT revision_order, civilization_id, mandate_id, revision,
@@ -2531,7 +2838,16 @@ export class ObservationStore {
         )
         .all()
         .map((value) => {
-          const row = value as Record<string, JsonValue> & { mandate_json: string };
+          const row = value as Record<string, JsonValue> & {
+            civilization_id: string;
+            mandate_digest: string;
+            mandate_json: string;
+          };
+          const mandate = parseStoredMandate(row.mandate_json, row.civilization_id);
+          const derivedDigest = mandateDigest(mandate as unknown as JsonValue);
+          if (derivedDigest !== row.mandate_digest) {
+            throw new MandateUnreadableError(row.civilization_id);
+          }
           return {
             revisionOrder: row.revision_order,
             civilizationId: row.civilization_id,
@@ -2539,8 +2855,8 @@ export class ObservationStore {
             revision: row.revision,
             previousRevision: row.previous_revision,
             status: row.status,
-            mandate: JSON.parse(row.mandate_json) as JsonValue,
-            mandateDigest: row.mandate_digest,
+            mandate: mandate as unknown as JsonValue,
+            mandateDigest: derivedDigest,
             recordedAt: row.recorded_at,
           } as Record<string, JsonValue>;
         }),
@@ -2818,6 +3134,54 @@ export class ObservationStore {
     return { ...inventory, inventoryDigest, stateFingerprint: inventoryDigest };
   }
 
+  #civilizationForgetSnapshot(
+    civilizationId: string,
+    requireDissolved = true,
+  ): CivilizationForgetSnapshot {
+    const civilization = this.#database
+      .prepare("SELECT 1 AS found FROM civilizations WHERE civilization_id = ?")
+      .get(civilizationId);
+    if (civilization === undefined) {
+      throw new ForgetCivilizationNotFoundError(civilizationId);
+    }
+    const revisions = this.#database
+      .prepare(
+        `SELECT civilization_id, mandate_id, revision, status
+           FROM mandate_revisions
+          WHERE civilization_id = ?
+          ORDER BY revision_order`,
+      )
+      .all(civilizationId) as {
+      civilization_id: string;
+      mandate_id: string;
+      revision: string;
+      status: "active" | "dissolved";
+    }[];
+    if (revisions.length === 0) {
+      throw new MandateUnreadableError(civilizationId);
+    }
+    if (requireDissolved && revisions.at(-1)?.status !== "dissolved") {
+      throw new ForgetCivilizationNotDissolvedError(civilizationId);
+    }
+    const mandateRevisions = revisions.map((row) => ({
+      civilizationId: row.civilization_id,
+      mandateId: row.mandate_id,
+      revision: row.revision,
+    }));
+    const inventory: CivilizationForgetInventory = {
+      civilizationId,
+      counts: {
+        civilizations: 1,
+        mandateRevisions: mandateRevisions.length,
+      },
+      mandateRevisions,
+    };
+    const inventoryDigest = `sha256:${sha256(
+      canonicalJson(inventory as unknown as JsonValue),
+    )}`;
+    return { ...inventory, inventoryDigest, stateFingerprint: inventoryDigest };
+  }
+
   #collectionAttemptRetirementSnapshot(
     attemptId: string,
     retiredBy: string,
@@ -2959,7 +3323,11 @@ export class ObservationStore {
   }
 
   #issueConfirmationPreview(
-    operation: "forget" | "resolve-record-index" | "retire-collection-attempt",
+    operation:
+      | "forget"
+      | "forget-civilization"
+      | "resolve-record-index"
+      | "retire-collection-attempt",
     argumentsJson: string,
     stateFingerprint: string,
     issuedAt: string,
@@ -2983,7 +3351,11 @@ export class ObservationStore {
   }
 
   #confirmationPreview(
-    operation: "forget" | "resolve-record-index" | "retire-collection-attempt",
+    operation:
+      | "forget"
+      | "forget-civilization"
+      | "resolve-record-index"
+      | "retire-collection-attempt",
     argumentsJson: string,
     confirmationToken: string,
   ): ConfirmationPreviewRow {
@@ -3465,7 +3837,10 @@ function validateRetirementActor(value: string): void {
   validateActor(value, "retirement");
 }
 
-function validateActor(value: string, operation: "forget" | "retirement"): void {
+function validateActor(
+  value: string,
+  operation: "forget" | "forget-civilization" | "retirement",
+): void {
   if (!/^[a-z][a-z0-9_.:-]{0,127}$/.test(value)) {
     throw new TypeError(`A ${operation} actor must be a stable machine identifier`);
   }
@@ -3491,6 +3866,26 @@ function parseExportInventories(
   return parsed as { connectionId: string; inventoryDigest: string }[];
 }
 
+function parseCivilizationExportInventories(
+  value: string,
+): { civilizationId: string; inventoryDigest: string }[] {
+  const parsed = JSON.parse(value) as unknown;
+  if (
+    !Array.isArray(parsed) ||
+    parsed.some(
+      (item) =>
+        item === null ||
+        typeof item !== "object" ||
+        Array.isArray(item) ||
+        typeof (item as Record<string, unknown>).civilizationId !== "string" ||
+        typeof (item as Record<string, unknown>).inventoryDigest !== "string",
+    )
+  ) {
+    throw new Error("Stored civilization export coverage is invalid");
+  }
+  return parsed as { civilizationId: string; inventoryDigest: string }[];
+}
+
 function parseForgetInventory(value: string): ForgetInventory {
   const parsed = JSON.parse(value) as ForgetInventory;
   if (
@@ -3506,6 +3901,21 @@ function parseForgetInventory(value: string): ForgetInventory {
     typeof parsed.counts !== "object"
   ) {
     throw new Error("Stored forget inventory is invalid");
+  }
+  return parsed;
+}
+
+function parseCivilizationForgetInventory(value: string): CivilizationForgetInventory {
+  const parsed = JSON.parse(value) as CivilizationForgetInventory;
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    typeof parsed.civilizationId !== "string" ||
+    !Array.isArray(parsed.mandateRevisions) ||
+    parsed.counts === null ||
+    typeof parsed.counts !== "object"
+  ) {
+    throw new Error("Stored civilization forget inventory is invalid");
   }
   return parsed;
 }

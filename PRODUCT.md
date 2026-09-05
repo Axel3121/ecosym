@@ -265,8 +265,17 @@ retirements, and `retention: "history"` fact versions whose source has moved on;
 re-collection cannot recover those decisions or historical payloads. This is the
 observation-store retention decision required by
 [SECURITY.md's destructive-change rules](SECURITY.md#destructive-changes-to-owned-history),
-not a decision about institutional state, whose recoverability is decided by a
-later specification.
+not a decision about institutional state.
+
+For institutional-store state, export is likewise evidence only and forgetting
+is irreversible: Ecosym has no restore path. The user owns the declared content
+and may use the full mandate JSON in an export to found a new civilization, but
+that is a new declaration, not recovery. The accepted permanent losses are the
+original civilization ID, mandate ID, revision chain and recorded instants, and
+independently verifiable attribution for any petition bound to a deleted
+revision. The bundle, export ledger, and payload-free forget record survive, so
+a restore path remains possible later; it is not product scope the current slice
+has earned.
 
 ## How the institution becomes real
 

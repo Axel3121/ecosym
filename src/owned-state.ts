@@ -5,6 +5,7 @@ export const OWNED_STATE_BUNDLE_SCHEMA_VERSION = 1;
 export interface OwnedStateCounts {
   activeConnections: number;
   civilizations: number;
+  civilizationForgetRecords: number;
   collectionAttemptRetirements: number;
   collectionAttempts: number;
   connectionVersions: number;
@@ -20,6 +21,7 @@ export interface OwnedStateBundle {
   institutionStore: {
     schemaVersion: number;
     civilizations: Record<string, JsonValue>[];
+    civilizationForgetRecords: Record<string, JsonValue>[];
     mandateRevisions: Record<string, JsonValue>[];
   };
   observationStore: {
@@ -54,6 +56,7 @@ export function createOwnedStateExport(bundle: OwnedStateBundle): OwnedStateExpo
     counts: {
       activeConnections: observationStore.activeConnections.length,
       civilizations: institutionStore.civilizations.length,
+      civilizationForgetRecords: institutionStore.civilizationForgetRecords.length,
       collectionAttemptRetirements:
         observationStore.collectionAttemptRetirements.length,
       collectionAttempts: observationStore.collectionAttempts.length,
