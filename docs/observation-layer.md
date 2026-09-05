@@ -427,7 +427,9 @@ file, `readCsv` likewise uses `handle.readFile` to read the entire file into a
 string, and `parseCsv` materialises every row into an array before the first
 record is yielded. The `readJsonLines` function instead streams the file line by
 line through `readline`, and the SQLite reader iterates its prepared statement,
-so those two readers do not hold a whole source in memory.
+so those two readers do not hold a whole source in memory. They still
+materialise one complete JSONL line or SQLite row and its column values, so they
+are bounded by the largest single record rather than bounded absolutely.
 
 The other JSONL entry point, `readJsonlSourceWithRecordIndexModes`, builds
 complete `physicalLine` and `recordOrdinal` `SourceRecord` arrays over the entire
@@ -484,7 +486,8 @@ before parsing it.
 
 An incremental CSV parser that yielded each row as it was completed and an
 incremental JSON reader would remove the reader-side peak. The `readJsonLines`
-JSONL reader already has that shape and is the model. Bounding legacy JSONL
+JSONL reader already has that per-record streaming shape and is the model,
+subject to the largest-record bound described above. Bounding legacy JSONL
 record-index resolution has two available structural shapes, neither of which
 sets an input-size policy. When a source has no blank lines,
 `physicalLineIndex` and `recordOrdinalIndex` advance together, so the two
@@ -497,9 +500,14 @@ moving the buffer into the store rather than retaining arrays on the heap. The
 integrity pass has no cross-row dependency or ordering requirement, so iterating
 its statement instead of calling `.all()` would bound that load. Committing
 collection in bounded batches within an attempt rather than buffering the whole
-attempt would bound the collector, but only if partial-attempt failure still
-left the attempt marked incomplete rather than falsely successful. The current
-single-transaction shape guarantees that outcome without additional handling.
+attempt would bound the collector, but only if partial results were prevented
+from becoming visible at all, for example by staging rows scoped to the attempt
+and publishing them atomically on success or by another atomic publication
+mechanism. Merely marking the attempt incomplete is not enough: fact queries
+filter on `epistemic_status`, `fact_id`, `connection_id`, `fact_owner`, `kind`,
+and `subject`, never on attempt outcome, so committed batches would remain
+visible even if the attempt later failed. The current single-transaction shape
+guarantees that outcome without additional handling.
 Comparing a sorted stored side against a sorted source stream would bound
 verification per identity group, at the cost of requiring both sides to arrive
 in a comparable order. It would not make memory constant per record because
