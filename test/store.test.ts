@@ -808,6 +808,44 @@ test("identity fields are rejected unless they are lossless strings", async () =
   }
 });
 
+test("an epistemic status outside the enum is rejected before the declaration check", async () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+
+    const rejected = [
+      "rumour", // Guard deletion or widening.
+      "Claim", // Case normalization.
+      "claimed", // startsWith/includes matching.
+      "", // Truthiness; the empty string passes the lossless-string check.
+    ] as const;
+    for (const status of rejected) {
+      const context = `epistemicStatus ${JSON.stringify(status)}`;
+      await assert.rejects(
+        store.collect(active, (sink) => {
+          sink.recordSourceRecord(() => [fact({ epistemicStatus: status as any })]);
+        }),
+        (error: any) => error instanceof CollectionFailedError && error.code === "fact_rejected",
+        context,
+      );
+      assert.equal(store.countFacts(), 0, context);
+    }
+
+    // The distinct code proves declaration validation, not the enum guard, rejected this fact.
+    await assert.rejects(
+      store.collect(active, (sink) => {
+        sink.recordSourceRecord(() => [fact({ epistemicStatus: "claim" })]);
+      }),
+      (error: any) => error instanceof CollectionFailedError && error.code === "fact_not_declared",
+    );
+    assert.equal(store.countFacts(), 0);
+  } finally {
+    store.close();
+  }
+});
+
 test("identity fields are rejected when they contain unpaired surrogates", async () => {
   const { store } = temporaryStore();
   try {
