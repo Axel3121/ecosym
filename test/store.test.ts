@@ -431,7 +431,7 @@ test("source times must be representable real UTC instants or null", async (t) =
               fact({ sourceRecordedAt: sourceRecordedAt as unknown as string }),
             ]);
           }),
-          CollectionFailedError,
+          (error: any) => error instanceof CollectionFailedError && error.code === "fact_rejected",
         );
         assert.equal(store.countFacts(), 0);
       } finally {

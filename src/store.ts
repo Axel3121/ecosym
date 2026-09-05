@@ -3859,7 +3859,7 @@ function validateFactAndDeriveSourceTimeKey(
   }
   const sourceTimeKey = utcInstantOrderingKey(fact.sourceRecordedAt);
   if (sourceTimeKey === null) {
-    throw new TypeError("Fact sourceRecordedAt is not a representable UTC instant");
+    throw new FactRejectedError("sourceRecordedAt", "is not a representable UTC instant");
   }
   return sourceTimeKey;
 }
