@@ -704,10 +704,11 @@ export class ObservationStore {
     this.#transaction(() => {
       this.#database
         .prepare(
-          `INSERT OR IGNORE INTO connection_versions
+          `INSERT INTO connection_versions
              (connection_id, config_hash, config_json, registered_at,
               jsonl_record_index_mode)
-           VALUES (?, ?, ?, ?, 'record-ordinal')`,
+           VALUES (?, ?, ?, ?, 'record-ordinal')
+           ON CONFLICT (connection_id, config_hash) DO NOTHING`,
         )
         .run(parsed.config.id, parsed.hash, parsed.canonical, timestamp);
 
