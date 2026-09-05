@@ -392,6 +392,14 @@ Verification rereads every active source and emits schema version 1:
 }
 ```
 
+Verification compares the source against one store snapshot taken before the
+source is read. Facts collected after that snapshot are not compared during
+that run, so a collection landing during verification does not produce
+disagreement. Those facts are reported by the next verification run. This
+property covers a store that changes during verification; a source that changes
+while it is being read is not covered and is not distinguished from real
+disagreement.
+
 `payloadMismatch` counts stored facts whose selected payload matches no payload
 the source expressed for that source identity and source time.
 `missingAtSource` and `uncollected` compare the two sides. `advanced` is a
