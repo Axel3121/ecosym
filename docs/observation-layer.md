@@ -425,20 +425,34 @@ read each entire matched file into a string before parsing it, and `JSON.parse`
 holds the whole document and its record array in memory at once. In the same
 file, `readCsv` likewise uses `handle.readFile` to read the entire file into a
 string, and `parseCsv` materialises every row into an array before the first
-record is yielded. In `src/store.ts`, `ObservationStore.collect` accumulates
-every prepared fact from an attempt before opening the write transaction, so
-peak memory for a source is proportional to its entire fact count rather than
-one record. In `src/verify.ts`, `verifyConnection` materialises both the whole
+record is yielded. Also in `src/readers.ts`,
+`readJsonlSourceWithRecordIndexModes` builds complete `physicalLine` and
+`recordOrdinal` `SourceRecord` arrays over the entire file before returning. In
+`src/record-index.ts`, `resolveLegacyRecordIndexMode` then flat-maps each of
+those arrays through `materializeFacts` into two more whole-input fact arrays,
+so four whole-input structures are resident simultaneously. A 16.5 MB,
+200000-record JSONL source retained about 159 MB of heap at this site, roughly
+ten times the source size. `collectConnection` and `verifyConnection` reach this
+path for a connection whose stored `jsonl_record_index_mode` is `"unknown"`.
+The `user_version` 6 migration produces that value for pre-existing JSONL
+connections with stored facts whose configurations use the record-index
+selector. In `src/store.ts`, `ObservationStore.collect` accumulates every
+prepared fact from an attempt before opening the write transaction, so peak
+memory for a source is proportional to its entire fact count rather than one
+record. In `src/verify.ts`, `verifyConnection` materialises both the whole
 stored snapshot for the connection and every fact from the source before
 comparing them. In `src/cli.ts`, `readConfig` reads either a whole connection
 configuration file or all of standard input into memory before parsing it. The
-JSONL reader instead streams the file line by line through `readline`, and the
-SQLite reader iterates its prepared statement, so neither holds a whole source
-in memory.
+`readJsonLines` function instead streams the file line by line through
+`readline`, and the SQLite reader iterates its prepared statement, so neither
+holds a whole source in memory.
 
 An incremental CSV parser that yielded each row as it was completed and an
 incremental JSON reader would remove the reader-side peak. The JSONL reader
-already has that shape and is the model. Committing collection in bounded
+`readJsonLines` already has that shape and is the model. Bounding legacy JSONL
+record-index resolution would require determining whether both interpretations
+could be compared in a single streaming pass or whether each could be folded to
+a digest instead of retaining every record. Committing collection in bounded
 batches within an attempt rather than buffering the whole attempt would bound
 the collector, but only if partial-attempt failure still left the attempt marked
 incomplete rather than falsely successful. The current single-transaction shape
