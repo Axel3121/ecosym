@@ -639,15 +639,39 @@ export class SourceRevisionChangedError extends Error {
   }
 }
 
+export class FactRejectedError extends TypeError {
+  readonly code = "fact_rejected";
+  readonly field: string;
+  readonly reason: string;
+
+  constructor(field: string, reason: string) {
+    super(`Fact ${field} ${reason}`);
+    this.name = "FactRejectedError";
+    this.field = field;
+    this.reason = reason;
+  }
+}
+
+export class FactNotDeclaredError extends TypeError {
+  readonly code = "fact_not_declared";
+
+  constructor() {
+    super("Fact is not declared by the registered connection");
+    this.name = "FactNotDeclaredError";
+  }
+}
+
 export class CollectionFailedError extends Error {
   readonly attemptId: string;
   readonly code: string;
+  readonly cause?: unknown;
 
-  constructor(attemptId: string, code: string) {
+  constructor(attemptId: string, code: string, cause?: unknown) {
     super("Collection failed");
     this.name = "CollectionFailedError";
     this.attemptId = attemptId;
     this.code = code;
+    this.cause = cause;
   }
 }
 
@@ -3791,6 +3815,9 @@ function validateFactAndDeriveSourceTimeKey(
   config: ConnectionConfig,
 ): string {
   for (const [field, value] of [
+    ["epistemicStatus", fact.epistemicStatus],
+    ["factOwner", fact.factOwner],
+    ["kind", fact.kind],
     ["subject", fact.subject],
     ["sourceRecordId", fact.sourceRecordId],
   ] as const) {
@@ -3798,8 +3825,11 @@ function validateFactAndDeriveSourceTimeKey(
       typeof value !== "string" ||
       Buffer.from(value, "utf8").toString("utf8") !== value
     ) {
-      throw new TypeError(`Fact ${field} is not a lossless SQLite string`);
+      throw new FactRejectedError(field, "is not a lossless SQLite string");
     }
+  }
+  if (fact.epistemicStatus !== "claim" && fact.epistemicStatus !== "observation") {
+    throw new FactRejectedError("epistemicStatus", "is not a valid value");
   }
   const payloadKeys = new Set(Object.keys(fact.payload));
   const isDeclared =
@@ -3812,7 +3842,7 @@ function validateFactAndDeriveSourceTimeKey(
         Object.keys(declared.payload).every((key) => payloadKeys.has(key)),
     );
   if (!isDeclared) {
-    throw new TypeError("Fact is not declared by the registered connection");
+    throw new FactNotDeclaredError();
   }
   for (const [key, value] of Object.entries(fact.payload)) {
     if (
@@ -3821,7 +3851,7 @@ function validateFactAndDeriveSourceTimeKey(
       typeof value !== "boolean" &&
       !(typeof value === "number" && Number.isFinite(value) && !Object.is(value, -0))
     ) {
-      throw new TypeError(`Fact payload ${key} cannot be persisted exactly`);
+      throw new FactRejectedError(key, "cannot be persisted exactly");
     }
   }
   if (fact.sourceRecordedAt === null) {
