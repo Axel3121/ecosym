@@ -413,6 +413,39 @@ An aggregate containing an unverified connection carries
 `connections_unverified`. An entirely unverified result uses exit code 4, so
 nothing checked is distinct from both agreement and disagreement.
 
+## Recorded risks
+
+Unbounded input buffering in the observation layer is recorded as a risk, not
+closed as a defect. No size limit, threshold, or other bound is set here because
+the acceptable input size is product policy, and none has been decided.
+
+In `src/readers.ts`, `readJsonFiles` collects every path matched by the glob into
+an array before sorting and reading any file. It then uses `handle.readFile` to
+read each entire matched file into a string before parsing it, and `JSON.parse`
+holds the whole document and its record array in memory at once. In the same
+file, `readCsv` likewise uses `handle.readFile` to read the entire file into a
+string, and `parseCsv` materialises every row into an array before the first
+record is yielded. In `src/store.ts`, `ObservationStore.collect` accumulates
+every prepared fact from an attempt before opening the write transaction, so
+peak memory for a source is proportional to its entire fact count rather than
+one record. In `src/verify.ts`, `verifyConnection` materialises both the whole
+stored snapshot for the connection and every fact from the source before
+comparing them. In `src/cli.ts`, `readConfig` reads either a whole connection
+configuration file or all of standard input into memory before parsing it. The
+JSONL reader instead streams the file line by line through `readline`, and the
+SQLite reader iterates its prepared statement, so neither holds a whole source
+in memory.
+
+An incremental CSV parser that yielded each row as it was completed and an
+incremental JSON reader would remove the reader-side peak. The JSONL reader
+already has that shape and is the model. Committing collection in bounded
+batches within an attempt rather than buffering the whole attempt would bound
+the collector, but only if partial-attempt failure still left the attempt marked
+incomplete rather than falsely successful. The current single-transaction shape
+guarantees that outcome without additional handling. Comparing a sorted stored
+side against a sorted source stream would bound verification, at the cost of
+requiring both sides to arrive in a comparable order.
+
 ## Adding a source
 
 Create a configuration in the state directory or pass it on standard input,
