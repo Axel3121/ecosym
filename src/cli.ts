@@ -9,9 +9,11 @@ import { parseCivilizationConfig, parseMandateConfig } from "./institution.ts";
 import type { OwnedStateExport } from "./owned-state.ts";
 import {
   CollectionFailedError,
+  type EpistemicStatus,
   isSqliteContentionError,
   ObservationStore,
   type QueryOptions,
+  type StoredFact,
 } from "./store.ts";
 import { exitCodeForVerification, verifyAll } from "./verify.ts";
 
@@ -19,6 +21,27 @@ interface CommandResult {
   exitCode: number;
   output: unknown;
 }
+
+interface QuerySurface<Status extends EpistemicStatus> {
+  argument: string;
+  epistemicStatus: Status;
+  read: (store: ObservationStore, options: QueryOptions) => StoredFact[];
+}
+
+const querySurfaceByEpistemicStatus: {
+  [Status in EpistemicStatus]: QuerySurface<Status>;
+} = {
+  claim: {
+    argument: "claims",
+    epistemicStatus: "claim",
+    read: (store, options) => store.queryClaims(options),
+  },
+  observation: {
+    argument: "observations",
+    epistemicStatus: "observation",
+    read: (store, options) => store.queryObservations(options),
+  },
+};
 
 const result = await run(process.argv.slice(2));
 process.stdout.write(`${JSON.stringify(result.output)}\n`);
@@ -296,23 +319,22 @@ function status(store: ObservationStore, arguments_: string[]): CommandResult {
 }
 
 function query(store: ObservationStore, arguments_: string[]): CommandResult {
-  const epistemicStatus = arguments_[0];
-  if (epistemicStatus !== "observations" && epistemicStatus !== "claims") {
+  const requested = arguments_[0];
+  const surface = Object.values(querySurfaceByEpistemicStatus).find(
+    (candidate) => candidate.argument === requested,
+  );
+  if (surface === undefined) {
     return invalidArguments("query");
   }
   const options = parseQueryOptions(arguments_.slice(1));
-  const records =
-    epistemicStatus === "observations"
-      ? store.queryObservations(options)
-      : store.queryClaims(options);
   return {
     exitCode: 0,
     output: {
       schemaVersion: 1,
       command: "query",
       outcome: "success",
-      epistemicStatus: epistemicStatus === "observations" ? "observation" : "claim",
-      records,
+      epistemicStatus: surface.epistemicStatus,
+      records: surface.read(store, options),
     },
   };
 }

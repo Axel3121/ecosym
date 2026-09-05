@@ -101,6 +101,79 @@ test("the command surface connects, collects, queries, and verifies", async () =
   assert.equal(disagreement.stderr, "");
 });
 
+test("query aligns CLI status arguments, output, and records", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-cli-query-status-"));
+  const sourcePath = join(directory, "source.jsonl");
+  const configPath = join(directory, "connection.json");
+  const xdgDataHome = join(directory, "data");
+  writeFileSync(
+    sourcePath,
+    '{"id":"record-1","subject":"subject-1","value":7,"state":"complete"}\n',
+  );
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      schemaVersion: 1,
+      id: "cli-query-status-source",
+      factOwner: "external-owner",
+      reader: { type: "jsonl", path: sourcePath },
+      sourceRecord: {
+        identity: [{ scope: "record", path: "id" }],
+        retention: "history",
+        recordedAt: { unavailable: true },
+      },
+      facts: [
+        {
+          epistemicStatus: "observation",
+          kind: "api.value",
+          subject: { scope: "record", path: "subject" },
+          payload: { value: { scope: "record", path: "value" } },
+        },
+        {
+          epistemicStatus: "claim",
+          kind: "runtime.completion-report",
+          subject: { scope: "record", path: "subject" },
+          payload: { state: { scope: "record", path: "state" } },
+        },
+      ],
+    }),
+  );
+
+  assert.equal((await runCli(["connect", configPath], xdgDataHome)).code, 0);
+  assert.equal((await runCli(["collect"], xdgDataHome)).code, 0);
+
+  const queryCases: [string, string][] = [
+    ["observations", "observation"],
+    ["claims", "claim"],
+  ];
+  for (const [argument, epistemicStatus] of queryCases) {
+    const query = await runCli(["query", argument], xdgDataHome);
+    assert.equal(query.code, 0);
+    assert.equal(query.output.epistemicStatus, epistemicStatus);
+    const records = query.output.records;
+    assert.ok(Array.isArray(records));
+    assert.ok(records.length > 0);
+    assert.ok(
+      records.every(
+        (record) =>
+          typeof record === "object" &&
+          record !== null &&
+          "epistemicStatus" in record &&
+          record.epistemicStatus === epistemicStatus,
+      ),
+    );
+  }
+
+  const invalid = await runCli(["query", "inferences"], xdgDataHome);
+  assert.equal(invalid.code, 64);
+  assert.deepEqual(invalid.output, {
+    schemaVersion: 1,
+    command: "query",
+    outcome: "error",
+    error: "invalid_arguments",
+  });
+});
+
 test("the command surface exports and forgets only disconnected covered state", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-cli-forget-"));
   const sourcePath = join(directory, "source.jsonl");
