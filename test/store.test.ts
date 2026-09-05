@@ -341,7 +341,7 @@ test("non-string source identities fail collection without persistence", async (
   }
 });
 
-test("the persisted declaration enforces fact owner and kind strings", async (t) => {
+test("owner and kind forged into the caller copy are still not declared", async (t) => {
   for (const field of ["factOwner", "kind"] as const) {
     await t.test(field, async () => {
       const { store } = temporaryStore();
@@ -431,7 +431,7 @@ test("source times must be representable real UTC instants or null", async (t) =
               fact({ sourceRecordedAt: sourceRecordedAt as unknown as string }),
             ]);
           }),
-          CollectionFailedError,
+          (error: any) => error instanceof CollectionFailedError && error.code === "fact_rejected",
         );
         assert.equal(store.countFacts(), 0);
       } finally {
@@ -879,20 +879,39 @@ test("fact and payload accessors are read once before persistence", async (t) =>
   });
 });
 
-test("facts can only be written through a counted source record", async () => {
+test("facts can only be written through a counted source record, even after a failed attempt", async () => {
   const { store } = temporaryStore();
   try {
     const parsed = connection();
     store.register(parsed);
     const active = store.getConnection(parsed.config.id);
 
+    // Without a prior attempt that prepared a fact, countFacts cannot fail for
+    // any implementation of the source-record gating path.
+    await assert.rejects(
+      store.collect(active, (sink) => {
+        sink.recordSourceRecord(() => [fact()]);
+        throw Object.assign(new Error("fixture failure"), { code: "source_malformed" });
+      }),
+      { code: "source_malformed" },
+    );
+    assert.equal(store.countFacts(), 0);
+
     const orphaned = await store.collect(active, (sink) => {
       assert.equal("writeFact" in sink, false);
     });
     assert.equal(orphaned.sourceRecordsSeen, 0);
     assert.equal(orphaned.factsSeen, 0);
-    assert.equal(orphaned.factsAdded, 0);
-    assert.equal(store.countFacts(), 0);
+    assert.equal(
+      orphaned.factsAdded,
+      0,
+      "a fact prepared by an earlier failed attempt must not reach the store",
+    );
+    assert.equal(
+      store.countFacts(),
+      0,
+      "a fact prepared by an earlier failed attempt must not reach the store",
+    );
 
     const result = await store.collect(active, (sink) => {
       sink.recordSourceRecord(() => [fact()]);
@@ -902,6 +921,20 @@ test("facts can only be written through a counted source record", async () => {
     assert.equal(result.factsSeen, 1);
     assert.equal(result.factsAdded, 1);
     assert.equal(store.countFacts(), 1);
+
+    const inspected = new DatabaseSync(store.path, { readOnly: true });
+    try {
+      const orphanedFacts = inspected
+        .prepare(
+          `SELECT count(*) AS orphans FROM facts f
+             JOIN collection_attempts a ON a.attempt_id = f.attempt_id
+            WHERE a.source_records_seen = 0`,
+        )
+        .get() as { orphans: number };
+      assert.equal(orphanedFacts.orphans, 0);
+    } finally {
+      inspected.close();
+    }
   } finally {
     store.close();
   }

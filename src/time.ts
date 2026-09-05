@@ -20,6 +20,9 @@ export function parseCalendarInstant(value: string): null | number {
   if (day > daysInMonth) {
     return null;
   }
+  // Leap seconds are deliberately refused: JavaScript Date cannot represent
+  // one, so a stored leap second would have no ordering key and could not be
+  // compared against other instants.
   const milliseconds = Date.parse(value);
   return Number.isFinite(milliseconds) ? milliseconds : null;
 }
