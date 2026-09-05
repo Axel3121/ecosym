@@ -9,6 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { collectConnection } from "../src/collect.ts";
 import { parseConnectionConfig, type ConnectionConfig } from "../src/config.ts";
 import { materializeFacts, sourceRecordIdentityHash } from "../src/materialize.ts";
+import { recordIndexModeEvidence } from "../src/record-index-evidence.ts";
 import {
   openFileReadOnly,
   openSqliteReadOnly,
@@ -813,6 +814,39 @@ test("record-index evidence is unavailable for a content-dependent identity", as
   }
 });
 
+test("record-index evidence is unavailable for an identity without a record index", async () => {
+  const directory = workspace();
+  const stateDirectory = join(directory, "state");
+  const sourcePath = join(directory, "records.jsonl");
+  writeFileSync(sourcePath, '{"subject":"alpha","value":1}\n');
+  const base = indexedJsonlConnection(sourcePath);
+  const parsed = parseConnectionConfig({
+    ...base.config,
+    sourceRecord: {
+      ...base.config.sourceRecord,
+      identity: [{ scope: "meta", value: "source-path" }],
+      retention: "latest",
+    },
+  });
+  const store = new ObservationStore(stateDirectory);
+  store.register(parsed);
+  await collectConnection(store, parsed.config.id);
+  store.close();
+
+  // Exercise the exported contract directly because the production caller short-circuits
+  // first. Dropping this guard is safe-direction: [source-path] yields no false refutation,
+  // but the semantic contract still forbids evidence from an identity without an index.
+  const database = new DatabaseSync(join(stateDirectory, "observations.sqlite"));
+  try {
+    assert.deepEqual(
+      recordIndexModeEvidence(database, parsed.config, parsed.config.id, parsed.hash),
+      { available: false, reason: "identity_not_reconstructible" },
+    );
+  } finally {
+    database.close();
+  }
+});
+
 test("record-index evidence allows records that produced no required fact", async () => {
   const directory = workspace();
   const stateDirectory = join(directory, "state");
@@ -847,6 +881,56 @@ test("record-index evidence allows records that produced no required fact", asyn
         maxSourceRecordsSeen: 3,
         recordOrdinalRefuted: false,
         storedIdentities: 2,
+        storedIdentitiesOutsideRecordOrdinalRange: 0,
+      },
+    );
+  } finally {
+    migrated.close();
+  }
+});
+
+test("record-index evidence bounds candidates by the largest attempt, not the latest", async () => {
+  const directory = workspace();
+  const stateDirectory = join(directory, "state");
+  const sourcePath = join(directory, "records.jsonl");
+  // Non-monotone sizes preserve a genuine record-ordinal store where neither the first,
+  // last, nor smallest attempt bounds all retained indexes, so refutation would be false.
+  const records = [
+    '{"subject":"alpha","value":1}\n',
+    '{"subject":"beta","value":2}\n',
+    '{"subject":"gamma","value":3}\n',
+  ];
+  writeFileSync(sourcePath, records.slice(0, 1).join(""));
+  const parsed = indexedJsonlConnection(sourcePath);
+  const oldStore = new ObservationStore(stateDirectory);
+  try {
+    oldStore.register(parsed);
+    const first = await collectConnection(oldStore, parsed.config.id);
+    assert.equal(first.result.sourceRecordsSeen, 1);
+    writeFileSync(sourcePath, records.join(""));
+    const second = await collectConnection(oldStore, parsed.config.id);
+    assert.equal(second.result.sourceRecordsSeen, 3);
+    writeFileSync(sourcePath, records.slice(0, 2).join(""));
+    const third = await collectConnection(oldStore, parsed.config.id);
+    assert.equal(third.result.sourceRecordsSeen, 2);
+  } finally {
+    oldStore.close();
+  }
+  markStoreAsSchemaSix(stateDirectory);
+
+  const migrated = new ObservationStore(stateDirectory);
+  try {
+    assert.deepEqual(
+      migrated.planRecordIndexModeResolution(
+        parsed.config.id,
+        parsed.hash,
+        "record-ordinal",
+      ).storedIndexEvidence,
+      {
+        available: true,
+        maxSourceRecordsSeen: 3,
+        recordOrdinalRefuted: false,
+        storedIdentities: 3,
         storedIdentitiesOutsideRecordOrdinalRange: 0,
       },
     );
