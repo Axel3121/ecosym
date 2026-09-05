@@ -156,10 +156,22 @@ queue is a noticeboard the user can only shout at.
 A petition is visible as a petition: a thing that was asked. It is never
 depicted as a thing that happened.
 
-How that identity is established, bound to authority, scoped, expired, and
-recorded is not yet designed. Until it is, no consequential petition path is
-built: an unauthenticated request that starts work is the failure this product
-least survives.
+A petition identity must be established, bound to authority, scoped, expiring,
+and recorded. Until that identity is both designed and proven in every one of
+those respects, no consequential petition path is built: an unauthenticated
+request that starts work is the failure this product least survives.
+
+The conditions known to be unmet are listed so the gate is checkable rather
+than a matter of judgement. They are necessary and not sufficient — a gap found
+later blocks in exactly the same way:
+
+- no credential owner or proof profile has been selected;
+- a petition has no physical source of record;
+- how a control plane authoritatively obtains and conveys the current mandate
+  is undesigned;
+- no runtime is known to provide non-bypassable admission;
+- no integration has demonstrated an owner-backed causal chain from a petition
+  to an observed effect.
 
 ### The council
 
@@ -341,19 +353,38 @@ ambiguous mandate.
 
 ### What exists, and what does not
 
-Real today: Ecosym's institutional semantics; a connected runtime's execution primitives —
-observation, delegation, spawning, steering, stopping, per-agent tool limits,
-and a pre-execution check that can block.
-
 Required and not yet built: the authoritative control plane; a durable case
 that outlives the process that opened it; a lasting city hall; council
 procedure; routing and escalation between civilizations.
 
-The substrate for durable coordination is an open implementation choice. A
-connected runtime
-delegation is process-local and cannot carry a matter that waits days for an
-answer, so something must; which thing is not decided here, and no candidate is
+The substrate for durable coordination is an open implementation choice.
+Process-local delegation cannot carry a matter that waits days for an answer,
+so something must; which thing is not decided here, and no candidate is
 canonical until it has been proven.
+
+#### What is built
+
+The inventory below is the only place in this document that records what has
+been built. Current implementation state is not owned here, and the inventory
+is not a requirement, a priority, or a scope decision. That this document
+describes something is never a claim that it exists.
+
+Built: institutional semantics — founding a civilization from its four
+declarations, redrawing and dissolving it, a mandate revision chain, and
+resolving a named civilization's current mandate deterministically. The
+observation layer — declarative connections to file sources, collection that
+preserves provenance, claims kept distinct from observations and current state
+from historical and unknown, verification against the source, record-index
+resolution, and attempt retirement. Export and irreversible forgetting for both
+stores. One closed request type, self-classified destructive, with a validator
+and a deterministic authority projection, and a petition envelope, withdrawal,
+and proof-record representation — nothing is configured to consume either. A
+command line that emits JSON.
+
+Not built: nothing renders, so there is no world surface to walk through. No
+runtime has ever been connected, nothing enforces a mandate, and no petition
+reaches anything. Beyond the inventory above, nothing this document describes
+has been built.
 
 ### The first proof
 
@@ -545,6 +576,12 @@ not extend to executing or orchestrating work.
 
 New product scope must be earned by repeated use or a concrete failure of the
 current slice.
+
+This governs scope this document does not already contain. Building what this
+document already requires is not new scope and needs no separate justification.
+It is not a licence: it lifts no condition stated here, in particular the
+petition conditions above and the requirement that one vertical chain hold end
+to end before any of this is built broadly.
 
 ## Open questions
 
