@@ -309,6 +309,7 @@ test("a null source record id fails collection instead of being ignored", async 
           fact({ sourceRecordId: null as unknown as string }),
         ]);
       }),
+      (error: any) => error instanceof CollectionFailedError && error.code === "fact_rejected",
     );
     assert.equal(store.countFacts(), 0);
   } finally {
