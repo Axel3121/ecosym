@@ -1490,7 +1490,10 @@ test("a collection within the contention budget still completes", async () => {
   );
   await delay(30);
   blocker.exec("ROLLBACK");
-  await delay(30);
+  const reacquireDeadline = Date.now() + 500;
+  while (!blocker.isTransaction && Date.now() < reacquireDeadline) {
+    await delay(5);
+  }
   if (blocker.isTransaction) {
     blocker.exec("ROLLBACK");
   }
