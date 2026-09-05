@@ -328,6 +328,16 @@ test("accepts a rotated withdrawal credential and validates proof against the wi
   );
 });
 
+test("distinguishes withdrawal petition and envelope digest mismatches", () => {
+  const envelope = validEnvelope();
+  const wrongPetition = validWithdrawal(envelope);
+  wrongPetition.petitionId = OTHER_PETITION_ID;
+  expectRefusal("petition_id_mismatch", () => createPetitionWithdrawal(wrongPetition, envelope));
+  const wrongDigest = validWithdrawal(envelope);
+  wrongDigest.envelopeDigest = `sha256:${"d".repeat(64)}`;
+  expectRefusal("envelope_digest_mismatch", () => createPetitionWithdrawal(wrongDigest, envelope));
+});
+
 test("withdrawal binds original principal and audience but not credential", () => {
   const envelope = validEnvelope();
   assert.doesNotThrow(() => createPetitionWithdrawal(validWithdrawal(envelope), envelope));

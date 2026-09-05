@@ -64,6 +64,7 @@ export type PetitionEnvelopeRefusalRule =
   | "negative_zero"
   | "non_finite_number"
   | "owner_identifier"
+  | "petition_id_mismatch"
   | "predecessor_self"
   | "principal_mismatch"
   | "proof_bytes"
@@ -300,7 +301,7 @@ export function createPetitionWithdrawal(
 ): PetitionWithdrawalRepresentation {
   const envelope = createPetitionEnvelope(envelopeInput);
   const withdrawal = parseWithdrawal(input);
-  assertRule(withdrawal.petitionId === envelope.envelope.petitionId, "envelope_digest_mismatch", "petitionId");
+  assertRule(withdrawal.petitionId === envelope.envelope.petitionId, "petition_id_mismatch", "petitionId");
   assertRule(
     withdrawal.envelopeDigest === envelope.envelopeDigest,
     "envelope_digest_mismatch",
