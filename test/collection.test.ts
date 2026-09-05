@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { collectConnection } from "../src/collect.ts";
 import { parseConnectionConfig, type ConnectionConfig } from "../src/config.ts";
-import { materializeFacts } from "../src/materialize.ts";
+import { materializeFacts, sourceRecordIdentityHash } from "../src/materialize.ts";
 import {
   openFileReadOnly,
   openSqliteReadOnly,
@@ -441,6 +441,27 @@ test("an ambiguous physical-line JSONL store is refused without rewriting identi
       migrated.getConnection(parsed.config.id).jsonlRecordIndexMode,
       "unknown",
     );
+    const evidenceBeforeSourceEdit = migrated.planRecordIndexModeResolution(
+      parsed.config.id,
+      parsed.hash,
+      "record-ordinal",
+    ).storedIndexEvidence;
+    assert.deepEqual(evidenceBeforeSourceEdit, {
+      available: true,
+      maxSourceRecordsSeen: 2,
+      recordOrdinalRefuted: true,
+      storedIdentities: 2,
+      storedIdentitiesOutsideRecordOrdinalRange: 1,
+    });
+    writeFileSync(sourcePath, `\n${readFileSync(sourcePath, "utf8")}`);
+    assert.deepEqual(
+      migrated.planRecordIndexModeResolution(
+        parsed.config.id,
+        parsed.hash,
+        "physical-line",
+      ).storedIndexEvidence,
+      evidenceBeforeSourceEdit,
+    );
     const forgedForVerification = migrated.getConnection(parsed.config.id);
     forgedForVerification.jsonlRecordIndexMode = "physical-line";
     const forgedVerification = await verifyConnection(
@@ -506,6 +527,29 @@ test("an ambiguous ordinal JSONL store is refused without rewriting identity", a
   const migrated = new ObservationStore(stateDirectory);
   try {
     assert.equal(migrated.getConnection(parsed.config.id).jsonlRecordIndexMode, "unknown");
+    const plan = migrated.planRecordIndexModeResolution(
+      parsed.config.id,
+      parsed.hash,
+      "record-ordinal",
+    );
+    assert.deepEqual(plan.storedIndexEvidence, {
+      available: true,
+      maxSourceRecordsSeen: 2,
+      recordOrdinalRefuted: false,
+      storedIdentities: 2,
+      storedIdentitiesOutsideRecordOrdinalRange: 0,
+    });
+    assert.deepEqual(
+      identities,
+      [0, 1].map((recordIndex) =>
+        sourceRecordIdentityHash(parsed.config, {
+          meta: { recordIndex, sourcePath },
+          numericLexemes: null,
+          record: {},
+          root: {},
+        }),
+      ),
+    );
     const verification = await verifyConnection(
       migrated,
       migrated.getConnection(parsed.config.id),
@@ -696,6 +740,20 @@ test("a schema-six physical-line store without blank lines remains readable", as
       migrated.getConnection(parsed.config.id).jsonlRecordIndexMode,
       "unknown",
     );
+    assert.deepEqual(
+      migrated.planRecordIndexModeResolution(
+        parsed.config.id,
+        parsed.hash,
+        "record-ordinal",
+      ).storedIndexEvidence,
+      {
+        available: true,
+        maxSourceRecordsSeen: 2,
+        recordOrdinalRefuted: false,
+        storedIdentities: 2,
+        storedIdentitiesOutsideRecordOrdinalRange: 0,
+      },
+    );
     const verification = await verifyConnection(
       migrated,
       migrated.getConnection(parsed.config.id),
@@ -712,6 +770,130 @@ test("a schema-six physical-line store without blank lines remains readable", as
     assert.deepEqual(
       migrated.queryObservations().map((fact) => fact.sourceRecordId),
       identities,
+    );
+  } finally {
+    migrated.close();
+  }
+});
+
+test("record-index evidence is unavailable for a content-dependent identity", async () => {
+  const directory = workspace();
+  const stateDirectory = join(directory, "state");
+  const sourcePath = join(directory, "records.jsonl");
+  writeFileSync(sourcePath, '{"subject":"alpha","value":1}\n');
+  const base = indexedJsonlConnection(sourcePath);
+  const parsed = parseConnectionConfig({
+    ...base.config,
+    sourceRecord: {
+      ...base.config.sourceRecord,
+      identity: [
+        { scope: "meta", value: "record-index" },
+        { scope: "record", path: "subject" },
+      ],
+    },
+  });
+  const oldStore = new ObservationStore(stateDirectory);
+  oldStore.register(parsed);
+  await collectConnection(oldStore, parsed.config.id);
+  oldStore.close();
+  markStoreAsSchemaSix(stateDirectory);
+
+  const migrated = new ObservationStore(stateDirectory);
+  try {
+    assert.deepEqual(
+      migrated.planRecordIndexModeResolution(
+        parsed.config.id,
+        parsed.hash,
+        "record-ordinal",
+      ).storedIndexEvidence,
+      { available: false, reason: "identity_not_reconstructible" },
+    );
+  } finally {
+    migrated.close();
+  }
+});
+
+test("record-index evidence allows records that produced no required fact", async () => {
+  const directory = workspace();
+  const stateDirectory = join(directory, "state");
+  const sourcePath = join(directory, "records.jsonl");
+  writeFileSync(
+    sourcePath,
+    '{"subject":"alpha","value":1}\n{"subject":"beta"}\n{"subject":"gamma","value":3}\n',
+  );
+  const base = indexedJsonlConnection(sourcePath);
+  const parsed = parseConnectionConfig({
+    ...base.config,
+    facts: [{ ...base.config.facts[0], required: [{ scope: "record", path: "value" }] }],
+  });
+  const oldStore = new ObservationStore(stateDirectory);
+  oldStore.register(parsed);
+  const collection = await collectConnection(oldStore, parsed.config.id);
+  assert.equal(collection.result.sourceRecordsSeen, 3);
+  assert.equal(collection.result.factsSeen, 2);
+  oldStore.close();
+  markStoreAsSchemaSix(stateDirectory);
+
+  const migrated = new ObservationStore(stateDirectory);
+  try {
+    assert.deepEqual(
+      migrated.planRecordIndexModeResolution(
+        parsed.config.id,
+        parsed.hash,
+        "record-ordinal",
+      ).storedIndexEvidence,
+      {
+        available: true,
+        maxSourceRecordsSeen: 3,
+        recordOrdinalRefuted: false,
+        storedIdentities: 2,
+        storedIdentitiesOutsideRecordOrdinalRange: 0,
+      },
+    );
+  } finally {
+    migrated.close();
+  }
+});
+
+test("record-index evidence keeps attempt bounds and facts in one connection version", async () => {
+  const directory = workspace();
+  const stateDirectory = join(directory, "state");
+  const firstSourcePath = join(directory, "first.jsonl");
+  const secondSourcePath = join(directory, "second.jsonl");
+  writeFileSync(
+    firstSourcePath,
+    '{"subject":"alpha","value":1}\n{"subject":"beta","value":2}\n{"subject":"gamma","value":3}\n',
+  );
+  writeFileSync(secondSourcePath, '{"subject":"alpha","value":1}\n');
+  const first = indexedJsonlConnection(firstSourcePath);
+  const oldStore = new ObservationStore(stateDirectory);
+  oldStore.register(first);
+  await collectConnection(oldStore, first.config.id);
+  oldStore.disconnect(first.config.id);
+  const second = parseConnectionConfig({
+    ...first.config,
+    reader: { type: "jsonl", path: secondSourcePath },
+  });
+  oldStore.register(second);
+  await collectConnection(oldStore, second.config.id);
+  oldStore.close();
+  markStoreAsSchemaSix(stateDirectory);
+
+  const migrated = new ObservationStore(stateDirectory);
+  try {
+    assert.deepEqual(
+      migrated.planRecordIndexModeResolution(
+        second.config.id,
+        second.hash,
+        "record-ordinal",
+      ).storedIndexEvidence,
+      {
+        available: true,
+        maxSourceRecordsSeen: 1,
+        recordOrdinalRefuted: false,
+        storedIdentities: 1,
+        storedIdentitiesOutsideRecordOrdinalRange: 0,
+      },
     );
   } finally {
     migrated.close();

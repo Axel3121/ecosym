@@ -26,6 +26,10 @@ import {
   type OwnedStateExport,
 } from "./owned-state.ts";
 import { defaultStateDirectory } from "./paths.ts";
+import {
+  recordIndexModeEvidence,
+  type RecordIndexModeEvidence,
+} from "./record-index-evidence.ts";
 import type { JsonlRecordIndexMode } from "./readers.ts";
 import { utcInstantOrderingKey } from "./time.ts";
 import {
@@ -341,6 +345,7 @@ export interface RecordIndexModeResolutionPlan {
   currentRecordIndexMode: JsonlRecordIndexMode | "unknown";
   factsAffected: number;
   recordIndexMode: JsonlRecordIndexMode;
+  storedIndexEvidence: RecordIndexModeEvidence;
 }
 
 export interface ForgetInventory {
@@ -3261,7 +3266,7 @@ export class ObservationStore {
   ): RecordIndexModeResolutionSnapshot {
     const active = this.#database
       .prepare(
-        `SELECT c.config_hash, v.jsonl_record_index_mode
+        `SELECT c.config_hash, v.config_json, v.jsonl_record_index_mode
            FROM active_connections c
            JOIN connection_versions v
              ON v.connection_id = c.connection_id
@@ -3270,7 +3275,7 @@ export class ObservationStore {
       )
       .get(connectionId) as
       | undefined
-      | { config_hash: string; jsonl_record_index_mode: string };
+      | { config_hash: string; config_json: string; jsonl_record_index_mode: string };
     if (active === undefined) {
       throw new ConnectionNotFoundError(connectionId);
     }
@@ -3323,8 +3328,17 @@ export class ObservationStore {
     if (attempts.some((attempt) => attempt.outcome === "running")) {
       throw new RecordIndexResolutionCollectionRunningError(connectionId);
     }
+    const config = parseStoredConfig(active.config_json, connectionVersion);
+    const storedIndexEvidence = recordIndexModeEvidence(
+      this.#database,
+      config,
+      connectionId,
+      connectionVersion,
+    );
     const affectedFactIds = facts.map((fact) => fact.fact_id);
     const collectionAttemptIds = attempts.map((attempt) => attempt.attempt_id);
+    // source_records_seen changes only when an attempt is added or completes;
+    // those changes already alter the attempt tuples included below.
     const stateFingerprint = `sha256:${sha256(
       canonicalJson([
         connectionId,
@@ -3351,6 +3365,7 @@ export class ObservationStore {
       factsAffected: affectedFactIds.length,
       recordIndexMode,
       stateFingerprint,
+      storedIndexEvidence,
     };
   }
 

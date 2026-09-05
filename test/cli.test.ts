@@ -450,6 +450,23 @@ test("an ambiguous legacy record index can be resolved by a recorded user choice
   );
   assert.equal(typeof preview.output.consequence, "string");
   assert.equal(typeof preview.output.recoverability, "string");
+  assert.deepEqual(preview.output.storedIndexEvidence, {
+    available: true,
+    maxSourceRecordsSeen: 2,
+    recordOrdinalRefuted: true,
+    storedIdentities: 2,
+    storedIdentitiesOutsideRecordOrdinalRange: 1,
+  });
+  const ordinalPreview = await runCli(
+    ["resolve-record-index", parsed.config.id, parsed.hash, "record-ordinal"],
+    xdgDataHome,
+  );
+  assert.notEqual(ordinalPreview.output.consequence, preview.output.consequence);
+  assert.match(String(ordinalPreview.output.consequence), /record-ordinal is refuted/);
+  assert.match(
+    String(preview.output.consequence),
+    /physical-line cannot be tested from stored data/,
+  );
   const confirmationToken = preview.output.confirmationToken;
   assert.equal(typeof confirmationToken, "string");
   const secondPreview = await runCli(

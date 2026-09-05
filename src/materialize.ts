@@ -21,14 +21,7 @@ export function materializeFacts(
   config: ConnectionConfig,
   source: SourceRecord,
 ): FactInput[] {
-  const identity = config.sourceRecord.identity.map((selector) => {
-    const value = requiredScalar(selector, source);
-    if (value === null) {
-      throw new SourceMappingError();
-    }
-    return value;
-  });
-  const sourceRecordId = `sha256:${sha256(canonicalJson(identity))}`;
+  const sourceRecordId = sourceRecordIdentityHash(config, source);
   const sourceRecordedAt = materializeTime(config.sourceRecord.recordedAt, source);
   const facts: FactInput[] = [];
 
@@ -60,6 +53,20 @@ export function materializeFacts(
     });
   }
   return facts;
+}
+
+export function sourceRecordIdentityHash(
+  config: ConnectionConfig,
+  source: SourceRecord,
+): string {
+  const identity = config.sourceRecord.identity.map((selector) => {
+    const value = requiredScalar(selector, source);
+    if (value === null) {
+      throw new SourceMappingError();
+    }
+    return value;
+  });
+  return `sha256:${sha256(canonicalJson(identity))}`;
 }
 
 function materializeTime(sourceTime: SourceTime, source: SourceRecord): null | string {
