@@ -14,6 +14,8 @@ import { defaultStateDirectory } from "../src/paths.ts";
 import {
   CollectionFailedError,
   ConnectionConflictError,
+  FactNotDeclaredError,
+  FactRejectedError,
   isSqliteContentionError,
   ObservationStore,
   type FactInput,
@@ -329,7 +331,7 @@ test("non-string source identities fail collection without persistence", async (
           store.collect(active, (sink) => {
             sink.recordSourceRecord(() => [malformed]);
           }),
-          CollectionFailedError,
+          (error: any) => error instanceof CollectionFailedError && error.code === "fact_rejected",
         );
         assert.equal(store.countFacts(), 0);
       } finally {
@@ -366,7 +368,7 @@ test("the persisted declaration enforces fact owner and kind strings", async (t)
           store.collect(active, (sink) => {
             sink.recordSourceRecord(() => [malformed]);
           }),
-          CollectionFailedError,
+          (error: any) => error instanceof CollectionFailedError && error.code === "fact_not_declared",
         );
         assert.equal(store.countFacts(), 0);
       } finally {
@@ -378,8 +380,8 @@ test("the persisted declaration enforces fact owner and kind strings", async (t)
 
 test("identity strings that SQLite cannot preserve fail collection", async (t) => {
   for (const [field, value] of [
-    ["subject", "\ud800"],
-    ["sourceRecordId", "\udfff"],
+    ["subject", "\uD800"],
+    ["sourceRecordId", "\uDC00"],
   ] as const) {
     await t.test(field, async () => {
       const { store } = temporaryStore();
@@ -394,7 +396,7 @@ test("identity strings that SQLite cannot preserve fail collection", async (t) =
           store.collect(active, (sink) => {
             sink.recordSourceRecord(() => [malformed]);
           }),
-          CollectionFailedError,
+          (error: any) => error instanceof CollectionFailedError && error.code === "fact_rejected",
         );
         assert.equal(store.countFacts(), 0);
       } finally {
@@ -716,7 +718,7 @@ test("payload scalars are persisted exactly or rejected", async () => {
       store.collect(active, (sink) => {
         sink.recordSourceRecord(() => [fact({ payload: { value: -0 } })]);
       }),
-      CollectionFailedError,
+      (error: any) => error instanceof CollectionFailedError && error.code === "fact_rejected",
     );
     assert.equal(store.countFacts(), 0);
 
@@ -763,7 +765,7 @@ test("identity fields are rejected unless they are lossless strings", async () =
         store.collect(active, (sink) => {
           sink.recordSourceRecord(() => [input]);
         }),
-        CollectionFailedError,
+        (error: any) => error instanceof CollectionFailedError && error.code === "fact_rejected",
       );
       assert.equal(store.countFacts(), 0);
     }
@@ -785,7 +787,7 @@ test("identity fields are rejected when they contain unpaired surrogates", async
           fact({ subject: "\uD800" as any, sourceRecordId: "\uDC00" as any }),
         ]);
       }),
-      CollectionFailedError,
+      (error: any) => error instanceof CollectionFailedError && error.code === "fact_rejected",
     );
     assert.equal(store.countFacts(), 0);
   } finally {
@@ -2259,15 +2261,15 @@ test("payload values that cannot be persisted exactly are refused", async () => 
 
     // NaN and the infinities have no JSON spelling, and negative zero does not
     // survive a round trip distinguishably from zero. Storing any of them would
-    // record a value the store cannot return. Collection wraps the rejection,
-    // so assert on the failure code rather than the message.
+    // record a value the store cannot return. The payload guard now throws
+    // FactRejectedError so collection wraps it and records fact_rejected.
     for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -0]) {
       await assert.rejects(
         store.collect(active, (sink) => {
           sink.recordSourceRecord(() => [fact({ payload: { value } })]);
         }),
         (error: unknown) =>
-          error instanceof CollectionFailedError && error.code === "internal_error",
+          error instanceof CollectionFailedError && error.code === "fact_rejected",
         String(value),
       );
       assert.equal(store.countFacts(), 0, String(value));

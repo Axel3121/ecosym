@@ -543,7 +543,11 @@ function rejectNonCanonicalJsonValues(
   value: unknown,
   path: string,
   ancestors = new Set<object>(),
+  depth = 0,
 ): void {
+  if (depth > 256) {
+    throw new PetitionEnvelopeRefusal("schema_value", `${path} (depth exceeded)`);
+  }
   if (value === undefined) {
     throw new PetitionEnvelopeRefusal("undefined_value", path);
   }
@@ -581,6 +585,7 @@ function rejectNonCanonicalJsonValues(
       (descriptor as PropertyDescriptor & { value: unknown }).value,
       path,
       ancestors,
+      depth + 1,
     );
   }
   ancestors.delete(object);

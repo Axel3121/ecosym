@@ -460,3 +460,55 @@ test("admits non-BMP owner identifiers but refuses controls and lone surrogates"
     );
   }
 });
+
+test("rejects a value nested too deeply to canonicalize", () => {
+  const deep: unknown = buildDeepValue(260);
+  assert.throws(
+    () => createPetitionEnvelope({ schemaVersion: 1, nested: deep }),
+    (error: unknown) => {
+      assert.ok(error instanceof PetitionEnvelopeRefusal);
+      assert.equal((error as PetitionEnvelopeRefusal).rule, "schema_value");
+      return true;
+    },
+  );
+  assert.throws(
+    () =>
+      createPetitionWithdrawal(
+        { schemaVersion: 1, withdrawalId: WITHDRAWAL_ID, nested: deep, action: "withdraw" },
+        validEnvelope(),
+      ),
+    (error: unknown) => {
+      assert.ok(error instanceof PetitionEnvelopeRefusal);
+      assert.equal((error as PetitionEnvelopeRefusal).rule, "schema_value");
+      return true;
+    },
+  );
+  assert.throws(
+    () =>
+      validateEnvelopeProofRecord(
+        {
+          schemaVersion: 1,
+          proofProfile: { id: "x", revision: "1", definitionDigest: PROFILE_DIGEST },
+          credentialId: "x",
+          subjectDigest: `sha256:${"a".repeat(64)}`,
+          proofBytes: "x",
+          nested: deep,
+        },
+        validEnvelope(),
+      ),
+    (error: unknown) => {
+      assert.ok(error instanceof PetitionEnvelopeRefusal);
+      assert.equal((error as PetitionEnvelopeRefusal).rule, "schema_value");
+      return true;
+    },
+  );
+});
+
+function buildDeepValue(depth: number): unknown {
+  let value: unknown = "leaf";
+  for (let i = 0; i < depth; i++) {
+    value = { child: value };
+  }
+  return value;
+}
+
