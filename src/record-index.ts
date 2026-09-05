@@ -21,10 +21,10 @@ export async function resolveLegacyRecordIndexMode(
   }
 
   const source = await readJsonlSourceWithRecordIndexModes(persisted.config);
-  const physicalLineFacts = source.physicalLine.flatMap((record) =>
+  const physicalLineFacts = source.physicalLine.map((record) =>
     materializeFacts(persisted.config, record),
   );
-  const recordOrdinalFacts = source.recordOrdinal.flatMap((record) =>
+  const recordOrdinalFacts = source.recordOrdinal.map((record) =>
     materializeFacts(persisted.config, record),
   );
   if (

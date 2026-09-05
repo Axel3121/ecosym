@@ -35,6 +35,7 @@ import { utcInstantOrderingKey } from "./time.ts";
 import {
   sameVerificationFactSet,
   verificationFactFromInput,
+  verificationFactKey,
 } from "./verification-facts.ts";
 
 const STORE_SCHEMA_VERSION = 14;
@@ -2122,8 +2123,8 @@ export class ObservationStore {
 
   async resolveRecordIndexModeFromEquivalentFacts(
     connection: ActiveConnection,
-    physicalLineFacts: readonly FactInput[],
-    recordOrdinalFacts: readonly FactInput[],
+    physicalLineFacts: readonly (readonly FactInput[])[],
+    recordOrdinalFacts: readonly (readonly FactInput[])[],
     sourceMatchesRevision: () => boolean,
     contentionBudget?: ContentionBudget,
   ): Promise<boolean> {
@@ -2139,17 +2140,24 @@ export class ObservationStore {
       if (!sourceMatchesRevision()) {
         throw new SourceRevisionChangedError();
       }
-      const physicalLines = verificationFactsFromInputs(physicalLineFacts, config);
-      const recordOrdinals = verificationFactsFromInputs(recordOrdinalFacts, config);
-      if (!sameVerificationFactSet(physicalLines, recordOrdinals)) {
+      if (physicalLineFacts.length !== recordOrdinalFacts.length) {
         return false;
+      }
+      const agreedFactKeys = new Set<string>();
+      for (let index = 0; index < physicalLineFacts.length; index += 1) {
+        const physicalLines = verificationFactsFromInputs(physicalLineFacts[index]!, config);
+        const recordOrdinals = verificationFactsFromInputs(recordOrdinalFacts[index]!, config);
+        if (sameVerificationFactSet(physicalLines, recordOrdinals)) {
+          for (const fact of physicalLines) {
+            agreedFactKeys.add(verificationFactKey(fact));
+          }
+        }
       }
       const snapshot = this.#verificationSnapshot(connection);
       if (
-        !snapshot.currentnessKnown ||
         !snapshot.payloadHashesValid ||
         !snapshot.sourceTimeKeysValid ||
-        !sameVerificationFactSet(snapshot.facts, recordOrdinals)
+        !snapshot.facts.every((fact) => agreedFactKeys.has(verificationFactKey(fact)))
       ) {
         return false;
       }
