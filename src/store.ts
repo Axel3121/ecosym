@@ -664,14 +664,12 @@ export class FactNotDeclaredError extends TypeError {
 export class CollectionFailedError extends Error {
   readonly attemptId: string;
   readonly code: string;
-  readonly cause?: unknown;
 
-  constructor(attemptId: string, code: string, cause?: unknown) {
+  constructor(attemptId: string, code: string) {
     super("Collection failed");
     this.name = "CollectionFailedError";
     this.attemptId = attemptId;
     this.code = code;
-    this.cause = cause;
   }
 }
 

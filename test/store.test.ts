@@ -317,6 +317,37 @@ test("a null source record id fails collection instead of being ignored", async 
   }
 });
 
+// The store deliberately does not chain the underlying error because caller-supplied
+// producer errors can carry source paths and source text; the failure contract is
+// the machine code.
+test("a wrapped collection failure carries a code and no chained exception detail", async () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+    let collectionError: unknown;
+
+    await assert.rejects(
+      store.collect(active, (sink) => {
+        sink.recordSourceRecord(() => [
+          fact({ sourceRecordId: null as unknown as string }),
+        ]);
+      }),
+      (error: unknown) => {
+        collectionError = error;
+        return error instanceof CollectionFailedError;
+      },
+    );
+    assert.ok(collectionError instanceof CollectionFailedError);
+    assert.equal(collectionError.code, "fact_rejected");
+    assert.equal(Object.hasOwn(collectionError, "cause"), false);
+    assert.equal(collectionError.message, "Collection failed");
+  } finally {
+    store.close();
+  }
+});
+
 test("non-string source identities fail collection without persistence", async (t) => {
   for (const field of ["subject", "sourceRecordId"] as const) {
     await t.test(field, async () => {
