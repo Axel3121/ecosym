@@ -10,25 +10,29 @@ failing is total failure, not a cosmetic bug.
 
 ## Status
 
-Early. The observation layer is implemented: declarative sources can be
-connected, collected into a provenance-preserving store, queried, and verified
-against their sources. Nothing renders, and the institutional layer does not
-exist yet. The observation contract and commands are documented in
-[`docs/observation-layer.md`](docs/observation-layer.md).
+Early. Two layers exist. The observation layer connects declarative file
+sources, collects them into a provenance-preserving store, and queries and
+verifies them against their sources; its contract and commands are documented
+in [`docs/observation-layer.md`](docs/observation-layer.md). The institution
+layer founds, redraws, dissolves, and deterministically resolves the mandate of
+a civilization. Both support export and irreversible forgetting.
+
+Nothing renders. No runtime has ever been connected, and no petition reaches
+anything. `PRODUCT.md` records what is built; beyond that record, nothing it
+describes exists.
 
 An earlier frontend and backend were removed. The frontend invented agents no
 runtime knew about and matched runs to them by keyword — the authority mirage
 `SECURITY.md` names. The backend exposed an unauthenticated endpoint that
 executed arbitrary text. Neither is a reference for what comes next.
 
-The institutional layer described in `PRODUCT.md` — durable cases, a council,
-admission of governed work — does not exist yet, and is not depicted until it
-does.
+Durable cases, a council, and admission of governed work do not exist yet, and
+are not depicted until they do.
 
 The current proof target is one vertical chain: a petition, a deterministically
-resolved mandate, mandatory admission, execution in the runtime, enforcement
-refusing what falls outside the mandate, the outcome observed, the case
-persisted, and the case resumed correctly after a restart.
+resolved mandate, mandatory admission, execution in a connected runtime,
+enforcement refusing what falls outside the mandate, the outcome observed, the
+case persisted, and the case resumed correctly after a restart.
 
 ## Repository knowledge
 
