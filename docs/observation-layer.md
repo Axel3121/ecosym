@@ -213,16 +213,19 @@ afterward, even if the same configuration is reconnected.
 
 Status is `changed` after a successful attempt that added a fact or changed
 which correction is current, `quiet` after a successful attempt that did
-neither, and `unread` after failure, skip, incomplete work, or no attempt. Each
-active entry includes its exact configuration hash as `connectionVersion`. A
-marker is committed before source reading;
-facts and successful completion are then committed together. If the process
-stops between those points, the marker remains `incomplete` rather than
-revealing the previous success as current. `Incomplete` is deliberately neutral:
-the collector may still be alive, or it may have stopped. Two connection
-lifetimes have separate attempts and status even when they use the same revision
-and reader. A store migration that cannot prove continuity starts the active
-lifetime at `never-run`; the next collection establishes its status.
+neither, and `unread` after failure, skip, incomplete work, or no attempt. A
+failed collection surfaces only the machine failure code; the underlying error
+is not chained because it can originate in caller-supplied source reading and
+carry source paths or source content. Each active entry includes its exact
+configuration hash as `connectionVersion`. A marker is
+committed before source reading; facts and successful completion are then
+committed together. If the process stops between those points, the marker
+remains `incomplete` rather than revealing the previous success as current.
+`Incomplete` is deliberately neutral: the collector may still be alive, or it
+may have stopped. Two connection lifetimes have separate attempts and status
+even when they use the same revision and reader. A store migration that cannot
+prove continuity starts the active lifetime at `never-run`; the next collection
+establishes its status.
 Status also includes every collection attempt under `collectionAttempts` and
 every durable retirement under `collectionAttemptRetirements`, including the
 actor and retirement time. It continues to include every recorded user

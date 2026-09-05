@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { inspect } from "node:util";
 
 import { parseConnectionConfig } from "../src/config.ts";
 import { canonicalJson, type JsonScalar, sha256 } from "../src/json.ts";
@@ -14,8 +15,6 @@ import { defaultStateDirectory } from "../src/paths.ts";
 import {
   CollectionFailedError,
   ConnectionConflictError,
-  FactNotDeclaredError,
-  FactRejectedError,
   isSqliteContentionError,
   ObservationStore,
   type FactInput,
@@ -312,6 +311,40 @@ test("a null source record id fails collection instead of being ignored", async 
       (error: any) => error instanceof CollectionFailedError && error.code === "fact_rejected",
     );
     assert.equal(store.countFacts(), 0);
+  } finally {
+    store.close();
+  }
+});
+
+// Caller-supplied producer errors can carry source paths and source text, so the
+// failure contract exposes only the machine code.
+test("a wrapped collection failure carries a code and no chained exception detail", async () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+    const sentinel = "ECOSYM_SENTINEL_VALUE";
+    let collectionError: unknown;
+
+    await assert.rejects(
+      store.collect(active, (_sink) => {
+        throw Object.assign(new Error(`row 3: ${sentinel}`), {
+          code: "source_unreadable",
+          path: `/home/example/${sentinel}.csv`,
+        });
+      }),
+      (error: unknown) => {
+        collectionError = error;
+        return error instanceof CollectionFailedError;
+      },
+    );
+    assert.ok(collectionError instanceof CollectionFailedError);
+    assert.equal(collectionError.code, "source_unreadable");
+    assert.equal(Object.hasOwn(collectionError, "cause"), false);
+    assert.equal(collectionError.message, "Collection failed");
+    assert.equal(inspect(collectionError, { depth: null }).includes(sentinel), false);
+    assert.equal(JSON.stringify(collectionError).includes(sentinel), false);
   } finally {
     store.close();
   }
