@@ -377,10 +377,7 @@ async function resolveRecordIndex(
         command: "resolve-record-index",
         outcome: "confirmation-required",
         ...plan,
-        consequence:
-          `This changes how the ${plan.factsAffected} stored facts listed in ` +
-          "affectedFactIds are interpreted and changes no fact rows. " +
-          `Future collection uses ${recordIndexMode}.`,
+        consequence: recordIndexResolutionConsequence(plan),
         recoverability:
           "A later confirmed resolution can change the mode again; facts collected under either choice remain recorded.",
       },
@@ -409,6 +406,45 @@ async function resolveRecordIndex(
       ...resolution,
     },
   };
+}
+
+function recordIndexResolutionConsequence(
+  plan: ReturnType<ObservationStore["planRecordIndexModeResolution"]>,
+): string {
+  const effect =
+    `This changes how the ${plan.factsAffected} stored facts listed in affectedFactIds ` +
+    `are interpreted and changes no fact rows. Future collection uses ${plan.recordIndexMode}. `;
+  const evidence = plan.storedIndexEvidence;
+  if (!evidence.available) {
+    return (
+      effect +
+      `Selected mode ${plan.recordIndexMode}: the store cannot test either mode from its own ` +
+      `records (${evidence.reason}). Physical-line cannot be tested from stored data, and a ` +
+      "record-ordinal refutation would not establish that physical-line is correct."
+    );
+  }
+  if (!evidence.recordOrdinalRefuted) {
+    return (
+      effect +
+      `Selected mode ${plan.recordIndexMode}: the store's own records do not refute either ` +
+      "mode, and stored data cannot establish which rule was used. Physical-line cannot be " +
+      "tested from stored data, and a record-ordinal refutation would not establish that " +
+      "physical-line is correct."
+    );
+  }
+  const selectedStatus =
+    plan.recordIndexMode === "record-ordinal"
+      ? "record-ordinal is refuted"
+      : "physical-line cannot be tested from stored data";
+  return (
+    effect +
+    `Selected mode ${plan.recordIndexMode}: ${selectedStatus}. The store's own collection ` +
+    `records are inconsistent with record-ordinal: ${evidence.storedIdentitiesOutsideRecordOrdinalRange} ` +
+    `of ${evidence.storedIdentities} distinct stored identities fall outside the indexes allowed ` +
+    `by the maximum ${evidence.maxSourceRecordsSeen} source records seen. This refutation holds ` +
+    "only if all stored facts were written under a single record-index rule. It is not evidence " +
+    "that physical-line is correct."
+  );
 }
 
 async function retireCollectionAttempt(

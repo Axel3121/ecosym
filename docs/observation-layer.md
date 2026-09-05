@@ -90,17 +90,37 @@ For a version that remains ambiguous, `status` supplies its exact connection
 version. Run `resolve-record-index CONNECTION_ID CONNECTION_VERSION MODE` to
 preview a resolution. The preview changes nothing: it enumerates the exact
 affected fact IDs and collection-attempt IDs, states the consequence and
-recoverability, and issues a random, single-use confirmation token. The store
-records a hash of that token with the exact operation, inventory fingerprint,
-and issue time; `status`, `query`, and `verify` do not expose enough state to
-derive it. Every preview issues a different token. Repeat the command with
-`--confirm TOKEN` to make the recorded choice. A successful confirmation spends
-the token atomically with the choice, and a changed inventory refuses it as
-stale. Confirmations do not expire by elapsed time: this store has no operator
-session lifetime from which to derive a meaningful deadline, and time alone does
-not change the previewed consequence. They remain usable only while their exact
-subject state is unchanged and until they are spent. A resolution is refused
-while a collection for that version is running. If an
+recoverability, and issues a random, single-use confirmation token.
+
+The preview also reports store-only record-index evidence when every source
+identity selector is either `record-index` or `source-path`. It does not read the
+source. For each recorded collection attempt, the store knows how many source
+records reached the collection sink. A stored identity reconstructed from an
+index at or above the maximum of those counts cannot have been produced by
+record-ordinal, so such an identity refutes that mode. The maximum is deliberately
+conservative because a fact can be re-seen by a later attempt. The evidence can
+miss a refutation, can never refute physical-line, and never confirms either
+mode. Its conclusion also rests on all stored facts having been written under a
+single record-index rule; that premise can fail if a collector changed rules
+between attempts.
+
+Absent refuting evidence, the manual preview cannot distinguish the modes from
+stored data. The automatic path described above remains the only source-backed
+disambiguation. Even when record-ordinal is refuted, that is not evidence that
+physical-line is correct. The preview informs rather than refuses a choice: the
+single-rule premise may not hold, and an operator may have provenance knowledge
+that the store does not.
+
+The store records a hash of the confirmation token with the exact operation,
+inventory fingerprint, and issue time; `status`, `query`, and `verify` do not
+expose enough state to derive it. Every preview issues a different token. Repeat
+the command with `--confirm TOKEN` to make the recorded choice. A successful
+confirmation spends the token atomically with the choice, and a changed
+inventory refuses it as stale. Confirmations do not expire by elapsed time: this
+store has no operator session lifetime from which to derive a meaningful
+deadline, and time alone does not change the previewed consequence. They remain
+usable only while their exact subject state is unchanged and until they are
+spent. A resolution is refused while a collection for that version is running. If an
 operator has established that a marker is abandoned, `status` lists its exact
 `attemptId` under `collectionAttempts`. `retire-collection-attempt` requires a
 stable `ACTOR` identifier and its own persisted preview and confirmation token.
