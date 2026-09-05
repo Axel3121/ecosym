@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { collectConnection } from "../src/collect.ts";
 import { parseConnectionConfig, type ConnectionConfig } from "../src/config.ts";
@@ -715,6 +716,106 @@ test("a schema-six physical-line store without blank lines remains readable", as
   } finally {
     migrated.close();
   }
+});
+
+test("legacy resolution and collection consume one contention budget", async () => {
+  const runContendedCollection = async (waitMilliseconds: number) => {
+    const directory = workspace();
+    const stateDirectory = join(directory, "state");
+    const sourcePath = join(directory, "records.jsonl");
+    writeFileSync(
+      sourcePath,
+      '{"subject":"alpha","value":1}\n{"subject":"beta","value":2}\n',
+    );
+    const parsed = indexedJsonlConnection(sourcePath);
+    const oldStore = new ObservationStore(stateDirectory);
+    oldStore.register(parsed);
+    await oldStore.collect(oldStore.getConnection(parsed.config.id), (sink) => {
+      for (const [recordIndex, line] of readFileSync(sourcePath, "utf8")
+        .split("\n")
+        .entries()) {
+        if (line.trim() === "") {
+          continue;
+        }
+        const record = JSON.parse(line) as Record<string, unknown>;
+        sink.recordSourceRecord(() =>
+          materializeFacts(parsed.config, {
+            meta: { recordIndex, sourcePath },
+            numericLexemes: null,
+            record,
+            root: record,
+          }),
+        );
+      }
+    });
+    oldStore.close();
+    markStoreAsSchemaSix(stateDirectory);
+
+    // Short SQLite waits let the test release locks while collection retries.
+    const migrated = new ObservationStore(stateDirectory, 20);
+    const blocker = new DatabaseSync(migrated.path);
+    try {
+      assert.equal(
+        migrated.getConnection(parsed.config.id).jsonlRecordIndexMode,
+        "unknown",
+      );
+      let signalCollectionBlocked: () => void = () => undefined;
+      const collectionBlocked = new Promise<void>((resolve) => {
+        signalCollectionBlocked = resolve;
+      });
+      const resolveRecordIndexMode =
+        migrated.resolveRecordIndexModeFromEquivalentFacts.bind(migrated);
+      migrated.resolveRecordIndexModeFromEquivalentFacts = async (...args) => {
+        const resolved = await resolveRecordIndexMode(...args);
+        blocker.exec("BEGIN IMMEDIATE");
+        signalCollectionBlocked();
+        return resolved;
+      };
+
+      blocker.exec("BEGIN IMMEDIATE");
+      const collection = collectConnection(migrated, parsed.config.id);
+      const outcome = collection.then(
+        () => "success",
+        (error: unknown) =>
+          error !== null && typeof error === "object" && "code" in error
+            ? String(error.code)
+            : "unclassified_failure",
+      );
+      await delay(waitMilliseconds);
+      blocker.exec("ROLLBACK");
+      await Promise.race([
+        collectionBlocked,
+        delay(750).then(() => {
+          throw new Error("resolution did not commit before the deadline");
+        }),
+      ]);
+      await delay(waitMilliseconds);
+      if (blocker.isTransaction) {
+        blocker.exec("ROLLBACK");
+      }
+      const result = await Promise.race([
+        outcome,
+        delay(750).then(() => "deadline"),
+      ]);
+      await collection.catch(() => undefined);
+      assert.equal(
+        migrated.getConnection(parsed.config.id).jsonlRecordIndexMode,
+        "record-ordinal",
+      );
+      return result;
+    } finally {
+      if (blocker.isTransaction) {
+        blocker.exec("ROLLBACK");
+      }
+      blocker.close();
+      migrated.close();
+    }
+  };
+
+  // Each 150 ms wait fits a fresh budget, but together they exhaust one budget.
+  assert.equal(await runContendedCollection(150), "store_contention");
+  // The control proves that resolution and collection still complete under short contention.
+  assert.equal(await runContendedCollection(30), "success");
 });
 
 test("a schema-six JSONL store without record-index remains readable", async () => {

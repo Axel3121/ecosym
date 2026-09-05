@@ -38,6 +38,11 @@ const LEGACY_REBUILD_SCHEMA_VERSION = 9;
 const STORE_FILENAME = "observations.sqlite";
 const BUSY_RETRY_WINDOW_MILLISECONDS = 250;
 const CONFIRMATION_CONTENTION_BUDGET_MILLISECONDS = 2_000;
+
+export function createCollectionContentionBudget(): ContentionBudget {
+  return { remainingMilliseconds: BUSY_RETRY_WINDOW_MILLISECONDS };
+}
+
 const CREATE_COLLECTION_ATTEMPTS = `
   CREATE TABLE collection_attempts (
     attempt_order INTEGER PRIMARY KEY,
@@ -1641,14 +1646,12 @@ export class ObservationStore {
     connection: ActiveConnection,
     producer: (sink: CollectionSink) => Promise<void> | void,
     now: () => Date = () => new Date(),
+    contentionBudget: ContentionBudget = createCollectionContentionBudget(),
   ): Promise<CollectionResult> {
     const attemptId = randomUUID();
     let sourceRecordsSeen = 0;
     let factsSeen = 0;
     const preparedFacts: PreparedFact[] = [];
-    const contentionBudget: ContentionBudget = {
-      remainingMilliseconds: BUSY_RETRY_WINDOW_MILLISECONDS,
-    };
     let admitted: { attemptOrder: number; startedAt: string };
 
     try {
@@ -2112,13 +2115,14 @@ export class ObservationStore {
     return snapshot;
   }
 
-  resolveRecordIndexModeFromEquivalentFacts(
+  async resolveRecordIndexModeFromEquivalentFacts(
     connection: ActiveConnection,
     physicalLineFacts: readonly FactInput[],
     recordOrdinalFacts: readonly FactInput[],
     sourceMatchesRevision: () => boolean,
-  ): boolean {
-    return this.#transaction(() => {
+    contentionBudget?: ContentionBudget,
+  ): Promise<boolean> {
+    const resolve = () => {
       this.#assertActive(connection);
       if (this.#storedRecordIndexMode(connection) !== "unknown") {
         return true;
@@ -2156,7 +2160,10 @@ export class ObservationStore {
         throw new SourceRevisionChangedError();
       }
       return numberOfChanges(updated) === 1;
-    });
+    };
+    return contentionBudget === undefined
+      ? this.#transaction(resolve)
+      : this.#retryTransactionWithinContentionBudget(contentionBudget, resolve);
   }
 
   #verificationSnapshot(connection: ActiveConnection): VerificationSnapshot {
@@ -3650,7 +3657,7 @@ interface StoredFactRow {
   temporal_status: "current" | "historical" | "unknown";
 }
 
-interface ContentionBudget {
+export interface ContentionBudget {
   remainingMilliseconds: number;
 }
 
