@@ -5,12 +5,14 @@ import {
 } from "./readers.ts";
 import {
   type ActiveConnection,
+  type ContentionBudget,
   ObservationStore,
 } from "./store.ts";
 
 export async function resolveLegacyRecordIndexMode(
   store: ObservationStore,
   connection: ActiveConnection,
+  contentionBudget?: ContentionBudget,
 ): Promise<ActiveConnection> {
   const persisted = store.getConnection(connection.config.id);
   store.assertConnectionActive(connection);
@@ -26,7 +28,7 @@ export async function resolveLegacyRecordIndexMode(
     materializeFacts(persisted.config, record),
   );
   if (
-    !store.resolveRecordIndexModeFromEquivalentFacts(
+    !(await store.resolveRecordIndexModeFromEquivalentFacts(
       persisted,
       physicalLineFacts,
       recordOrdinalFacts,
@@ -36,7 +38,8 @@ export async function resolveLegacyRecordIndexMode(
           persisted.config.reader.path,
           source.revision,
         ),
-    )
+      contentionBudget,
+    ))
   ) {
     return persisted;
   }
