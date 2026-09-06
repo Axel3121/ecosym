@@ -210,6 +210,7 @@ npm run ecosym -- collect [CONNECTION_ID]
 npm run ecosym -- status
 npm run ecosym -- query observations [--connection ID] [--owner OWNER] [--kind KIND] [--subject SUBJECT] [--after ID] [--limit N]
 npm run ecosym -- query claims [same filters]
+npm run ecosym -- narrate [--limit N]
 npm run ecosym -- verify
 npm run ecosym -- resolve-record-index CONNECTION_ID CONNECTION_VERSION physical-line|record-ordinal
 npm run ecosym -- resolve-record-index CONNECTION_ID CONNECTION_VERSION physical-line|record-ordinal --confirm TOKEN
@@ -256,6 +257,73 @@ digest, and presented export digest, but no deleted configuration or fact
 payload. Completed civilization deletion records appear under
 `civilizationForgetRecords`; they retain the actor, time, civilization ID,
 revision identities, counts, inventory digest, and presented export digest.
+
+### Narrate
+
+`narrate` correlates connection health (`connections`, from the same
+`statuses()` used by `status`), recorded running attempts for currently-active
+connections (`attemptsInProgress`), and observations and claims across every
+currently-active connection in one call. This assembles the picture that
+otherwise requires running `status` and `query` separately and cross-referencing
+them by eye. It performs zero writes and requires zero new rights: existing
+read paths are assembled inside one transaction for an atomic snapshot. It
+does not collect or reread sources, infer success, or add institutional data.
+
+The most recent newly inserted observations and claims come first by descending
+`fact_id`. This is not an ordering by most recent collection: re-collecting an
+existing fact updates `last_seen_attempt_order` but preserves its original
+`fact_id`. The lists retain each fact's `temporalStatus`; inclusion does not
+assert that a historical or unknown fact is currently true.
+
+`--limit` defaults to 100 and accepts integers from 1 through 1000, independently
+limiting each fact list, not the connections or attempts. `narrate` accepts no
+connection, kind, or subject filters; use the existing `query` command for those.
+`dataCompleteness` is `"partial"` whenever any active connection is `"unread"`
+(including `never-run`, `incomplete`, `failed`, `retired`, `skipped`, or
+`record-index-unknown`), any current-activation attempt is recorded as running,
+or either fact list was truncated by `--limit`. It is `"complete"` only when none
+of those conditions holds, including for an empty store. This describes the
+stored picture, not independently verified source truth. It directly combines
+existing fields and truncation signals, never inferring success from fact
+content, implementing [PRODUCT.md#L51](../PRODUCT.md#L51): "Never operational
+success it inferred."
+
+`observationsTruncated` and `claimsTruncated` each compare the returned list
+against an exact `COUNT(*)` with identical filtering inside the same read
+transaction. They are accurate at every supported limit, including 1000.
+The output's `truncationCaveat` states verbatim:
+
+> observationsTruncated/claimsTruncated is true when more matching facts exist than --limit returned. A truncated list is not a complete picture of what is currently true across active connections; raise --limit or narrow with the existing 'query' command to see what was cut.
+
+`attemptsInProgress` includes the attempt ID, connection ID, configuration hash
+as `connectionVersion`, and persisted `startedAt`. It is scoped to the current
+activation of a currently-active connection, excluding disconnected connections
+and superseded activations. It is deliberately more conservative than
+`statuses()`: collection can start while an earlier attempt on the same
+activation remains running, and a later success can make the status healthy
+without completing that earlier attempt. That non-latest running row still
+forces `"partial"`. This list does not claim to know whether the underlying
+process is alive. The output's `attemptsInProgressCaveat` states verbatim:
+
+> Ecosym records that the attempts listed under attemptsInProgress have not been marked complete, failed, skipped, or retired. It cannot determine from stored state alone whether the process that started an attempt is still running or has stopped without reporting; only a durable retirement (retire-collection-attempt) records that determination, and only when an operator makes it.
+
+Fact selection's `activeOnly` scope matches `(connection_id, config_hash)`, NOT
+the three-key `(connection_id, config_hash, activation_id)` scope used by
+`statuses()`: facts have no `activation_id` column. Reconnecting under a
+materially different configuration excludes the old configuration's facts.
+Reconnecting under the IDENTICAL prior configuration can still surface the
+prior activation's facts in `observations` and `claims`, even though
+`connections` correctly shows `reason: "never-run"`. This does not weaken the
+completeness guarantee: the connection is still `"unread"`, so
+`dataCompleteness` remains `"partial"`. The fact list itself is not
+activation-scoped. As the registration contract explains
+([docs/observation-layer.md#L228-229](../docs/observation-layer.md#L228-L229)),
+"Disconnecting removes only the active pointer and never deletes facts or their
+configuration revision." That is why those old facts remain in storage.
+
+`generatedAt` is the wall-clock instant this command ran, not a stored column.
+It labels only this particular read and must not be treated as comparable to
+persisted timestamps such as `connected_at` or `started_at`.
 
 ## Export and deletion
 

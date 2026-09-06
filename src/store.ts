@@ -232,12 +232,30 @@ export interface StoredFact extends FactInput {
 }
 
 export interface QueryOptions {
+  activeOnly?: boolean;
   afterId?: number;
   connectionId?: string;
   factOwner?: string;
   kind?: string;
   limit?: number;
+  order?: "asc" | "desc";
   subject?: string;
+}
+
+export interface NarrationAttempt {
+  attemptId: string;
+  connectionId: string;
+  connectionVersion: string;
+  startedAt: string;
+}
+
+export interface NarrationSnapshot {
+  connections: ConnectionStatus[];
+  attemptsInProgress: NarrationAttempt[];
+  observations: StoredFact[];
+  observationsTruncated: boolean;
+  claims: StoredFact[];
+  claimsTruncated: boolean;
 }
 
 export interface CollectionResult {
@@ -2089,6 +2107,53 @@ export class ObservationStore {
     return this.#queryFacts("claim", options);
   }
 
+  narrate(limit = 100): NarrationSnapshot {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+      throw new RangeError("Narration limit must be an integer from 1 through 1000");
+    }
+    return this.#readTransaction(() => {
+      const connections = this.statuses();
+
+      // Only current activations qualify. Deliberately more conservative than
+      // statuses(): an earlier running attempt can remain after a later success
+      // on the same activation, so it still makes the picture partial.
+      const attemptsInProgress = this.#database
+        .prepare(
+          `SELECT ca.attempt_id, ca.connection_id, ca.config_hash, ca.started_at
+             FROM collection_attempts ca
+             JOIN active_connections ac
+               ON ac.connection_id = ca.connection_id
+              AND ac.config_hash = ca.config_hash
+              AND ac.activation_id = ca.activation_id
+            WHERE ca.outcome = 'running'
+            ORDER BY ca.started_at, ca.attempt_id`,
+        )
+        .all() as { attempt_id: string; connection_id: string; config_hash: string; started_at: string }[];
+
+      // Facts have no activation_id: same-config reconnects can retain prior
+      // activation facts. Their never-run connection status still makes the
+      // picture partial; activeOnly is not statuses()'s three-key scoping.
+      const observations = this.queryObservations({ activeOnly: true, limit, order: "desc" });
+      const claims = this.queryClaims({ activeOnly: true, limit, order: "desc" });
+      const observationsTotal = this.#countMatchingFacts("observation", { activeOnly: true });
+      const claimsTotal = this.#countMatchingFacts("claim", { activeOnly: true });
+
+      return {
+        connections,
+        attemptsInProgress: attemptsInProgress.map((row) => ({
+          attemptId: row.attempt_id,
+          connectionId: row.connection_id,
+          connectionVersion: row.config_hash,
+          startedAt: row.started_at,
+        })),
+        observations,
+        observationsTruncated: observationsTotal > observations.length,
+        claims,
+        claimsTruncated: claimsTotal > claims.length,
+      };
+    });
+  }
+
   countFacts(connectionId?: string): number {
     if (connectionId === undefined) {
       const row = this.#database.prepare("SELECT count(*) AS count FROM facts").get() as {
@@ -2283,6 +2348,33 @@ export class ObservationStore {
     };
   }
 
+  #factFilters(epistemicStatus: EpistemicStatus, options: QueryOptions): {
+    conditions: string[];
+    parameters: (number | string)[];
+  } {
+    const conditions = ["f.epistemic_status = ?"];
+    const parameters: (number | string)[] = [epistemicStatus];
+    addFilter(conditions, parameters, "f.fact_id > ?", options.afterId);
+    addFilter(conditions, parameters, "f.connection_id = ?", options.connectionId);
+    addFilter(conditions, parameters, "f.fact_owner = ?", options.factOwner);
+    addFilter(conditions, parameters, "f.kind = ?", options.kind);
+    addFilter(conditions, parameters, "f.subject = ?", options.subject);
+    if (options.activeOnly === true) {
+      conditions.push(
+        "EXISTS (SELECT 1 FROM active_connections ac WHERE ac.connection_id = f.connection_id AND ac.config_hash = f.config_hash)",
+      );
+    }
+    return { conditions, parameters };
+  }
+
+  #countMatchingFacts(epistemicStatus: EpistemicStatus, options: QueryOptions): number {
+    const { conditions, parameters } = this.#factFilters(epistemicStatus, options);
+    const row = this.#database
+      .prepare(`SELECT COUNT(*) AS total FROM facts f WHERE ${conditions.join(" AND ")}`)
+      .get(...parameters) as { total: number };
+    return row.total;
+  }
+
   #queryFacts(
     epistemicStatus: EpistemicStatus,
     options: QueryOptions,
@@ -2291,13 +2383,7 @@ export class ObservationStore {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
       throw new RangeError("Query limit must be an integer from 1 through 1000");
     }
-    const conditions = ["f.epistemic_status = ?"];
-    const parameters: (number | string)[] = [epistemicStatus];
-    addFilter(conditions, parameters, "f.fact_id > ?", options.afterId);
-    addFilter(conditions, parameters, "f.connection_id = ?", options.connectionId);
-    addFilter(conditions, parameters, "f.fact_owner = ?", options.factOwner);
-    addFilter(conditions, parameters, "f.kind = ?", options.kind);
-    addFilter(conditions, parameters, "f.subject = ?", options.subject);
+    const { conditions, parameters } = this.#factFilters(epistemicStatus, options);
     parameters.push(limit);
 
     const rows = this.#database
@@ -2364,7 +2450,7 @@ export class ObservationStore {
                 END AS temporal_status
            FROM facts f
           WHERE ${conditions.join(" AND ")}
-          ORDER BY f.fact_id
+          ORDER BY f.fact_id${options.order === "desc" ? " DESC" : ""}
           LIMIT ?`,
       )
       .all(...parameters) as unknown as StoredFactRow[];

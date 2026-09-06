@@ -66,6 +66,7 @@ async function run(arguments_: string[]): Promise<CommandResult> {
           "collect",
           "status",
           "query",
+          "narrate",
           "verify",
           "resolve-record-index",
           "retire-collection-attempt",
@@ -99,6 +100,8 @@ async function run(arguments_: string[]): Promise<CommandResult> {
         return status(store, arguments_.slice(1));
       case "query":
         return query(store, arguments_.slice(1));
+      case "narrate":
+        return narrate(store, arguments_.slice(1));
       case "verify":
         return await verify(store, arguments_.slice(1));
       case "resolve-record-index":
@@ -314,6 +317,52 @@ function status(store: ObservationStore, arguments_: string[]): CommandResult {
       recordIndexModeResolutions: store.recordIndexModeResolutions(),
       forgetRecords: store.forgetRecords(),
       civilizationForgetRecords: store.civilizationForgetRecords(),
+    },
+  };
+}
+
+function narrate(store: ObservationStore, arguments_: string[]): CommandResult {
+  let limit = 100;
+  if (arguments_.length === 2 && arguments_[0] === "--limit") {
+    limit = integerAt(arguments_[1] as string);
+    if (limit < 1 || limit > 1_000) {
+      return invalidArguments("narrate");
+    }
+  } else if (arguments_.length !== 0) {
+    return invalidArguments("narrate");
+  }
+  const snapshot = store.narrate(limit);
+  return {
+    exitCode: 0,
+    output: {
+      schemaVersion: 1,
+      command: "narrate",
+      outcome: "success",
+      generatedAt: new Date().toISOString(),
+      dataCompleteness:
+        snapshot.connections.some((connection) => connection.status === "unread") ||
+        snapshot.attemptsInProgress.length > 0 ||
+        snapshot.observationsTruncated ||
+        snapshot.claimsTruncated
+          ? "partial"
+          : "complete",
+      attemptsInProgressCaveat:
+        "Ecosym records that the attempts listed under attemptsInProgress have not been " +
+        "marked complete, failed, skipped, or retired. It cannot determine from stored " +
+        "state alone whether the process that started an attempt is still running or has " +
+        "stopped without reporting; only a durable retirement (retire-collection-attempt) " +
+        "records that determination, and only when an operator makes it.",
+      truncationCaveat:
+        "observationsTruncated/claimsTruncated is true when more matching facts exist " +
+        "than --limit returned. A truncated list is not a complete picture of what is " +
+        "currently true across active connections; raise --limit or narrow with the " +
+        "existing 'query' command to see what was cut.",
+      connections: snapshot.connections,
+      attemptsInProgress: snapshot.attemptsInProgress,
+      observations: snapshot.observations,
+      observationsTruncated: snapshot.observationsTruncated,
+      claims: snapshot.claims,
+      claimsTruncated: snapshot.claimsTruncated,
     },
   };
 }
