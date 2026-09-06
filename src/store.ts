@@ -35,6 +35,7 @@ import { utcInstantOrderingKey } from "./time.ts";
 import {
   sameVerificationFactSet,
   verificationFactFromInput,
+  verificationFactKey,
 } from "./verification-facts.ts";
 
 const STORE_SCHEMA_VERSION = 14;
@@ -2122,8 +2123,8 @@ export class ObservationStore {
 
   async resolveRecordIndexModeFromEquivalentFacts(
     connection: ActiveConnection,
-    physicalLineFacts: readonly FactInput[],
-    recordOrdinalFacts: readonly FactInput[],
+    physicalLineFacts: readonly (readonly FactInput[])[],
+    recordOrdinalFacts: readonly (readonly FactInput[])[],
     sourceMatchesRevision: () => boolean,
     contentionBudget?: ContentionBudget,
   ): Promise<boolean> {
@@ -2139,17 +2140,38 @@ export class ObservationStore {
       if (!sourceMatchesRevision()) {
         throw new SourceRevisionChangedError();
       }
-      const physicalLines = verificationFactsFromInputs(physicalLineFacts, config);
-      const recordOrdinals = verificationFactsFromInputs(recordOrdinalFacts, config);
-      if (!sameVerificationFactSet(physicalLines, recordOrdinals)) {
+      if (physicalLineFacts.length !== recordOrdinalFacts.length) {
         return false;
       }
+      const agreedFactPositions = new Map<string, number>();
+      for (let index = 0; index < physicalLineFacts.length; index += 1) {
+        const physicalLines = verificationFactsFromInputs(physicalLineFacts[index]!, config);
+        const recordOrdinals = verificationFactsFromInputs(recordOrdinalFacts[index]!, config);
+        if (sameVerificationFactSet(physicalLines, recordOrdinals)) {
+          for (const fact of physicalLines) {
+            const key = verificationFactKey(fact);
+            const existingPosition = agreedFactPositions.get(key);
+            if (existingPosition !== undefined && existingPosition !== index) {
+              return false;
+            }
+            agreedFactPositions.set(key, index);
+          }
+        }
+      }
       const snapshot = this.#verificationSnapshot(connection);
+      const storedFactPositions = new Set<number>();
       if (
-        !snapshot.currentnessKnown ||
         !snapshot.payloadHashesValid ||
         !snapshot.sourceTimeKeysValid ||
-        !sameVerificationFactSet(snapshot.facts, recordOrdinals)
+        !snapshot.facts.every((fact) => {
+          const position = agreedFactPositions.get(verificationFactKey(fact));
+          if (position === undefined) {
+            return false;
+          }
+          storedFactPositions.add(position);
+          return true;
+        }) ||
+        ![...storedFactPositions].every((position) => position < storedFactPositions.size)
       ) {
         return false;
       }
