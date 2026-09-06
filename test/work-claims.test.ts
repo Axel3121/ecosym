@@ -17,12 +17,12 @@ interface CliResult {
 }
 
 interface ClaimRow {
-  claim_id: string;
-  civilization_id: string;
-  resource_id: string;
-  claimed_by: string;
-  claimed_at: string;
-  expires_at: string;
+  claimId: string;
+  civilizationId: string;
+  resourceId: string;
+  claimedBy: string;
+  claimedAt: string;
+  expiresAt: string;
 }
 
 function fixture(t: TestContext) {
@@ -92,14 +92,14 @@ test("claim returns an identifier and a persisted thirty-minute lease", async (t
   assert.equal(rows.length, 1);
   const row = rows[0]!;
   assert.deepEqual(row, {
-    claim_id: id,
-    civilization_id: civilizationId,
-    resource_id: "src/store.ts",
-    claimed_by: "agent:one",
-    claimed_at: row.claimed_at,
-    expires_at: result.output.expiresAt,
+    claimId: id,
+    civilizationId: civilizationId,
+    resourceId: "src/store.ts",
+    claimedBy: "agent:one",
+    claimedAt: row.claimedAt,
+    expiresAt: result.output.expiresAt,
   });
-  assert.equal(Date.parse(row.expires_at) - Date.parse(row.claimed_at), 30 * 60 * 1000);
+  assert.equal(Date.parse(row.expiresAt) - Date.parse(row.claimedAt), 30 * 60 * 1000);
 });
 
 test("a live same-resource claim conflicts but a different resource is available", async (t) => {
@@ -111,7 +111,7 @@ test("a live same-resource claim conflicts but a different resource is available
   assert.equal(conflict.output.error, "work_claim_conflict");
   const second = claimId(await f.run(["claim", civilizationId, "resource:b", "agent:two"]));
   assert.notEqual(second, first);
-  assert.deepEqual(claims(await f.run(["claims"])).map((row) => row.claim_id), [first, second]);
+  assert.deepEqual(claims(await f.run(["claims"])).map((row) => row.claimId), [first, second]);
 });
 
 test("claim refuses unknown and dissolved civilizations", async (t) => {
@@ -147,7 +147,25 @@ test("release frees the resource and closed or unknown releases are not-open", a
   }
   const replacement = claimId(await f.run(["claim", civilizationId, "resource:a", "agent:two"]));
   assert.notEqual(replacement, id);
-  assert.deepEqual(claims(await f.run(["claims"])).map((row) => row.claim_id), [replacement]);
+  assert.deepEqual(claims(await f.run(["claims"])).map((row) => row.claimId), [replacement]);
+});
+
+test("release refuses an expired lease even while its stored status is open", async (t) => {
+  const f = fixture(t);
+  const civilizationId = await f.found();
+  const id = claimId(await f.run(["claim", civilizationId, "resource:a", "agent:one"]));
+  f.database(false, (database) => {
+    database.prepare("UPDATE work_claims SET expires_at = ? WHERE claim_id = ?").run(expiredAt, id);
+  });
+  const result = await f.run(["release", id]);
+  success(result, "release", "not-open");
+  assert.equal(result.output.claimId, id);
+  f.database(true, (database) => {
+    const row = database.prepare("SELECT status, closed_at FROM work_claims WHERE claim_id = ?")
+      .get(id)!;
+    assert.equal(row.status, "open");
+    assert.equal(row.closed_at, null);
+  });
 });
 
 test("heartbeat extends a live lease", async (t) => {
@@ -162,8 +180,8 @@ test("heartbeat extends a live lease", async (t) => {
   success(result, "heartbeat", "extended");
   assert.equal(result.output.claimId, id);
   const row = claims(await f.run(["claims"]))[0]!;
-  assert.equal(row.claim_id, id);
-  assert.ok(Date.parse(row.expires_at) > Date.parse(oldExpiry));
+  assert.equal(row.claimId, id);
+  assert.ok(Date.parse(row.expiresAt) > Date.parse(oldExpiry));
 });
 
 test("heartbeat refuses an expired lease even while its stored status is open", async (t) => {
@@ -216,7 +234,7 @@ test("claim lazily expires only the matching civilization and resource", async (
     assert.equal(status.get(otherClaim)!.status, "open");
   });
   success(await f.run(["heartbeat", id]), "heartbeat", "not-open");
-  assert.deepEqual(claims(await f.run(["claims"])).map((row) => row.claim_id), [replacement]);
+  assert.deepEqual(claims(await f.run(["claims"])).map((row) => row.claimId), [replacement]);
 });
 
 test("claims excludes closed and elapsed leases without mutating elapsed open rows", async (t) => {
@@ -230,7 +248,7 @@ test("claims excludes closed and elapsed leases without mutating elapsed open ro
     database.prepare("UPDATE work_claims SET expires_at = ? WHERE claim_id = ?").run(expiredAt, elapsed);
   });
   for (const args of [["claims"], ["claims", civilizationId]]) {
-    assert.deepEqual(claims(await f.run(args)).map((row) => row.claim_id), [live]);
+    assert.deepEqual(claims(await f.run(args)).map((row) => row.claimId), [live]);
   }
   f.database(true, (database) => {
     assert.equal(database.prepare("SELECT status FROM work_claims WHERE claim_id = ?")
@@ -244,12 +262,12 @@ test("claims filters civilizations while allowing the same resource in each", as
   const second = await f.found();
   const one = claimId(await f.run(["claim", first, "resource:a", "agent:one"]));
   const two = claimId(await f.run(["claim", second, "resource:a", "agent:two"]));
-  assert.deepEqual(claims(await f.run(["claims"])).map((row) => row.claim_id), [one, two]);
+  assert.deepEqual(claims(await f.run(["claims"])).map((row) => row.claimId), [one, two]);
   for (const [civilizationId, id] of [[first, one], [second, two]] as const) {
     const rows = claims(await f.run(["claims", civilizationId]));
     assert.equal(rows.length, 1);
-    assert.equal(rows[0]!.claim_id, id);
-    assert.equal(rows[0]!.civilization_id, civilizationId);
+    assert.equal(rows[0]!.claimId, id);
+    assert.equal(rows[0]!.civilizationId, civilizationId);
   }
 });
 
@@ -295,7 +313,7 @@ test("concurrent same-resource claim subprocesses produce exactly one winner", a
     assert.equal(loser.code, 1, JSON.stringify(loser));
     assert.equal(loser.output.error, "work_claim_conflict");
   }
-  assert.deepEqual(claims(await f.run(["claims"])).map((row) => row.claim_id), [winner]);
+  assert.deepEqual(claims(await f.run(["claims"])).map((row) => row.claimId), [winner]);
   f.database(true, (database) => {
     assert.equal(database.prepare("SELECT count(*) AS count FROM work_claims").get()!.count, 1);
   });
@@ -424,7 +442,7 @@ for (const version of [0, 9, 13, 14]) {
     });
     success(await f.run(["resolve-authority", civilizationId]), "resolve-authority", "resolved");
     const id = claimId(await f.run(["claim", civilizationId, "resource:a", "agent:one"]));
-    assert.deepEqual(claims(await f.run(["claims", civilizationId])).map((row) => row.claim_id), [id]);
+    assert.deepEqual(claims(await f.run(["claims", civilizationId])).map((row) => row.claimId), [id]);
     const conflict = await f.run(["claim", civilizationId, "resource:a", "agent:two"]);
     assert.equal(conflict.code, 1);
     assert.equal(conflict.output.error, "work_claim_conflict");

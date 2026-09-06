@@ -520,6 +520,15 @@ export class ConnectionConflictError extends Error {
   }
 }
 
+export interface OpenWorkClaim {
+  claimId: string;
+  civilizationId: string;
+  resourceId: string;
+  claimedBy: string;
+  claimedAt: string;
+  expiresAt: string;
+}
+
 export class WorkClaimConflictError extends Error {
   readonly code = "work_claim_conflict";
 
@@ -897,8 +906,7 @@ export class ObservationStore {
       } catch (error) {
         if (
           error instanceof Error &&
-          "errcode" in error && error.errcode === 2067 &&
-          error.message === "UNIQUE constraint failed: work_claims.civilization_id, work_claims.resource_id"
+          "errcode" in error && error.errcode === 2067
         ) {
           throw new WorkClaimConflictError();
         }
@@ -929,24 +937,39 @@ export class ObservationStore {
       const result = this.#database
         .prepare(
           `UPDATE work_claims SET status = 'closed', closed_at = ?
-           WHERE claim_id = ? AND status = 'open'`,
+           WHERE claim_id = ? AND status = 'open' AND expires_at > ?`,
         )
-        .run(now.toISOString(), claimId);
+        .run(now.toISOString(), claimId, now.toISOString());
       return numberOfChanges(result) === 1;
     });
   }
 
-  queryOpenClaims(civilizationId?: string) {
+  queryOpenClaims(civilizationId?: string, now = new Date()): OpenWorkClaim[] {
     const statement = this.#database.prepare(
       `SELECT claim_id, civilization_id, resource_id, claimed_by, claimed_at, expires_at
        FROM work_claims WHERE status = 'open' AND expires_at > ?
        ${civilizationId === undefined ? "" : "AND civilization_id = ?"}
        ORDER BY claimed_at`,
     );
-    const timestamp = new Date().toISOString();
-    return civilizationId === undefined
+    const timestamp = now.toISOString();
+    const rows = (civilizationId === undefined
       ? statement.all(timestamp)
-      : statement.all(timestamp, civilizationId);
+      : statement.all(timestamp, civilizationId)) as {
+      claim_id: string;
+      civilization_id: string;
+      resource_id: string;
+      claimed_by: string;
+      claimed_at: string;
+      expires_at: string;
+    }[];
+    return rows.map((row) => ({
+      claimId: row.claim_id,
+      civilizationId: row.civilization_id,
+      resourceId: row.resource_id,
+      claimedBy: row.claimed_by,
+      claimedAt: row.claimed_at,
+      expiresAt: row.expires_at,
+    }));
   }
 
   redrawMandate(
