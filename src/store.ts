@@ -38,10 +38,11 @@ import {
   verificationFactKey,
 } from "./verification-facts.ts";
 
-const STORE_SCHEMA_VERSION = 14;
+const STORE_SCHEMA_VERSION = 15;
 const LEGACY_REBUILD_SCHEMA_VERSION = 9;
 const STORE_FILENAME = "observations.sqlite";
 const BUSY_RETRY_WINDOW_MILLISECONDS = 250;
+const WORK_CLAIM_TTL_MILLISECONDS = 30 * 60 * 1000; // 30 minutes, first guess
 const CONFIRMATION_CONTENTION_BUDGET_MILLISECONDS = 2_000;
 
 export function createCollectionContentionBudget(): ContentionBudget {
@@ -201,6 +202,26 @@ const CREATE_INSTITUTION = `
 
   CREATE INDEX IF NOT EXISTS mandate_revisions_current
     ON mandate_revisions(civilization_id, revision_order DESC);
+`;
+
+const CREATE_WORK_CLAIMS = `
+  CREATE TABLE IF NOT EXISTS work_claims (
+    claim_order INTEGER PRIMARY KEY,
+    claim_id TEXT NOT NULL UNIQUE,
+    civilization_id TEXT NOT NULL,
+    resource_id TEXT NOT NULL,
+    claimed_by TEXT NOT NULL,
+    claimed_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('open','closed','expired')),
+    closed_at TEXT,
+    FOREIGN KEY (civilization_id) REFERENCES civilizations(civilization_id)
+      ON DELETE CASCADE
+  ) STRICT;
+
+  CREATE UNIQUE INDEX IF NOT EXISTS work_claims_open_resource
+    ON work_claims(civilization_id, resource_id)
+    WHERE status = 'open';
 `;
 
 export interface ActiveConnection {
@@ -496,6 +517,15 @@ export class ConnectionConflictError extends Error {
   constructor(_connectionId: string) {
     super("A different configuration is already connected under this id");
     this.name = "ConnectionConflictError";
+  }
+}
+
+export class WorkClaimConflictError extends Error {
+  readonly code = "work_claim_conflict";
+
+  constructor() {
+    super("An open work claim already exists for this civilization and resource");
+    this.name = "WorkClaimConflictError";
   }
 }
 
@@ -819,6 +849,104 @@ export class ObservationStore {
       );
       return { civilizationId, mandateId };
     });
+  }
+
+  claimResource(
+    civilizationId: string,
+    resourceId: string,
+    claimedBy: string,
+    now = new Date(),
+  ): { claimId: string; resourceId: string; expiresAt: string } {
+    const timestamp = now.toISOString();
+    const expiresAt = new Date(now.getTime() + WORK_CLAIM_TTL_MILLISECONDS).toISOString();
+    const claimId = `claim:${randomUUID()}`;
+    return this.#transaction(() => {
+      const existing = this.#database
+        .prepare("SELECT 1 FROM civilizations WHERE civilization_id = ?")
+        .get(civilizationId);
+      if (existing === undefined) {
+        throw new CivilizationNotFoundError(civilizationId);
+      }
+      const previous = this.#database
+        .prepare(
+          `SELECT status FROM mandate_revisions WHERE civilization_id = ?
+           ORDER BY revision_order DESC LIMIT 1`,
+        )
+        .get(civilizationId) as { status: "active" | "dissolved" } | undefined;
+      if (previous === undefined) {
+        throw new MandateUnreadableError(civilizationId);
+      }
+      if (previous.status === "dissolved") {
+        throw new CivilizationDissolvedError(civilizationId);
+      }
+      this.#database
+        .prepare(
+          `UPDATE work_claims SET status = 'expired'
+           WHERE civilization_id = ? AND resource_id = ? AND status = 'open'
+             AND expires_at <= ?`,
+        )
+        .run(civilizationId, resourceId, timestamp);
+      try {
+        this.#database
+          .prepare(
+            `INSERT INTO work_claims
+             (claim_id, civilization_id, resource_id, claimed_by, claimed_at, expires_at, status)
+             VALUES (?, ?, ?, ?, ?, ?, 'open')`,
+          )
+          .run(claimId, civilizationId, resourceId, claimedBy, timestamp, expiresAt);
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          "errcode" in error && error.errcode === 2067 &&
+          error.message === "UNIQUE constraint failed: work_claims.civilization_id, work_claims.resource_id"
+        ) {
+          throw new WorkClaimConflictError();
+        }
+        throw error;
+      }
+      return { claimId, resourceId, expiresAt };
+    });
+  }
+
+  heartbeatClaim(claimId: string, now = new Date()): boolean {
+    return this.#transaction(() => {
+      const result = this.#database
+        .prepare(
+          `UPDATE work_claims SET expires_at = ?
+           WHERE claim_id = ? AND status = 'open' AND expires_at > ?`,
+        )
+        .run(
+          new Date(now.getTime() + WORK_CLAIM_TTL_MILLISECONDS).toISOString(),
+          claimId,
+          now.toISOString(),
+        );
+      return numberOfChanges(result) === 1;
+    });
+  }
+
+  releaseClaim(claimId: string, now = new Date()): boolean {
+    return this.#transaction(() => {
+      const result = this.#database
+        .prepare(
+          `UPDATE work_claims SET status = 'closed', closed_at = ?
+           WHERE claim_id = ? AND status = 'open'`,
+        )
+        .run(now.toISOString(), claimId);
+      return numberOfChanges(result) === 1;
+    });
+  }
+
+  queryOpenClaims(civilizationId?: string) {
+    const statement = this.#database.prepare(
+      `SELECT claim_id, civilization_id, resource_id, claimed_by, claimed_at, expires_at
+       FROM work_claims WHERE status = 'open' AND expires_at > ?
+       ${civilizationId === undefined ? "" : "AND civilization_id = ?"}
+       ORDER BY claimed_at`,
+    );
+    const timestamp = new Date().toISOString();
+    return civilizationId === undefined
+      ? statement.all(timestamp)
+      : statement.all(timestamp, civilizationId);
   }
 
   redrawMandate(
@@ -1232,7 +1360,7 @@ export class ObservationStore {
           now.toISOString(),
         ),
         consequence:
-          "This permanently deletes the named civilization and its entire mandate revision chain. The deletion record remains, but Ecosym cannot restore the civilization's identifiers, revision chain, or recorded instants, and later petition attribution can become unverifiable.",
+          "This permanently deletes the named civilization, its entire mandate revision chain, and any recorded work claims for the civilization. The deletion record remains, but Ecosym cannot restore the civilization's identifiers, revision chain, or recorded instants, and later petition attribution can become unverifiable.",
         forgottenBy,
       };
     });
@@ -2469,6 +2597,10 @@ export class ObservationStore {
       this.#migrateSchemaThirteen();
       return;
     }
+    if (version.user_version === 14) {
+      this.#migrateSchemaFourteen();
+      return;
+    }
     if (version.user_version === 12) {
       this.#transaction(() => {
         this.#database.exec(`
@@ -2577,6 +2709,7 @@ export class ObservationStore {
         ${CREATE_CONFIRMATION_PREVIEWS}
 
         ${CREATE_INSTITUTION}
+        ${CREATE_WORK_CLAIMS}
         ${CREATE_OWNED_STATE_EXPORTS}
         ${CREATE_FORGET_RECORDS}
         ${CREATE_CIVILIZATION_FORGET_RECORDS}
@@ -2890,11 +3023,12 @@ export class ObservationStore {
         this.#database.exec(CREATE_OWNED_STATE_EXPORTS);
         this.#database.exec(CREATE_FORGET_RECORDS);
         this.#database.exec(CREATE_CIVILIZATION_FORGET_RECORDS);
-        this.#database.exec(`PRAGMA user_version = ${STORE_SCHEMA_VERSION}`);
+        this.#database.exec("PRAGMA user_version = 14");
       });
     } finally {
       this.#database.exec("PRAGMA foreign_keys = ON");
     }
+    this.#migrateSchemaFourteen();
   }
 
   #migrateSchemaThirteen(): void {
@@ -2914,6 +3048,14 @@ export class ObservationStore {
         );
       }
       this.#database.exec(CREATE_CIVILIZATION_FORGET_RECORDS);
+      this.#database.exec("PRAGMA user_version = 14");
+    });
+    this.#migrateSchemaFourteen();
+  }
+
+  #migrateSchemaFourteen(): void {
+    this.#transaction(() => {
+      this.#database.exec(CREATE_WORK_CLAIMS);
       this.#database.exec(`PRAGMA user_version = ${STORE_SCHEMA_VERSION}`);
     });
   }

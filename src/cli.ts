@@ -62,6 +62,10 @@ async function run(arguments_: string[]): Promise<CommandResult> {
           "found",
           "redraw",
           "dissolve",
+          "claim",
+          "heartbeat",
+          "release",
+          "claims",
           "resolve-authority",
           "collect",
           "status",
@@ -92,6 +96,14 @@ async function run(arguments_: string[]): Promise<CommandResult> {
         return await redraw(store, arguments_.slice(1));
       case "dissolve":
         return dissolve(store, arguments_.slice(1));
+      case "claim":
+        return claim(store, arguments_.slice(1));
+      case "heartbeat":
+        return heartbeat(store, arguments_.slice(1));
+      case "release":
+        return release(store, arguments_.slice(1));
+      case "claims":
+        return claims(store, arguments_.slice(1));
       case "resolve-authority":
         return resolveAuthority(store, arguments_.slice(1));
       case "collect":
@@ -222,6 +234,67 @@ function dissolve(store: ObservationStore, arguments_: string[]): CommandResult 
       command: "dissolve",
       outcome: store.dissolveCivilization(civilizationId) ? "dissolved" : "not-founded",
       civilizationId,
+    },
+  };
+}
+
+function claim(store: ObservationStore, arguments_: string[]): CommandResult {
+  if (arguments_.length !== 3) {
+    return invalidArguments("claim");
+  }
+  const civilizationId = arguments_[0] as string;
+  const claimed = store.claimResource(
+    civilizationId, arguments_[1] as string, arguments_[2] as string,
+  );
+  return {
+    exitCode: 0,
+    output: { schemaVersion: 1, command: "claim", outcome: "claimed", civilizationId, ...claimed },
+  };
+}
+
+function heartbeat(store: ObservationStore, arguments_: string[]): CommandResult {
+  if (arguments_.length !== 1) {
+    return invalidArguments("heartbeat");
+  }
+  const claimId = arguments_[0] as string;
+  return {
+    exitCode: 0,
+    output: {
+      schemaVersion: 1,
+      command: "heartbeat",
+      outcome: store.heartbeatClaim(claimId) ? "extended" : "not-open",
+      claimId,
+    },
+  };
+}
+
+function release(store: ObservationStore, arguments_: string[]): CommandResult {
+  if (arguments_.length !== 1) {
+    return invalidArguments("release");
+  }
+  const claimId = arguments_[0] as string;
+  return {
+    exitCode: 0,
+    output: {
+      schemaVersion: 1,
+      command: "release",
+      outcome: store.releaseClaim(claimId) ? "released" : "not-open",
+      claimId,
+    },
+  };
+}
+
+function claims(store: ObservationStore, arguments_: string[]): CommandResult {
+  if (arguments_.length > 1) {
+    return invalidArguments("claims");
+  }
+  return {
+    exitCode: 0,
+    output: {
+      schemaVersion: 1,
+      command: "claims",
+      outcome: "success",
+      claims: store.queryOpenClaims(arguments_[0]),
     },
   };
 }
