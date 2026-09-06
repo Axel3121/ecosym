@@ -559,3 +559,4 @@ Create a configuration in the state directory or pass it on standard input,
 then run `connect`, `collect`, and `verify`. A new source whose shape fits one of
 the declarative readers costs only that configuration. It does not require a
 change to the store, query, collector, or reader packages.
+See [Runtime bridge](runtime-bridge.md) for the convention for observing a runtime's own SQLite state, with a synthetic-tested Hermes example.
