@@ -1758,7 +1758,53 @@ test("a collection within the contention budget still completes", async () => {
   }
 });
 
+function observeWaitsAgainstRealLock(configuredMilliseconds: number) {
+  const exec = DatabaseSync.prototype.exec;
+  const requestedWaits: number[] = [];
+  let inForceMilliseconds = configuredMilliseconds;
+  let observing = false;
+
+  DatabaseSync.prototype.exec = function (sql: string): void {
+    const pragma = /^PRAGMA busy_timeout = (\d+)$/.exec(sql);
+    if (pragma !== null) {
+      inForceMilliseconds = Number(pragma[1]);
+      exec.call(this, sql);
+      return;
+    }
+    if (observing && sql === "BEGIN IMMEDIATE") {
+      requestedWaits.push(inForceMilliseconds);
+    }
+    exec.call(this, sql);
+  };
+
+  return {
+    beginObserving: () => {
+      observing = true;
+    },
+    inForceMilliseconds: () => inForceMilliseconds,
+    requestedWaits,
+    restore: () => {
+      DatabaseSync.prototype.exec = exec;
+    },
+  };
+}
+
 test("store contention returns a bounded machine-readable failure", async () => {
+  // Pinned to a literal on purpose. The assertions below compare against the
+  // real busy_timeout SQLite was asked for, not against how long the machine
+  // actually took -- so a widened window must fail HERE, immediately, or a
+  // regression that makes contention resolution correct-but-arbitrarily-slow
+  // would sail through undetected. Measured: a synchronous SQLite busy wait
+  // blocks the event loop, so when the retry loop's promise finally settles,
+  // its reaction is a microtask that always runs before an overdue macrotask
+  // timer -- a `Promise.race` against a wall-clock deadline cannot bound this
+  // property, however long the deadline is (verified: widening the window to
+  // 2000ms still resolves "store_contention" successfully after ~2000ms,
+  // i.e. a 750ms deadline race does not fire). This literal pin is what
+  // makes "bounded" a real, categorical guarantee instead of a race that
+  // never wins.
+  assert.equal(contentionWindowMilliseconds, 250);
+
   const directory = mkdtempSync(join(tmpdir(), "ecosym-store-contention-bound-"));
   const store = new ObservationStore(directory);
   const parsed = connection();
@@ -1766,29 +1812,54 @@ test("store contention returns a bounded machine-readable failure", async () => 
   const active = store.getConnection(parsed.config.id);
   const blocker = new DatabaseSync(store.path);
   blocker.exec("BEGIN IMMEDIATE");
-  const startedAt = Date.now();
-  const collection = store.collect(active, () => undefined);
-  const outcome = await Promise.race([
-    collection.then(
-      () => "success",
-      (error: unknown) =>
-        error !== null && typeof error === "object" && "code" in error
-          ? String(error.code)
-          : "unclassified_failure",
-    ),
-    delay(750).then(() => "deadline"),
-  ]);
-  const elapsedMilliseconds = Date.now() - startedAt;
+  const observed = observeWaitsAgainstRealLock(contentionWindowMilliseconds);
+  // A hang guard, not a timing assertion: correct code settles in ~250ms, so
+  // this bound is generous and cannot discriminate between implementations
+  // by itself -- it exists only so a retry loop that never terminates fails
+  // this test instead of hanging the whole runner. The real, categorical
+  // guard against a "too slow" (not just "never returns") regression is the
+  // literal pin above plus the requestedWaits assertion below.
+  const hangGuard = new AbortController();
+  let outcome = "success";
+  observed.beginObserving();
+  const collection = store.collect(active, () => undefined).then(
+    () => "success",
+    (error: unknown) =>
+      error !== null && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : "unclassified_failure",
+  );
+  try {
+    outcome = await Promise.race([
+      collection,
+      delay(10_000, "hang_guard_deadline", { signal: hangGuard.signal }).catch(
+        () => "hang_guard_aborted",
+      ),
+    ]);
+  } finally {
+    hangGuard.abort();
+    observed.restore();
+  }
   blocker.exec("ROLLBACK");
   blocker.close();
+  // store.collect() has no cancellation signal, so a losing collection from
+  // the hang guard above cannot be aborted -- only awaited out. Without this,
+  // a hung collection would keep running against `store` after store.close()
+  // below, and any resulting rejection would be unhandled. Waiting here first
+  // guarantees the collection has actually settled before shared resources
+  // (the blocker connection above, the store below) are torn down.
   await collection.catch(() => undefined);
 
   try {
     assert.equal(outcome, "store_contention");
-    // The synchronous SQLite busy handler prevents the 750 ms race timer from
-    // firing while contention is active, so that deadline does not guard this test.
-    // Regression coverage comes from the outcome equality and this time bound.
-    assert.ok(elapsedMilliseconds < 350);
+    // One real SQLite wait of the full window, then the budget is spent. A
+    // connection that never received the configured busy timeout, or that
+    // failed to clamp a widened window, produces a different wait here --
+    // this is the same discriminator that catches a widened-window mutant,
+    // now checked against the actual value SQLite was told to wait for
+    // rather than against how long the wait happened to take.
+    assert.deepEqual(observed.requestedWaits, [contentionWindowMilliseconds]);
+    assert.equal(observed.inForceMilliseconds(), contentionWindowMilliseconds);
   } finally {
     store.close();
   }
