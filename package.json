@@ -7,6 +7,7 @@
     "node": ">=24"
   },
   "scripts": {
+    "audit": "npm audit --include=dev --audit-level=high",
     "check": "npm run typecheck && npm test",
     "ecosym": "node src/cli.ts",
     "test": "node -e \"const { globSync } = require('node:fs'); if (globSync('test/*.test.ts').length === 0) throw new Error('no tests discovered')\" && node --test --test-reporter=spec test/*.test.ts",

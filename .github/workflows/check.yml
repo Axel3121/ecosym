@@ -32,7 +32,8 @@ jobs:
       - name: install
         run: npm ci
 
-      - name: audit dependencies
+      # All current dependencies are development dependencies; there are no runtime dependencies.
+      - name: audit dependencies (dev - no runtime dependencies exist)
         run: npm audit --include=dev --audit-level=high
 
       - name: check
