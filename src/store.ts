@@ -2143,21 +2143,35 @@ export class ObservationStore {
       if (physicalLineFacts.length !== recordOrdinalFacts.length) {
         return false;
       }
-      const agreedFactKeys = new Set<string>();
+      const agreedFactPositions = new Map<string, number>();
       for (let index = 0; index < physicalLineFacts.length; index += 1) {
         const physicalLines = verificationFactsFromInputs(physicalLineFacts[index]!, config);
         const recordOrdinals = verificationFactsFromInputs(recordOrdinalFacts[index]!, config);
         if (sameVerificationFactSet(physicalLines, recordOrdinals)) {
           for (const fact of physicalLines) {
-            agreedFactKeys.add(verificationFactKey(fact));
+            const key = verificationFactKey(fact);
+            const existingPosition = agreedFactPositions.get(key);
+            if (existingPosition !== undefined && existingPosition !== index) {
+              return false;
+            }
+            agreedFactPositions.set(key, index);
           }
         }
       }
       const snapshot = this.#verificationSnapshot(connection);
+      const storedFactPositions = new Set<number>();
       if (
         !snapshot.payloadHashesValid ||
         !snapshot.sourceTimeKeysValid ||
-        !snapshot.facts.every((fact) => agreedFactKeys.has(verificationFactKey(fact)))
+        !snapshot.facts.every((fact) => {
+          const position = agreedFactPositions.get(verificationFactKey(fact));
+          if (position === undefined) {
+            return false;
+          }
+          storedFactPositions.add(position);
+          return true;
+        }) ||
+        ![...storedFactPositions].every((position) => position < storedFactPositions.size)
       ) {
         return false;
       }

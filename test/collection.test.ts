@@ -835,6 +835,119 @@ test("a schema-six physical-line store resolves after an append", async () => {
   }
 });
 
+test("a schema-six physical-line store refuses a rewritten source", async () => {
+  const directory = workspace();
+  const stateDirectory = join(directory, "state");
+  const sourcePath = join(directory, "records.jsonl");
+  writeFileSync(
+    sourcePath,
+    '{"subject":"beta","value":2}\n\n{"subject":"alpha","value":1}\n',
+  );
+  const parsed = indexedJsonlConnection(sourcePath);
+  const oldStore = new ObservationStore(stateDirectory);
+  oldStore.register(parsed);
+  await oldStore.collect(oldStore.getConnection(parsed.config.id), (sink) => {
+    for (const [recordIndex, line] of readFileSync(sourcePath, "utf8").split("\n").entries()) {
+      if (line.trim() === "") {
+        continue;
+      }
+      const record = JSON.parse(line) as Record<string, unknown>;
+      sink.recordSourceRecord(() =>
+        materializeFacts(parsed.config, {
+          meta: { recordIndex, sourcePath },
+          numericLexemes: null,
+          record,
+          root: record,
+        }),
+      );
+    }
+  });
+  const identities = oldStore.queryObservations().map((fact) => fact.sourceRecordId);
+  oldStore.close();
+  markStoreAsSchemaSix(stateDirectory);
+  writeFileSync(
+    sourcePath,
+    '{"subject":"beta","value":2}\n{"subject":"gamma","value":3}\n{"subject":"alpha","value":1}\n',
+  );
+
+  const migrated = new ObservationStore(stateDirectory);
+  try {
+    const verification = await verifyConnection(
+      migrated,
+      migrated.getConnection(parsed.config.id),
+    );
+    assert.equal(migrated.getConnection(parsed.config.id).jsonlRecordIndexMode, "unknown");
+    assert.equal(verification.outcome, "unread");
+    assert.equal(verification.unreadReason, "store_record_index_mode_unknown");
+    await assert.rejects(collectConnection(migrated, parsed.config.id), {
+      code: "store_record_index_mode_unknown",
+    });
+    assert.deepEqual(
+      migrated.queryObservations().map((fact) => fact.sourceRecordId),
+      identities,
+    );
+    assert.equal(migrated.statuses()[0]?.reason, "record-index-unknown");
+  } finally {
+    migrated.close();
+  }
+});
+
+test("a schema-six physical-line store resolves with a blank line after its records", async () => {
+  const directory = workspace();
+  const stateDirectory = join(directory, "state");
+  const sourcePath = join(directory, "records.jsonl");
+  writeFileSync(
+    sourcePath,
+    '{"subject":"alpha","value":1}\n{"subject":"beta","value":2}\n',
+  );
+  const parsed = indexedJsonlConnection(sourcePath);
+  const oldStore = new ObservationStore(stateDirectory);
+  oldStore.register(parsed);
+  await oldStore.collect(oldStore.getConnection(parsed.config.id), (sink) => {
+    for (const [recordIndex, line] of readFileSync(sourcePath, "utf8").split("\n").entries()) {
+      if (line.trim() === "") {
+        continue;
+      }
+      const record = JSON.parse(line) as Record<string, unknown>;
+      sink.recordSourceRecord(() =>
+        materializeFacts(parsed.config, {
+          meta: { recordIndex, sourcePath },
+          numericLexemes: null,
+          record,
+          root: record,
+        }),
+      );
+    }
+  });
+  const identities = oldStore.queryObservations().map((fact) => fact.sourceRecordId);
+  oldStore.close();
+  markStoreAsSchemaSix(stateDirectory);
+  writeFileSync(
+    sourcePath,
+    '{"subject":"alpha","value":1}\n{"subject":"beta","value":2}\n\n{"subject":"gamma","value":3}\n',
+  );
+
+  const migrated = new ObservationStore(stateDirectory);
+  try {
+    await verifyConnection(migrated, migrated.getConnection(parsed.config.id));
+    assert.equal(
+      migrated.getConnection(parsed.config.id).jsonlRecordIndexMode,
+      "record-ordinal",
+    );
+    const collected = await collectConnection(migrated, parsed.config.id);
+    assert.ok(collected.result.factsAdded > 0);
+    assert.deepEqual(
+      migrated
+        .queryObservations()
+        .slice(0, 2)
+        .map((fact) => fact.sourceRecordId),
+      identities,
+    );
+  } finally {
+    migrated.close();
+  }
+});
+
 test("a schema-six physical-line store with an interior blank refuses an append", async () => {
   const directory = workspace();
   const stateDirectory = join(directory, "state");
