@@ -184,6 +184,14 @@ test("heartbeat extends a live lease", async (t) => {
   assert.ok(Date.parse(row.expiresAt) > Date.parse(oldExpiry));
 });
 
+test("heartbeat refuses a claim after its civilization is dissolved", async (t) => {
+  const f = fixture(t);
+  const civilizationId = await f.found();
+  const id = claimId(await f.run(["claim", civilizationId, "resource:a", "agent:one"]));
+  success(await f.run(["dissolve", civilizationId]), "dissolve", "dissolved");
+  success(await f.run(["heartbeat", id]), "heartbeat", "not-open");
+});
+
 test("heartbeat refuses an expired lease even while its stored status is open", async (t) => {
   const f = fixture(t);
   const civilizationId = await f.found();

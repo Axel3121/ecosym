@@ -918,6 +918,21 @@ export class ObservationStore {
 
   heartbeatClaim(claimId: string, now = new Date()): boolean {
     return this.#transaction(() => {
+      const claim = this.#database
+        .prepare("SELECT civilization_id FROM work_claims WHERE claim_id = ?")
+        .get(claimId) as { civilization_id: string } | undefined;
+      if (claim === undefined) {
+        return false;
+      }
+      const previous = this.#database
+        .prepare(
+          `SELECT status FROM mandate_revisions WHERE civilization_id = ?
+           ORDER BY revision_order DESC LIMIT 1`,
+        )
+        .get(claim.civilization_id) as { status: "active" | "dissolved" } | undefined;
+      if (previous?.status === "dissolved") {
+        return false;
+      }
       const result = this.#database
         .prepare(
           `UPDATE work_claims SET expires_at = ?
