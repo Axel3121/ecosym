@@ -289,7 +289,7 @@ failed source read does not demote previously collected facts: they retain their
 older boundary, while connection health shows `unread` and narration is partial.
 Both CLI commands include the same `currentnessCaveat`:
 
-> Temporal status describes stored collection evidence, not live source truth. Each fact's collectionAsOf identifies the latest successful collection in its last-seen connection/configuration lifetime; null means that boundary is unknown. Verify is an ephemeral audit and does not reconcile this picture; recollect to advance it. Data completeness describes only the stored picture, not live verification.
+> Temporal status describes stored collection evidence, not live source truth. Each fact's collectionAsOf identifies the latest successful collection in its last-seen connection/configuration/activation lifetime; null means that boundary is unknown. Verify is an ephemeral audit and does not reconcile this picture; recollect to advance it. Data completeness describes only the stored picture, not live verification.
 
 ### Narrate
 
