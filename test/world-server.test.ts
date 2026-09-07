@@ -125,10 +125,16 @@ test("invalid source shapes and thrown failures produce sanitized errors, never 
 });
 
 test("shared validator rejects closed-shape violations and normalizes unknown bodies without aliases", () => {
-  for (const value of [null, [], {}, { ...snapshot(), schemaVersion: 2 },
+  for (const value of [undefined, null, false, 0, "snapshot", [], {}, { ...snapshot(), schemaVersion: 2 },
     { ...snapshot(), extra: true }, { schemaVersion: 1, civilizations: [] },
+    { ...snapshot(), observationsTruncated: "false" }, { ...snapshot(), claimsTruncated: "false" },
     ...invalidEntries.map((entry) => ({ ...snapshot(), civilizations: [entry] }))]) {
     assert.throws(() => validateWorldSnapshot(value));
+  }
+  for (const field of Object.keys(snapshot())) {
+    const missing: Record<string, unknown> = { ...snapshot() };
+    delete missing[field];
+    assert.throws(() => validateWorldSnapshot(missing), `missing required top-level field: ${field}`);
   }
   const accessor = { ...entry };
   Object.defineProperty(accessor, "name", { get() { throw new Error("must not execute getter"); } });
@@ -200,6 +206,9 @@ test("static assets use realpath containment and reject raw, encoded, and symlin
 });
 
 test("launcher defaults to an ephemeral loopback port and closes an isolated store on SIGTERM", async (t) => {
+  // Pin path wiring without requiring a pre-existing build in this launcher test.
+  assert.match(await fs.readFile("src/world-main.ts", "utf8"),
+    /createWorldServer\(\(\) => composeWorldSnapshot\(store\), fileURLToPath\(new URL\("\.\.\/dist\/world\/", import\.meta\.url\)\)\)/u);
   const directory = temporary(t);
   const child = spawn(process.execPath, ["src/world-main.ts"], {
     env: { ...process.env, XDG_DATA_HOME: directory }, stdio: ["ignore", "pipe", "pipe"],

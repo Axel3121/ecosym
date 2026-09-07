@@ -72,8 +72,14 @@ composition, and store access remain in `src/`, independent of React.
 
 `test/world-frontend.test.ts` builds into a fresh temporary directory, serves it
 through the real world-server, and renders the root in Chromium at desktop and
-mobile sizes under the production CSP. It also verifies HMR against an isolated
-copy of the frontend. No personal stores are read by these tests. The old canvas
+mobile sizes under the production CSP, permitting only document and built-script
+requests. It separately loads the committed dev config without root, filesystem,
+host, or port overrides and checks for errors and API/data requests. Stop any
+running dev server before testing: this check requires port 5173 to be free.
+Fast Refresh is verified against an isolated copy of the frontend, not the
+unmodified config. The manifest wiring guard checks script strings only;
+`npm run check` supplies execution evidence. No personal stores are read by these
+tests. The old canvas
 placement, inspection UI, and client-state tests were retired with that UI;
 core form, snapshot, transition, and server security tests remain in the suite.
 

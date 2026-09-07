@@ -53,20 +53,57 @@ test("a clean production bundle renders the blank React root through the world s
   for (const viewport of [{ width: 1280, height: 800 }, { width: 375, height: 667 }]) {
     const page = await browser.newPage({ viewport });
     const errors: string[] = [];
+    const requests: { url: string; method: string; type: string }[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+    page.on("request", (request) => requests.push({ url: request.url(), method: request.method(), type: request.resourceType() }));
     await page.goto(url);
     await page.locator('#root > main[aria-label="EcoSym"]').waitFor({ state: "attached" });
     assert.equal(await page.title(), "EcoSym");
     assert.equal(await page.locator("body").innerText(), "");
     assert.equal(await page.locator("main").innerHTML(), "");
+    await page.waitForLoadState("networkidle");
+    assert.deepEqual(requests, [
+      { url: `${url}/`, method: "GET", type: "document" },
+      { url: `${url}${script}`, method: "GET", type: "script" },
+    ]);
     assert.deepEqual(errors, []);
     await page.close();
   }
   assert.equal(reads, 0);
 });
 
-test("Vite serves the blank root and hot-refreshes an isolated component without navigation", { timeout: 60000 }, async (t) => {
+test("the committed Vite dev config renders the blank root without errors or API requests", { timeout: 60000 }, async (t) => {
+  const server = await createServer({ configFile: resolve("vite.config.ts") });
+  t.after(() => server.close());
+  await server.listen();
+  const address = server.httpServer!.address();
+  assert.ok(address && typeof address !== "string");
+  assert.equal(address.address, "127.0.0.1");
+  assert.equal(address.port, 5173);
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const errors: string[] = [];
+  const dataRequests: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname.startsWith("/api/") || ["fetch", "xhr"].includes(request.resourceType())) {
+      dataRequests.push(request.url());
+    }
+  });
+  await page.goto(`http://127.0.0.1:${address.port}`);
+  await page.locator('#root > main[aria-label="EcoSym"]').waitFor({ state: "attached" });
+  assert.equal(await page.title(), "EcoSym");
+  assert.equal(await page.locator("body").innerText(), "");
+  assert.equal(await page.locator("main").innerHTML(), "");
+  await page.waitForLoadState("networkidle");
+  assert.deepEqual(errors, []);
+  assert.deepEqual(dataRequests, []);
+});
+
+test("Vite hot-refreshes an isolated frontend copy without navigation", { timeout: 60000 }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "ecosym-hmr-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const root = join(directory, "web");
@@ -111,7 +148,7 @@ test("Vite serves the blank root and hot-refreshes an isolated component without
   assert.deepEqual(apiRequests, []);
 });
 
-test("check retains both typechecks, the full test suite, and the production build", async () => {
+test("manifest wiring guard keeps check connected to both typechecks, tests, and the production build", async () => {
   const { scripts } = JSON.parse(await readFile("package.json", "utf8"));
   assert.equal(scripts.check, "npm run typecheck && npm run typecheck:world && npm test && npm run build:world");
   assert.equal(scripts["build:world"], "vite build");
