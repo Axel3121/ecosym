@@ -182,13 +182,16 @@ When a source has no timestamp, configure:
 ```
 
 The store then keeps source time as null and makes no claim about which point is
-current. Collection time is still recorded as when Ecosym looked, but is never
+current. Such a fact remains `unknown` unless a later exhaustive collection in
+the same lifetime establishes its absence, making it `historical`.
+Collection time is still recorded as when Ecosym looked, but is never
 substituted for source time. Where source time exists it controls temporal
 ordering, so a late older value remains historical.
 
 Two payloads under the same source identity and source time are corrections,
 not later time-series points. The payload seen by the highest admitted
-collection attempt is current; older payloads remain queryable as historical.
+successful collection attempt is current relative to stored collection evidence,
+unless a later complete collection establishes its absence; older payloads remain queryable as historical.
 Concurrent attempts cannot move that order backward, and a configuration
 revision does not split a fact's correction history. Correction slots remain
 scoped to one connection, so source-local record IDs in two connections cannot
@@ -258,6 +261,36 @@ payload. Completed civilization deletion records appear under
 `civilizationForgetRecords`; they retain the actor, time, civilization ID,
 revision identities, counts, inventory digest, and presented export digest.
 
+### Query Currentness
+
+`query` and `narrate` read stored state only, never live sources. Each returned
+fact carries `collectionAsOf`: `attemptId`, `activationId`, `startedAt`, and
+`completedAt` of the highest-order successful collection in the fact's last-seen
+connection/configuration/activation lifetime. This is a collection interval, not
+an assertion that the source was unchanged during or after that read. The order
+is the store's monotone admission order, not completion time or wall-clock order.
+If stored last-seen evidence cannot establish that lifetime, the boundary is
+null. `collectedAt` is retained provenance, not this freshness boundary.
+
+The current readers exhaust the configured table, file, or file-set, with no
+pagination, filter, or time window. A later successful attempt in that same
+lifetime that does not see a fact therefore makes it `historical`, even without
+a successor. This means previously seen but known not-current in that collected
+picture; it does not assert deletion or inactivity in the external domain.
+Re-seeing the identical fact can restore currentness without deleting history,
+subject to the existing source-time and correction ordering rules. Failed,
+skipped, retired, and running attempts do not establish absence. Neither do
+attempts in other configurations or activations, or stale collectors refused at
+commit. Until re-seen after reconnect, a prior activation's fact retains its old
+boundary; a successful empty read in a new activation does not rewrite it.
+
+`unknown` still means insufficient temporal evidence, not proven absence. A
+failed source read does not demote previously collected facts: they retain their
+older boundary, while connection health shows `unread` and narration is partial.
+Both CLI commands include the same `currentnessCaveat`:
+
+> Temporal status describes stored collection evidence, not live source truth. Each fact's collectionAsOf identifies the latest successful collection in its last-seen connection/configuration lifetime; null means that boundary is unknown. Verify is an ephemeral audit and does not reconcile this picture; recollect to advance it. Data completeness describes only the stored picture, not live verification.
+
 ### Narrate
 
 `narrate` correlates connection health (`connections`, from the same
@@ -283,7 +316,10 @@ connection, kind, or subject filters; use the existing `query` command for those
 `record-index-unknown`), any current-activation attempt is recorded as running,
 or either fact list was truncated by `--limit`. It is `"complete"` only when none
 of those conditions holds, including for an empty store. This describes the
-stored picture, not independently verified source truth. It directly combines
+stored picture, not independently verified source truth. A successful empty
+recollection may leave a complete picture containing historical facts; this does
+not mean those facts are still present at the source. `collectionAsOf` and
+`currentnessCaveat` have the same meaning as in `query`. It directly combines
 existing fields and truncation signals, never inferring success from fact
 content, implementing [PRODUCT.md#L51](../PRODUCT.md#L51): "Never operational
 success it inferred."
@@ -454,6 +490,15 @@ An export destination that cannot be written is reported as
 ## Verification result
 
 Verification rereads every active source and emits schema version 1:
+
+Its report is an ephemeral audit: verification does not persist the report,
+collect facts, delete history, or reconcile query/narrate currentness. A
+`missingAtSource` report can therefore coexist with an older collected picture
+whose fact was `current` as of its `collectionAsOf`. Recollection, not verification,
+advances that picture. The existing legacy record-index disambiguation may still
+record a proven index mode; this is not persistence of verification results.
+Verification retains its retention/correction comparison rules even when a fact
+is now historical because a complete collection did not see it.
 
 ```json
 {

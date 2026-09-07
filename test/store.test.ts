@@ -1165,6 +1165,91 @@ test("a successful empty repeat is quiet rather than unread", async () => {
   }
 });
 
+test("collection currentness follows successful attempt order within the last-seen lifetime", async () => {
+  const { store } = temporaryStore();
+  try {
+    const parsed = connection();
+    store.register(parsed);
+    const active = store.getConnection(parsed.config.id);
+    const seen = (sink: Parameters<Parameters<typeof store.collect>[1]>[0]) => {
+      sink.recordSourceRecord(() => [fact()]);
+    };
+    await store.collect(active, seen);
+    const initial = store.queryObservations()[0];
+    assert.equal(initial?.temporalStatus, "current");
+    await assert.rejects(store.collect(active, () => { throw new Error("synthetic failure"); }));
+    store.recordSkipped(active, "already_collecting");
+    assert.deepEqual(store.queryObservations()[0], initial);
+
+    const retirementReady = Promise.withResolvers<void>();
+    const retirementRelease = Promise.withResolvers<void>();
+    const retired = store.collect(active, async () => {
+      retirementReady.resolve();
+      await retirementRelease.promise;
+    });
+    await retirementReady.promise;
+    const running = store.collectionAttempts().find((attempt) => attempt.outcome === "running");
+    assert.ok(running);
+    const plan = store.planCollectionAttemptRetirement(running.attemptId, "operator:synthetic");
+    await store.retireCollectionAttempt(plan.attemptId, plan.retiredBy, plan.confirmationToken);
+    retirementRelease.resolve();
+    await assert.rejects(retired);
+    assert.deepEqual(store.queryObservations()[0], initial);
+
+    const ready = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const older = store.collect(active, async (sink) => {
+      seen(sink);
+      ready.resolve();
+      await release.promise;
+    });
+    await ready.promise;
+    assert.deepEqual(store.queryObservations()[0], initial);
+    await store.collect(active, () => undefined);
+    release.resolve();
+    await older;
+    assert.equal(store.queryObservations()[0]?.temporalStatus, "historical");
+    await store.collect(active, seen);
+    assert.equal(store.queryObservations()[0]?.temporalStatus, "current");
+    assert.equal(store.queryObservations()[0]?.id, initial?.id);
+    assert.equal(store.countFacts(), 1);
+
+    const emptyReady = Promise.withResolvers<void>();
+    const emptyRelease = Promise.withResolvers<void>();
+    const olderEmpty = store.collect(active, async () => {
+      emptyReady.resolve();
+      await emptyRelease.promise;
+    }, () => new Date("2026-09-05T00:00:00Z"));
+    await emptyReady.promise;
+    await store.collect(active, seen, () => new Date("2026-09-04T00:00:00Z"));
+    emptyRelease.resolve();
+    await olderEmpty;
+    assert.equal(store.queryObservations()[0]?.temporalStatus, "current");
+
+    const beforeReconnect = store.queryObservations()[0];
+    const staleReady = Promise.withResolvers<void>();
+    const staleRelease = Promise.withResolvers<void>();
+    const stale = store.collect(active, async () => {
+      staleReady.resolve();
+      await staleRelease.promise;
+    });
+    await staleReady.promise;
+    store.disconnect(parsed.config.id);
+    store.register(parsed);
+    staleRelease.resolve();
+    await assert.rejects(stale, { code: "connection_inactive" });
+    assert.deepEqual(store.queryObservations()[0], beforeReconnect);
+    await store.collect(store.getConnection(parsed.config.id), () => undefined);
+    assert.deepEqual(store.queryObservations()[0], beforeReconnect);
+    store.disconnect(parsed.config.id);
+    store.register(connection("source-a", "other-owner"));
+    await store.collect(store.getConnection(parsed.config.id), () => undefined);
+    assert.deepEqual(store.queryObservations()[0], beforeReconnect);
+  } finally {
+    store.close();
+  }
+});
+
 test("a skipped attempt is unread", () => {
   const { store } = temporaryStore();
   try {

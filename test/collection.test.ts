@@ -244,6 +244,11 @@ test("keeps changing values as a source-time series and does not promote a late 
     update.close();
     await collectConnection(store, parsed.config.id);
 
+    assert.deepEqual(
+      store.queryObservations().map((point) => [point.payload.value, point.temporalStatus]),
+      [[7, "historical"], [12, "current"]],
+    );
+
     const late = new DatabaseSync(sourcePath);
     late
       .prepare("UPDATE measurements SET measured_at = ?, public_value = ? WHERE record_id = ?")
@@ -252,11 +257,13 @@ test("keeps changing values as a source-time series and does not promote a late 
     await collectConnection(store, parsed.config.id);
 
     const series = store.queryObservations();
+    // The latest source-time point disappeared in the exhaustive read; the
+    // late older point still cannot become current merely by being collected.
     assert.deepEqual(
       series.map((point) => [point.payload.value, point.temporalStatus]),
       [
         [7, "historical"],
-        [12, "current"],
+        [12, "historical"],
         [5, "historical"],
       ],
     );

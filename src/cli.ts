@@ -43,6 +43,13 @@ const querySurfaceByEpistemicStatus: {
   },
 };
 
+const currentnessCaveat =
+  "Temporal status describes stored collection evidence, not live source truth. " +
+  "Each fact's collectionAsOf identifies the latest successful collection in its " +
+  "last-seen connection/configuration lifetime; null means that boundary is unknown. " +
+  "Verify is an ephemeral audit and does not reconcile this picture; recollect to advance it. " +
+  "Data completeness describes only the stored picture, not live verification.";
+
 const result = await run(process.argv.slice(2));
 process.stdout.write(`${JSON.stringify(result.output)}\n`);
 process.exitCode = result.exitCode;
@@ -412,6 +419,7 @@ function narrate(store: ObservationStore, arguments_: string[]): CommandResult {
       command: "narrate",
       outcome: "success",
       generatedAt: new Date().toISOString(),
+      currentnessCaveat,
       dataCompleteness:
         snapshot.connections.some((connection) => connection.status === "unread") ||
         snapshot.attemptsInProgress.length > 0 ||
@@ -456,6 +464,7 @@ function query(store: ObservationStore, arguments_: string[]): CommandResult {
       command: "query",
       outcome: "success",
       epistemicStatus: surface.epistemicStatus,
+      currentnessCaveat,
       records: surface.read(store, options),
     },
   };
