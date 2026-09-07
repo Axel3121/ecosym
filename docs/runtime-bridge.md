@@ -1,6 +1,6 @@
 # Runtime bridge
 
-**This document describes connection mechanics and column-shape examples only.**
+**This document describes local connection mechanics and generic templates only.**
 It embeds no actual runtime data: no real task titles, bodies, agent prompts, or
 session content. The repository must never contain a copy of anyone's real
 `~/.hermes` database. The accompanying test builds its own synthetic fixture
@@ -74,8 +74,8 @@ though the subject is just `session_id`.
 ## Worked connection
 
 This complete connection selects status, assignee, and priority from `tasks`.
-Use it as `connection.json` outside the repository, replacing `<user>` and
-`<board>` with the actual values and keeping an absolute, already-expanded path.
+Use it as `connection.json` outside the repository, replacing the placeholder
+database path with an absolute, already-expanded path selected by the operator.
 **`~` is not expanded.** `openSqliteReadOnly` uses `node:url`'s `pathToFileURL`,
 which treats a literal `~` as an ordinary path segment, not home-directory
 shorthand. A `~/...` configuration silently fails to resolve as intended; the
@@ -88,7 +88,7 @@ operator must expand the path before writing the configuration.
   "factOwner": "hermes",
   "reader": {
     "type": "sqlite",
-    "path": "/home/<user>/.hermes/kanban/boards/<board>/kanban.db",
+    "path": "/absolute/path/to/board/kanban.db",
     "table": "tasks"
   },
   "sourceRecord": {
@@ -123,25 +123,155 @@ operator must expand the path before writing the configuration.
 The required assignee selector suppresses that fact for an unassigned task,
 rather than storing a null payload. Status and priority remain observable for
 the same subject: unknown is not zero. No timestamp is selected in this shape,
-so source time is explicitly unavailable, never replaced with collection time.
+so source time is explicitly unavailable, never replaced with task creation,
+collection, or wall-clock time. Stored `sourceRecordedAt` is null and temporal
+status remains `unknown` unless later exhaustive collection establishes absence
+and makes the fact `historical`; a successful read does not make it `current`.
 `latest` describes the mutable source; it does not invent source-time ordering.
 See [identity and time](observation-layer.md#identity-and-time-without-native-fields)
 for correction history and unknown temporal status.
 
-Run the complete manual sequence, using the actual configuration path:
+These facts observe only Hermes' durable row fields at collection time. In
+particular, `status = done` means **Hermes' recorded workflow/task state**, not
+work completed, operational success, prosperity, decay, population, attribution,
+or a causal outcome. Assignee and priority likewise describe recorded fields,
+not observed agents or activity. Runtime prose saying an effect happened remains
+a `claim`, even when persisted in SQLite.
+
+## Local procedure
+
+Use the Node version required by `DEVELOPMENT.md` and install with `npm ci`.
+Keep actual connection and civilization JSON in an operator-owned local
+config/data directory outside the repository. The paths below are placeholders,
+not locations to discover or scan. Keep real databases, selected task values,
+command output, credentials, and personal agent configuration out of the tree.
+
+By default both institutional and observation state live in
+`${XDG_DATA_HOME:-$HOME/.local/share}/ecosym/observations.sqlite`. Use the same
+environment for every CLI command and the world launcher so they open the same
+store. Do not point tests at that personal store.
+
+### One-time setup
+
+Prepare the connection template above locally. Prepare a separate local
+`civilization.json` with all four founding inputs:
+
+```json
+{
+  "schemaVersion": 1,
+  "name": "<civilization-name>",
+  "domain": "<operator-declared domain>",
+  "sources": ["hermes-kanban-example-tasks"],
+  "mayActAlone": ["<operator-declared permitted scope>"],
+  "mustEscalate": ["<operator-declared escalation boundary>"]
+}
+```
+
+For the first local civilization, the operator supplies `EcoSym` as the name
+and explicitly chooses its domain and mandate. No civilization is shipped or
+automatically founded, and that name has no special engine behavior.
+
+The source link is a deliberate design choice: each `sources[]` entry must
+equal a registered connection ID exactly. It is not inferred from civilization
+names, task titles, keywords, bodies, timing, or causality. A second civilization
+uses another declaration and, if needed, another connection configuration with
+its own ID and source path; no engine or renderer change is needed for the link.
 
 ```sh
 npm run ecosym -- connect /absolute/path/connection.json
+npm run ecosym -- found /absolute/path/civilization.json
+```
+
+Retain the returned `civilizationId` locally. **`found` is not idempotent:**
+repeating it creates another civilization with new identities, even for the same
+name and declaration. Do not put it in a restart or collection script. Registering
+the same connection ID and identical configuration is idempotent; changing an
+active configuration is refused and requires an explicit disconnect first.
+
+### Repeatable collection and inspection
+
+Run these commands after setup and whenever a fresh collected picture is needed:
+
+```sh
 npm run ecosym -- collect hermes-kanban-example-tasks
+npm run ecosym -- status
 npm run ecosym -- query observations --connection hermes-kanban-example-tasks
+npm run ecosym -- query claims --connection hermes-kanban-example-tasks
 npm run ecosym -- verify
 ```
 
 `verify` rereads active sources and reports `agreement` when the stored selected
 facts still match. A live source may change between collection and verification.
-`test/runtime-bridge-hermes.test.ts` exercises this sequence against three
-synthetic tasks, including an unassigned task, and asserts the selected facts
-and verification agreement.
+It audits every active connection, not just the board above, and does not update
+the collected picture. Recollect to advance that picture. Agreement has exit
+code 0; disagreement, unread, mixed, and unverified use 1, 2, 3, and 4. An empty
+source with no stored facts is unverified (`no_facts`), not verified success.
+See [verification results](observation-layer.md#verification-result).
+
+### Start the world
+
+```sh
+npm run world
+```
+
+Open the printed `http://127.0.0.1:<port>` URL locally. The launcher builds the
+browser assets and chooses an available loopback port; it does not collect,
+auto-discover sources, found civilizations, or start work in Hermes. Restarting
+it is repeatable and reads the same persisted Ecosym state.
+
+The server exposes `/api/world-snapshot` through a callback supplied by the
+launcher that calls `composeWorldSnapshot`. The browser fetches and validates
+that combined contract. Select a civilization to inspect its declaration,
+recorded source fields, claims, provenance/currentness, and separately labeled
+collection metadata. These textual fields do not change terrain, population, or
+activity. Compare them with `status` and `query` above, keeping the collection
+boundary distinct from the later `verify` audit.
+
+After collecting again, reload the page to fetch a new stored picture. The
+browser does not poll or collect sources. Startup alone does not establish that
+a source was read successfully or that its recorded fields prove an outcome.
+This is an operator procedure, not a claim that real data has been connected or
+verified by the documentation's authors; repository proof uses synthetic sources.
+
+## Combined world contract
+
+`src/world-application.ts` composes `WorldSnapshot` from the institution owner's
+founded civilizations and the observation owner's narration. It does not collect
+or read external sources. `src/world-snapshot.ts` runtime-validates the closed
+display shape, exact civilization/source links, connection versions, separate
+observation and claim lists, and timestamps, returning detached data. Institutional
+state is not routed through the observation owner. Observation-derived depiction
+belongs to the form boundary; HTTP revalidates and serializes the callback's
+already-composed snapshot rather than implementing a second mapping. No source handle, reader configuration, or
+database handle belongs in the browser contract.
+
+The contract preserves these distinctions:
+
+- No founded civilizations is an empty world; a founding alone is not activity.
+- An empty declared source list is distinct from a declared source with no facts.
+- `collection: null` means no matching active connection, not a quiet source.
+- `collection.status` is Ecosym-owned collection health: `changed`, `quiet`, or
+  `unread`, with a separate reason such as `never-run`, `incomplete`, or `failed`.
+  A successful empty/unchanged picture can be quiet only in this collection sense.
+- `attemptsInProgress` records incomplete attempts, not proof that a collector
+  process is still alive. Retained facts do not hide an unread collection path.
+- Every fact carries its external `factOwner`, connection ID/version, source
+  record identity, `epistemicStatus`, `sourceRecordedAt`, `collectedAt`,
+  `collectionAsOf`, and `temporalStatus` (`unknown`, `current`, or `historical`).
+  These are not collapsed into a trusted/current flag. Currentness describes
+  stored collection evidence, not live source truth.
+- `observationsTruncated` and `claimsTruncated` are owner-wide limits, not
+  per-civilization completeness assessments. Empty lists under truncation do not
+  establish that a declared source has no facts.
+
+`test/runtime-bridge-hermes.test.ts` exercises the connect/collect/query/verify
+commands against three synthetic tasks, including an unassigned task, and
+asserts the selected facts and verification agreement.
+`test/world-observations.test.ts` separately exercises synthetic SQLite
+registration, collection, founding, production composition, the world HTTP API,
+and browser inspection projection, including exact source links, collection
+health, and observation/claim and temporal distinctions. Neither test accesses
+a real Hermes board or personal Ecosym store.
 
 ## Read-only operational boundary
 
@@ -161,5 +291,7 @@ The reader opens the database with `mode=ro` and `readOnly: true`. Ecosym starts
 nothing and manages nothing about the observed runtime, and does not write
 back to its database. Connecting a source is always an explicit, manual
 operator action (`connect config.json`), never automatic discovery of databases
-on disk. This convention adds no launcher, authority wiring, scheduling,
-cross-connection aggregation, or UI.
+on disk. The local world launcher starts only Ecosym's display server. Neither
+the bridge nor world composition adds runtime writes, execution authority,
+admission, petition execution, a council, city hall, scheduling, or general
+orchestration.

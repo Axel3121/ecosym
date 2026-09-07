@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FoundedCivilizationSnapshot } from "../src/institution-snapshot.ts";
+import { composeWorldSnapshot } from "../src/world-application.ts";
 import { inspectFields, placePosition, stateCopy, worldState } from "../web/state.ts";
 
 const entry: FoundedCivilizationSnapshot = {
@@ -9,14 +10,23 @@ const entry: FoundedCivilizationSnapshot = {
   mandate: { status: "active", mandateId: "mandate:synthetic", revision: "revision:1", recordedAt: "2026-01-01T00:00:00.000Z" },
 };
 
+function snapshot(civilizations: FoundedCivilizationSnapshot[] = []) {
+  return composeWorldSnapshot({
+    listFoundedCivilizations: () => civilizations,
+    narrate: () => ({ connections: [], attemptsInProgress: [], observations: [], claims: [], observationsTruncated: false, claimsTruncated: false }),
+  });
+}
+
 test("empty, loading, failed fetch, invalid shape, and populated copy are distinct", () => {
   assert.equal(worldState().kind, "loading");
-  assert.equal(worldState({ schemaVersion: 1, civilizations: [] }).kind, "empty");
+  assert.equal(worldState(snapshot()).kind, "empty");
   assert.equal(worldState(undefined, true).kind, "error");
-  for (const invalid of [null, {}, { schemaVersion: 1, civilizations: [], extra: true }, { schemaVersion: 1, civilizations: [{}] }]) {
+  for (const invalid of [null, {}, { ...snapshot(), extra: true }, { ...snapshot(), civilizations: [{}] },
+    { schemaVersion: 1, civilizations: [] }, { schemaVersion: 1, civilizations: [entry] },
+    { ...snapshot([entry]), sourcePictures: [] }, { ...snapshot(), claimsTruncated: "false" }]) {
     assert.equal(worldState(invalid).kind, "error");
   }
-  assert.equal(worldState({ schemaVersion: 1, civilizations: [entry] }).kind, "ready");
+  assert.equal(worldState(snapshot([entry])).kind, "ready");
   assert.equal(new Set(Object.values(stateCopy).map((copy) => copy.title)).size, 4);
   assert.match(stateCopy.empty.title, /Ingen sivilisasjoner er grunnlagt/);
 });

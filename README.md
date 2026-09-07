@@ -17,9 +17,17 @@ in [`docs/observation-layer.md`](docs/observation-layer.md). The institution
 layer founds, redraws, dissolves, and deterministically resolves the mandate of
 a civilization. Both support export and irreversible forgetting.
 
-Nothing renders. No runtime has ever been connected, and no petition reaches
-anything. `PRODUCT.md` records what is built; beyond that record, nothing it
-describes exists.
+A local browser world renders user-founded civilizations. A read-only SQLite
+runtime bridge collects selected external fields, and an application-composed,
+runtime-validated world contract links them to declared sources. The browser
+receives that combined contract and exposes recorded source fields, claims,
+provenance, and separate collection metadata in civilization inspection. See
+[`docs/runtime-bridge.md`](docs/runtime-bridge.md#local-procedure) for explicit
+local setup, collection, verification, and world startup.
+
+No petition reaches a runtime, and no mandate enforcement is proven by this
+read-only slice. `PRODUCT.md` records what is built; beyond that record, nothing
+it describes exists.
 
 An earlier frontend and backend were removed. The frontend invented agents no
 runtime knew about and matched runs to them by keyword — the authority mirage
@@ -29,8 +37,8 @@ executed arbitrary text. Neither is a reference for what comes next.
 Durable cases, a council, and admission of governed work do not exist yet, and
 are not depicted until they do.
 
-The current proof target is one vertical chain: a petition, a deterministically
-resolved mandate, mandatory admission, execution in a connected runtime,
+The separate governance proof target is one vertical chain: a petition, a
+deterministically resolved mandate, mandatory admission, execution in a connected runtime,
 enforcement refusing what falls outside the mandate, the outcome observed, the
 case persisted, and the case resumed correctly after a restart.
 

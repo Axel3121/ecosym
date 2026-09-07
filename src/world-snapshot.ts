@@ -1,11 +1,11 @@
 import type { FoundedCivilizationSnapshot } from "./institution-snapshot.ts";
-import type { ConnectionStatus, NarrationAttempt, StoredFact } from "./store.ts";
+import type { ConnectionStatus, NarrationAttempt, StoredFact } from "./observation-snapshot.ts";
 import { isRepresentableUtcInstant } from "./time.ts";
 import { validateInstitutionSnapshot } from "./validate-institution-snapshot.ts";
 
 export const WORLD_SNAPSHOT_SCHEMA_VERSION = 1;
 
-export const WORLD_FACT_SEMANTICS_CAVEAT = "Facts report fields recorded by the source owner, not verified success or civilization activity. Currentness is the owner's temporal assessment as of collection, not proof of present truth; running attempts and truncated results can leave the picture partial.";
+export const WORLD_FACT_SEMANTICS_CAVEAT = "Observations describe the source owner's recorded fields at collection, not completed work, operational success or civilization activity. Runtime prose reports remain claims. Temporal status describes stored collection evidence, not live source truth. collectionAsOf is the latest successful collection interval in the fact's last-seen connection/configuration/activation lifetime; null means unknown. collectedAt is provenance, never a substitute for sourceRecordedAt. Verify does not reconcile this picture; recollect to advance it. Running attempts and truncated results can leave the picture partial.";
 
 export interface WorldSourceSnapshot {
   connectionId: string;

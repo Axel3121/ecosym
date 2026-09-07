@@ -1,5 +1,5 @@
 import type { FoundedCivilizationSnapshot } from "./institution-snapshot.ts";
-import type { NarrationSnapshot } from "./store.ts";
+import type { NarrationSnapshot } from "./observation-snapshot.ts";
 import { validateWorldSnapshot, WORLD_SNAPSHOT_SCHEMA_VERSION, type WorldSnapshot } from "./world-snapshot.ts";
 
 export interface WorldSnapshotSource {
