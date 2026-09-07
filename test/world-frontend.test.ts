@@ -1,48 +1,58 @@
 import assert from "node:assert/strict";
+import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { cp, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { get } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
+import { promisify } from "node:util";
 import { chromium } from "playwright";
-import { build, createServer } from "vite";
+import { createServer } from "vite";
 
-import { createWorldServer } from "../src/world-server.ts";
-
-test("a clean production bundle renders the blank React root through the world server", { timeout: 60000 }, async (t) => {
+test("the committed production build renders the blank React root through the actual world launcher", { timeout: 60000 }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "ecosym-frontend-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const output = join(directory, "world");
-  const nodeEnv = process.env.NODE_ENV;
-  try {
-    await build({ build: { outDir: output }, logLevel: "silent" });
-  } finally {
-    if (nodeEnv === undefined) delete process.env.NODE_ENV;
-    else process.env.NODE_ENV = nodeEnv;
-  }
+  const output = resolve("dist/world");
+  // This is the suite's only build writer. Stale output must not hide a wrong outDir.
+  // check's final build runs only after the complete test process has exited.
+  await rm(output, { recursive: true, force: true });
+  await promisify(execFile)("npm", ["run", "build:world"], { timeout: 30000 });
+  const child = spawn(process.execPath, ["src/world-main.ts", "--port", "0"], {
+    env: { ...process.env, XDG_DATA_HOME: directory }, stdio: ["ignore", "pipe", "pipe"],
+  });
+  const exit = once(child, "exit");
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+      await exit;
+    }
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+  const url = await new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Launcher timed out: ${stderr}`)), 10000);
+    let stdout = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+      if (stdout.includes("\n")) { clearTimeout(timer); resolve(stdout.trim()); }
+    });
+    child.once("exit", () => { clearTimeout(timer); reject(new Error(`Launcher exited: ${stderr}`)); });
+    child.once("error", (error) => { clearTimeout(timer); reject(error); });
+  });
+  assert.match(url, /^http:\/\/127\.0\.0\.1:[1-9]\d*$/u);
+  const response = await fetch(url);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-security-policy"), "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+  const html = await response.text();
   assert.deepEqual((await readdir(output)).sort(), ["assets", "index.html"]);
-  const html = await readFile(join(output, "index.html"), "utf8");
+  assert.equal(html, await readFile(join(output, "index.html"), "utf8"));
   const script = html.match(/<script[^>]+src="([^"]+)"/u)?.[1];
   assert.ok(script);
   assert.match(script, /^\/assets\/.+\.js$/u);
   const bundle = await readFile(join(output, script), "utf8");
   assert.doesNotMatch(bundle, /\/api\/world-snapshot|node:sqlite|@vite\/client|react-refresh/u);
   assert.ok((await readdir(join(output, "assets"))).every((file) => file.endsWith(".js")));
-  let reads = 0;
-  const server = createWorldServer(() => { reads++; throw new Error("No data should be requested"); }, output);
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  t.after(() => new Promise<void>((resolve, reject) => {
-    server.closeAllConnections();
-    server.close((error) => error ? reject(error) : resolve());
-  }));
-  const address = server.address();
-  assert.ok(address && typeof address !== "string");
-  const url = `http://127.0.0.1:${address.port}`;
-  const response = await fetch(url);
-  assert.equal(response.status, 200);
-  assert.equal(response.headers.get("content-security-policy"), "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
   const asset = await fetch(`${url}${script}`);
   assert.equal(asset.status, 200);
   assert.equal(asset.headers.get("content-type"), "text/javascript; charset=utf-8");
@@ -70,7 +80,8 @@ test("a clean production bundle renders the blank React root through the world s
     assert.deepEqual(errors, []);
     await page.close();
   }
-  assert.equal(reads, 0);
+  child.kill("SIGTERM");
+  assert.deepEqual(await exit, [0, null]);
 });
 
 test("the committed Vite dev config renders the blank root without errors or API requests", { timeout: 60000 }, async (t) => {

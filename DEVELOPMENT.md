@@ -70,8 +70,10 @@ realpath containment, strict production CSP, sanitized errors, and GET-only
 blank frontend does not request it. React owns presentation only. Core contracts,
 composition, and store access remain in `src/`, independent of React.
 
-`test/world-frontend.test.ts` builds into a fresh temporary directory, serves it
-through the real world-server, and renders the root in Chromium at desktop and
+`test/world-frontend.test.ts` removes stale `dist/world` output and executes
+`npm run build:world` with the committed config, then starts `src/world-main.ts`
+with temporary store state on an ephemeral loopback port. It fetches the served
+HTML and its built JavaScript and renders the root in Chromium at desktop and
 mobile sizes under the production CSP, permitting only document and built-script
 requests. It separately loads the committed dev config without root, filesystem,
 host, or port overrides and checks for errors and API/data requests. Stop any
@@ -79,7 +81,9 @@ running dev server before testing: this check requires port 5173 to be free.
 Fast Refresh is verified against an isolated copy of the frontend, not the
 unmodified config. The manifest wiring guard checks script strings only;
 `npm run check` supplies execution evidence. No personal stores are read by these
-tests. The old canvas
+tests. The production integration test is the suite's only build writer and awaits
+the build before launching; check's final build follows the completed suite. Do
+not run a separate build concurrently with the tests. The old canvas
 placement, inspection UI, and client-state tests were retired with that UI;
 core form, snapshot, transition, and server security tests remain in the suite.
 
