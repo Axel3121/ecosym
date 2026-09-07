@@ -113,7 +113,7 @@ test("invalid source shapes and thrown failures produce sanitized errors, never 
     value = invalid;
     const response = await get("/api/world-snapshot");
     assert.equal(response.status, 500);
-    assert.deepEqual(JSON.parse(response.body), { error: "Institusjonsdata kunne ikke leses" });
+    assert.deepEqual(JSON.parse(response.body), { error: "Verdensdata kunne ikke leses" });
     assert.equal(response.headers["cache-control"], "no-store");
   }
   throws = true;

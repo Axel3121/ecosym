@@ -43,7 +43,7 @@ export function createWorldServer(readSnapshot: () => WorldSnapshot, buildDirect
         response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
         response.end(JSON.stringify(snapshot));
       } catch {
-        fail(500, "Institusjonsdata kunne ikke leses");
+        fail(500, "Verdensdata kunne ikke leses");
       }
       return;
     }
