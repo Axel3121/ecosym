@@ -281,7 +281,7 @@ async function* readJsonFiles(config: ConnectionConfig): AsyncGenerator<SourceRe
       revisions.set(path, sourceRevision(statSync(path, { bigint: true })));
     }
   } catch (error) {
-    throw new SourceReadError("source_changed", error);
+    throw sourceError(error);
   }
   for (const path of paths) {
     const before = revisions.get(path)!;
@@ -344,7 +344,7 @@ async function* readJsonFiles(config: ConnectionConfig): AsyncGenerator<SourceRe
       throw new SourceReadError("source_changed");
     }
   } catch (error) {
-    throw new SourceReadError("source_changed", error);
+    throw sourceError(error);
   }
 }
 

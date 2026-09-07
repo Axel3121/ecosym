@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -159,6 +159,32 @@ for (const mutation of ["jsonl", "jsonl-malformed", "csv", "json", "add", "remov
     }
   });
 }
+
+test("a broken JSON glob symlink fails as source_absent without committing or establishing absence", async () => {
+  const directory = workspace();
+  const path = join(directory, "a.json");
+  const parsed = fileConnection("broken-symlink", {
+    type: "json", pathPattern: join(directory, "*.json"), recordsPath: "",
+  });
+  const store = new ObservationStore(join(directory, "state"));
+  try {
+    store.register(parsed);
+    writeFileSync(path, JSON.stringify([{ id: "original", subject: "s", value: 7 }]));
+    await collectConnection(store, parsed.config.id);
+    const before = store.queryObservations();
+    writeFileSync(path, JSON.stringify([{ id: "partial", subject: "s", value: 8 }]));
+    symlinkSync(join(directory, "missing.json"), join(directory, "b.json"));
+
+    await assert.rejects(collectConnection(store, parsed.config.id),
+      (error: unknown) => error instanceof CollectionFailedError && error.code === "source_absent");
+    assert.deepEqual(store.queryObservations(), before);
+    assert.equal(store.countFacts(), 1);
+    const failed = store.collectionAttempts().find((attempt) => attempt.outcome === "failed");
+    assert.equal(failed?.failureCode, "source_absent");
+  } finally {
+    store.close();
+  }
+});
 
 test("identical fact re-seen after reconnect becomes historical at the new activation's empty attempt", async () => {
   const directory = workspace();
