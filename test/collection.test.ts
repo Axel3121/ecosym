@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -13,6 +13,7 @@ import { recordIndexModeEvidence } from "../src/record-index-evidence.ts";
 import {
   openFileReadOnly,
   openSqliteReadOnly,
+  readJsonFiles,
   readSource,
   SourceReadError,
 } from "../src/readers.ts";
@@ -159,6 +160,45 @@ for (const mutation of ["jsonl", "jsonl-malformed", "csv", "json", "add", "remov
     }
   });
 }
+
+test("JSON revision stat failures roll back partial facts and cannot establish absence", async () => {
+  for (const failAt of [1, 2, 3, 4]) {
+    for (const code of ["ENOENT", "EACCES", "EPERM", "EIO"]) {
+      const directory = workspace();
+      const path = join(directory, "source.json");
+      const parsed = fileConnection("stat-failure", { type: "json", pathPattern: path, recordsPath: "" });
+      const store = new ObservationStore(join(directory, "state"));
+      try {
+        store.register(parsed);
+        writeFileSync(path, JSON.stringify([{ id: "original", subject: "s", value: 7 }]));
+        await collectConnection(store, parsed.config.id);
+        const observations = store.queryObservations();
+        writeFileSync(path, JSON.stringify([{ id: "partial", subject: "s", value: 8 }]));
+        const before = statSync(path, { bigint: true });
+        let calls = 0;
+        let yielded = 0;
+        const expected = code === "ENOENT" ? "source_changed" : "source_unreadable";
+        await assert.rejects(store.collect(store.getConnection(parsed.config.id), async (sink) => {
+          for await (const record of readJsonFiles(parsed.config, () => {
+            calls += 1;
+            if (calls >= failAt) throw { code };
+            return before;
+          })) {
+            sink.recordSourceRecord(() => materializeFacts(parsed.config, record));
+            yielded += 1;
+          }
+        }), (error: unknown) => error instanceof CollectionFailedError && error.code === expected);
+        assert.equal(yielded, failAt >= 3 ? 1 : 0);
+        assert.deepEqual(store.queryObservations(), observations);
+        assert.equal(store.countFacts(), 1);
+        assert.equal(store.collectionAttempts().find((attempt) => attempt.outcome === "failed")?.failureCode, expected);
+        assert.equal(store.statuses()[0]?.status, "unread");
+      } finally {
+        store.close();
+      }
+    }
+  }
+});
 
 test("a broken JSON glob symlink fails as source_absent without committing or establishing absence", async () => {
   const directory = workspace();

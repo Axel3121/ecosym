@@ -142,7 +142,12 @@ export function jsonlSourceMatchesRevision(
   path: string,
   revision: JsonlSourceRevision,
 ): boolean {
-  return sourceMatchesRevision(path, revision);
+  try {
+    assertPathSourceRevision(path, revision);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function sameSourceRevision(current: JsonlSourceRevision, revision: JsonlSourceRevision): boolean {
@@ -153,12 +158,20 @@ function sameSourceRevision(current: JsonlSourceRevision, revision: JsonlSourceR
     current.ctimeNs === revision.ctimeNs;
 }
 
-function sourceMatchesRevision(path: string, revision: JsonlSourceRevision): boolean {
+function assertPathSourceRevision(
+  path: string,
+  revision: JsonlSourceRevision,
+  stat: (path: string) => JsonlSourceRevision = (path) => statSync(path, { bigint: true }),
+): void {
   try {
-    const current = statSync(path, { bigint: true });
-    return sameSourceRevision(current, revision);
-  } catch {
-    return false;
+    const current = stat(path);
+    if (!sameSourceRevision(current, revision)) {
+      throw new SourceReadError("source_changed");
+    }
+  } catch (error) {
+    throw isErrorCode(error, "ENOENT")
+      ? new SourceReadError("source_changed", error)
+      : sourceError(error);
   }
 }
 
@@ -257,7 +270,10 @@ async function* readJsonLines(
   }
 }
 
-async function* readJsonFiles(config: ConnectionConfig): AsyncGenerator<SourceRecord> {
+export async function* readJsonFiles(
+  config: ConnectionConfig,
+  stat: (path: string) => JsonlSourceRevision = (path) => statSync(path, { bigint: true }),
+): AsyncGenerator<SourceRecord> {
   if (config.reader.type !== "json") {
     return;
   }
@@ -285,20 +301,16 @@ async function* readJsonFiles(config: ConnectionConfig): AsyncGenerator<SourceRe
   }
   for (const path of paths) {
     const before = revisions.get(path)!;
-    if (!sourceMatchesRevision(path, before)) {
-      throw new SourceReadError("source_changed");
-    }
+    assertPathSourceRevision(path, before, stat);
     let handle: FileHandle;
     try {
       handle = await openFileReadOnly(path);
     } catch (error) {
-      if (!sourceMatchesRevision(path, before)) {
-        throw new SourceReadError("source_changed", error);
-      }
+      assertPathSourceRevision(path, before, stat);
       throw error;
     }
     try {
-      await assertSourceRevision(handle, path, before);
+      await assertSourceRevision(handle, path, before, stat);
       let contents: string;
       try {
         contents = await handle.readFile({ encoding: "utf8" });
@@ -327,9 +339,9 @@ async function* readJsonFiles(config: ConnectionConfig): AsyncGenerator<SourceRe
           root,
         };
       }
-      await assertSourceRevision(handle, path, before);
+      await assertSourceRevision(handle, path, before, stat);
     } catch (error) {
-      await assertSourceRevision(handle, path, before);
+      await assertSourceRevision(handle, path, before, stat);
       throw sourceError(error);
     } finally {
       await handle.close();
@@ -339,20 +351,25 @@ async function* readJsonFiles(config: ConnectionConfig): AsyncGenerator<SourceRe
     const afterPaths = [];
     for await (const path of glob(config.reader.pathPattern)) afterPaths.push(path);
     afterPaths.sort();
-    if (afterPaths.length !== paths.length || afterPaths.some((path, index) => path !== paths[index]) ||
-        paths.some((path) => !sourceMatchesRevision(path, revisions.get(path)!))) {
+    if (afterPaths.length !== paths.length || afterPaths.some((path, index) => path !== paths[index])) {
       throw new SourceReadError("source_changed");
     }
+    for (const path of paths) assertPathSourceRevision(path, revisions.get(path)!, stat);
   } catch (error) {
     throw sourceError(error);
   }
 }
 
-async function assertSourceRevision(handle: FileHandle, path: string, before: JsonlSourceRevision): Promise<void> {
-  if (!sameSourceRevision(await handle.stat({ bigint: true }), before) ||
-      !sourceMatchesRevision(path, before)) {
+async function assertSourceRevision(
+  handle: FileHandle,
+  path: string,
+  before: JsonlSourceRevision,
+  stat?: (path: string) => JsonlSourceRevision,
+): Promise<void> {
+  if (!sameSourceRevision(await handle.stat({ bigint: true }), before)) {
     throw new SourceReadError("source_changed");
   }
+  assertPathSourceRevision(path, before, stat);
 }
 
 async function* readCsv(config: ConnectionConfig): AsyncGenerator<SourceRecord> {

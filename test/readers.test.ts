@@ -9,6 +9,7 @@ import { parseConnectionConfig } from "../src/config.ts";
 import {
   jsonInventoryStatError,
   jsonlSourceMatchesRevision,
+  readJsonFiles,
   readJsonlSourceWithRecordIndexModes,
   readSource,
   SourceReadError,
@@ -216,6 +217,47 @@ test("JSON inventory stat preserves other filesystem error mappings", () => {
     assert.equal(jsonInventoryStatError({ code: "ENOENT" }, "/inventory/member.json", () => {
       throw { code };
     }).code, "source_unreadable");
+  }
+});
+
+test("JSON known-revision checks preserve stat diagnostics at every stage", async () => {
+  for (const stage of ["pre-open", "path-recheck", "post-read", "final", "open-failure"]) {
+    for (const outcome of ["unchanged", "mismatch", "ENOENT", "EACCES", "EPERM", "EIO"]) {
+      if (stage === "open-failure" && outcome === "unchanged") continue;
+      const directory = workspace();
+      const path = join(directory, "source.json");
+      writeFileSync(path, '[{"id":"r1"}]');
+      const before = statSync(path, { bigint: true });
+      const failAt = stage === "pre-open" ? 1 : stage === "post-read" ? 3 : stage === "final" ? 4 : 2;
+      let calls = 0;
+      let yielded = 0;
+      const consume = async () => {
+        for await (const record of readJsonFiles(config({ type: "json", pathPattern: path, recordsPath: "" }), (actualPath) => {
+          assert.equal(actualPath, path);
+          calls += 1;
+          if (stage === "open-failure" && calls === 1) rmSync(path);
+          if (calls >= failAt) {
+            if (outcome === "mismatch") return { ...before, size: before.size + 1n };
+            if (outcome !== "unchanged") throw { code: outcome };
+          }
+          return before;
+        })) {
+          assert.equal(record.record.id, "r1");
+          yielded += 1;
+        }
+      };
+      const label = `${stage}: ${outcome}`;
+      if (outcome === "unchanged") {
+        await consume();
+        assert.equal(calls, 4, label);
+        assert.equal(yielded, 1, label);
+      } else {
+        await assert.rejects(consume(), (error: unknown) => error instanceof SourceReadError &&
+          error.code === (outcome === "mismatch" || outcome === "ENOENT" ? "source_changed" : "source_unreadable"), label);
+        assert.ok(calls >= failAt, label);
+        assert.equal(yielded, stage === "post-read" || stage === "final" ? 1 : 0, label);
+      }
+    }
   }
 });
 
