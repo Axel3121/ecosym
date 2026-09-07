@@ -1,12 +1,12 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "noEmit": false,
-    "rewriteRelativeImportExtensions": true,
-    "rootDir": ".",
-    "outDir": "dist/world",
+    "noEmit": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
     "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "types": []
   },
-  "include": ["web/**/*.ts"]
+  "include": ["web/**/*.ts", "web/**/*.tsx"]
 }

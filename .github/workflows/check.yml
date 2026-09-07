@@ -32,9 +32,11 @@ jobs:
       - name: install
         run: npm ci
 
-      # All current dependencies are development dependencies; there are no runtime dependencies.
-      - name: audit dependencies (dev - no runtime dependencies exist)
+      - name: audit dependencies
         run: npm audit --include=dev --audit-level=high
+
+      - name: install browser for frontend tests
+        run: npx playwright install --with-deps chromium
 
       - name: check
         run: npm run check

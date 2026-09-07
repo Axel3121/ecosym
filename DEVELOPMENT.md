@@ -28,11 +28,54 @@ Ecosym requires the Node version declared in `.nvmrc` and `package.json`.
 
 ```sh
 npm ci
+npx playwright install chromium
 npm run check
 ```
 
-`npm run check` is the single local verification entry point. It runs the
-TypeScript compiler and the product test suite.
+`npm run check` is the single local verification entry point. It runs the core
+and frontend TypeScript checks, the complete product test suite (including
+Chromium frontend smoke tests), and the actual Vite production build. On Linux,
+if browser system libraries are missing, use
+`npx playwright install --with-deps chromium` (also used by CI).
+
+## Browser development
+
+```sh
+npm run dev
+```
+
+Open `http://127.0.0.1:5173`. Vite binds to loopback and fails if that port is
+occupied. Editing `web/App.tsx` uses React Fast Refresh; TypeScript is checked by
+`npm run typecheck:world`, not by Vite's transpiler. The app is intentionally a
+blank, unstyled React root with no world data, loading states, or API requests.
+The dev server does not open stores and has no API proxy or fallback data.
+Do not expose this development tool with `--host` or use it for production.
+
+## Production world
+
+```sh
+npm run build:world
+npm run serve:world -- --port 4317
+```
+
+Open `http://127.0.0.1:4317`. Alternatively, `npm run world` builds and starts
+the server on an available loopback port, printing its URL. `serve:world` serves
+the existing build without rebuilding; rebuild after source edits. Vite replaces
+`dist/world` with bundled production HTML and hashed JavaScript, without source
+maps. Generated output is ignored and must not be committed.
+
+The existing world-server serves those files and preserves its exact Host check,
+realpath containment, strict production CSP, sanitized errors, and GET-only
+`/api/world-snapshot` contract. The launcher opens the local Ecosym store; the
+blank frontend does not request it. React owns presentation only. Core contracts,
+composition, and store access remain in `src/`, independent of React.
+
+`test/world-frontend.test.ts` builds into a fresh temporary directory, serves it
+through the real world-server, and renders the root in Chromium at desktop and
+mobile sizes under the production CSP. It also verifies HMR against an isolated
+copy of the frontend. No personal stores are read by these tests. The old canvas
+placement, inspection UI, and client-state tests were retired with that UI;
+core form, snapshot, transition, and server security tests remain in the suite.
 
 ## Changes
 
