@@ -8,9 +8,12 @@
   },
   "scripts": {
     "audit": "npm audit --include=dev --audit-level=high",
-    "check": "npm run typecheck && npm test",
+    "check": "npm run typecheck && npm run typecheck:world && npm test && npm run build:world",
+    "build:world": "tsc -p tsconfig.world.json && node scripts/build-world.ts",
+    "typecheck:world": "tsc -p tsconfig.world.json --noEmit",
+    "world": "npm run build:world && node src/world-main.ts",
     "ecosym": "node src/cli.ts",
-    "test": "node -e \"const { globSync } = require('node:fs'); if (globSync('test/*.test.ts').length === 0) throw new Error('no tests discovered')\" && node --test --test-reporter=spec test/*.test.ts",
+    "test": "node -e \"const { globSync } = require('node:fs'); if (globSync('test/*.test.ts').length === 0) throw new Error('no tests discovered')\" && node --test --test-concurrency=3 --test-reporter=spec test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
