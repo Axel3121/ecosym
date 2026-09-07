@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FoundedCivilizationSnapshot } from "../src/institution-snapshot.ts";
 import { composeWorldSnapshot } from "../src/world-application.ts";
+import { loadWorld } from "../web/world-client.ts";
 import { inspectFields, placePosition, stateCopy, worldState } from "../web/state.ts";
 
 const entry: FoundedCivilizationSnapshot = {
@@ -17,16 +18,18 @@ function snapshot(civilizations: FoundedCivilizationSnapshot[] = []) {
   });
 }
 
-test("empty, loading, failed fetch, invalid shape, and populated copy are distinct", () => {
+test("empty, loading, failed fetch, invalid shape, and populated copy are distinct", async () => {
+  const load = async (value: unknown) => worldState(await loadWorld({ fetch: async () => Response.json(value) }));
   assert.equal(worldState().kind, "loading");
-  assert.equal(worldState(snapshot()).kind, "empty");
-  assert.equal(worldState(undefined, true).kind, "error");
+  assert.equal((await load(snapshot())).kind, "empty");
+  assert.equal(worldState({ kind: "failure", reason: "request" }).kind, "error");
+  assert.equal(worldState({ kind: "cancelled" }).kind, "cancelled");
   for (const invalid of [null, {}, { ...snapshot(), extra: true }, { ...snapshot(), civilizations: [{}] },
     { schemaVersion: 1, civilizations: [] }, { schemaVersion: 1, civilizations: [entry] },
     { ...snapshot([entry]), sourcePictures: [] }, { ...snapshot(), claimsTruncated: "false" }]) {
-    assert.equal(worldState(invalid).kind, "error");
+    assert.equal((await load(invalid)).kind, "error");
   }
-  assert.equal(worldState(snapshot([entry])).kind, "ready");
+  assert.equal((await load(snapshot([entry]))).kind, "ready");
   assert.equal(new Set(Object.values(stateCopy).map((copy) => copy.title)).size, 4);
   assert.match(stateCopy.empty.title, /Ingen sivilisasjoner er grunnlagt/);
 });

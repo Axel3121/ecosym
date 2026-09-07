@@ -1,6 +1,7 @@
 import { inspectFields, placePosition, stateCopy, worldState } from "./state.ts";
 import { inspectSourceFields } from "../src/world-form.ts";
 import { drawPlace, drawTerrain } from "./terrain.ts";
+import { loadWorld } from "./world-client.ts";
 
 function element<T extends HTMLElement>(id: string): T {
   const result = document.getElementById(id);
@@ -25,21 +26,18 @@ function paint(): void {
 new ResizeObserver(paint).observe(world);
 
 async function load(): Promise<void> {
-  let state;
-  try {
-    const response = await fetch("/api/world-snapshot", { cache: "no-store", signal: AbortSignal.timeout(10000) });
-    state = response.ok ? worldState(await response.json()) : worldState(undefined, true);
-  } catch { state = worldState(undefined, true); }
+  const state = worldState(await loadWorld());
+  if (state.kind === "cancelled") return;
   const notice = element("notice");
   notice.dataset.state = state.kind;
   if (state.kind === "error") notice.setAttribute("role", "alert");
   element("notice-title").textContent = stateCopy[state.kind].title;
   element("notice-detail").textContent = stateCopy[state.kind].detail;
   if (state.kind !== "ready" && state.kind !== "empty") return;
-  const snapshot = state.snapshot;
-  const last = placePosition(Math.max(0, snapshot.civilizations.length - 1));
+  const { snapshot, places } = state.form;
+  const last = placePosition(Math.max(0, places.length - 1));
   world.style.height = `${Math.max(800, last.y + 200)}px`;
-  for (const [index, entry] of snapshot.civilizations.entries()) {
+  for (const [index, { declaration: entry, sourcePicture: picture }] of places.entries()) {
     const position = placePosition(index);
     const button = document.createElement("button");
     button.type = "button";
@@ -60,7 +58,6 @@ async function load(): Promise<void> {
       element("inspect-title").textContent = entry.name;
       const fields = element("fields");
       fields.replaceChildren();
-      const picture = snapshot.sourcePictures.find((picture) => picture.civilizationId === entry.civilizationId)!;
       for (const field of [{ label: "Skjemaversjon", values: [String(snapshot.schemaVersion)] }, ...inspectFields(entry), ...inspectSourceFields(picture, snapshot)]) {
         const term = document.createElement("dt");
         term.textContent = field.label;

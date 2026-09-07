@@ -1,17 +1,17 @@
 import type { FoundedCivilizationSnapshot } from "../src/institution-snapshot.ts";
-import { validateWorldSnapshot, type WorldSnapshot } from "../src/world-snapshot.ts";
+import type { WorldForm } from "../src/world-form.ts";
+import type { WorldLoadResult } from "./world-client.ts";
 
 export type WorldState =
-  | { kind: "loading" | "error" }
-  | { kind: "empty" | "ready"; snapshot: WorldSnapshot };
+  | { kind: "loading" | "cancelled" }
+  | { kind: "error"; failure: Extract<WorldLoadResult, { kind: "failure" }> }
+  | { kind: "empty" | "ready"; form: WorldForm };
 
-export function worldState(value?: unknown, failed = false): WorldState {
-  if (failed) return { kind: "error" };
-  if (value === undefined) return { kind: "loading" };
-  try {
-    const snapshot = validateWorldSnapshot(value);
-    return { kind: snapshot.civilizations.length === 0 ? "empty" : "ready", snapshot };
-  } catch { return { kind: "error" }; }
+export function worldState(result?: WorldLoadResult): WorldState {
+  if (result === undefined) return { kind: "loading" };
+  if (result.kind === "cancelled") return result;
+  if (result.kind === "failure") return { kind: "error", failure: result };
+  return { kind: result.form.places.length === 0 ? "empty" : "ready", form: result.form };
 }
 
 export const stateCopy = {
