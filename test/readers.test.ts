@@ -7,6 +7,7 @@ import { after, test } from "node:test";
 
 import { parseConnectionConfig } from "../src/config.ts";
 import {
+  jsonInventoryStatError,
   jsonlSourceMatchesRevision,
   readJsonlSourceWithRecordIndexModes,
   readSource,
@@ -188,6 +189,34 @@ test("a JSON glob that matched no file is an absent source, not an empty one", a
     }),
   );
   assert.equal((await readAll(config(reader))).length, 1);
+});
+
+test("JSON inventory stat distinguishes a vanished member from an existing dangling entry", () => {
+  const missing = { code: "ENOENT" };
+  const path = "/inventory/member.json";
+  for (const entryExists of [false, true]) {
+    let calls = 0;
+    const error = jsonInventoryStatError(missing, path, (actualPath) => {
+      calls += 1;
+      assert.equal(actualPath, path);
+      if (!entryExists) throw missing;
+      return {};
+    });
+    assert.ok(error instanceof SourceReadError);
+    assert.equal(error.code, entryExists ? "source_absent" : "source_changed");
+    assert.equal(calls, 1);
+  }
+});
+
+test("JSON inventory stat preserves other filesystem error mappings", () => {
+  for (const code of ["EACCES", "EPERM", "EIO"]) {
+    assert.equal(jsonInventoryStatError({ code }, "/inventory/member.json", () => {
+      assert.fail("only ENOENT needs an entry check");
+    }).code, "source_unreadable");
+    assert.equal(jsonInventoryStatError({ code: "ENOENT" }, "/inventory/member.json", () => {
+      throw { code };
+    }).code, "source_unreadable");
+  }
 });
 
 test("a SQLite selector names a column, not a nested path", async () => {

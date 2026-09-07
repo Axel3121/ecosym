@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { lstatSync, statSync } from "node:fs";
 import { open, glob } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
@@ -276,12 +276,12 @@ async function* readJsonFiles(config: ConnectionConfig): AsyncGenerator<SourceRe
   }
 
   const revisions = new Map<string, JsonlSourceRevision>();
-  try {
-    for (const path of paths) {
+  for (const path of paths) {
+    try {
       revisions.set(path, sourceRevision(statSync(path, { bigint: true })));
+    } catch (error) {
+      throw jsonInventoryStatError(error, path);
     }
-  } catch (error) {
-    throw sourceError(error);
   }
   for (const path of paths) {
     const before = revisions.get(path)!;
@@ -562,6 +562,24 @@ function parseCsv(text: string, delimiter: string): string[][] {
     rows.push(row);
   }
   return rows;
+}
+
+export function jsonInventoryStatError(
+  error: unknown,
+  path: string,
+  lstat: (path: string) => unknown = lstatSync,
+): SourceReadError {
+  if (isErrorCode(error, "ENOENT")) {
+    try {
+      // A dangling symlink still has an entry; a vanished glob member does not.
+      lstat(path);
+    } catch (entryError) {
+      return isErrorCode(entryError, "ENOENT")
+        ? new SourceReadError("source_changed", error)
+        : sourceError(entryError);
+    }
+  }
+  return sourceError(error);
 }
 
 function sourceError(error: unknown): SourceReadError {
