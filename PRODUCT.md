@@ -128,6 +128,14 @@ lasting institution — identity, mandate, lifecycle, and coordination that
 survives any single agent or session. Until then, using it would depict
 standing office where there is only a running process.
 
+A resource-claim mechanism now exists: a claim held by a short lease —
+minutes, not days — that its holder extends by heartbeat, releases
+explicitly, or otherwise loses when the lease elapses, with no step in
+between that exercises judgment over the outcome. Whether it, together with
+what a civilization already has, satisfies the reservation above will be
+observed, not declared here. Whether a claim survives its registering
+agent's death has not been observed.
+
 ### Petition
 
 A request the user makes from inside Ecosym — typically by addressing a
