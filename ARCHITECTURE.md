@@ -54,10 +54,18 @@ radius require it.
 The surface renders the world and accepts user input. It owns no durable state,
 no credentials, no authority, and no external facts.
 
-The surface never reads an external source directly. Everything it renders comes
-from the observation owner through the form boundary. This is the one boundary
-that is expensive to introduce later, and it is not optional: a surface allowed
-to reach a source directly can render something that was never observed.
+The surface never reads an external source, a raw store, another owner's internal
+record, or a raw export bundle directly. This boundary is expensive to introduce
+later, and it is not optional: a surface allowed to reach a source directly can
+render something that was never observed.
+
+What it renders is composed by the application core from what each owner
+explicitly exposes. Institutional state comes from the institution owner as an
+already-governed, user-declared input, never inferred. Observed activity comes
+from the observation owner through the form boundary: it is derived, never
+authored. Institutional state need not become an observation or pass through the
+observation owner or form boundary to reach the surface, but its depiction must
+still obey the same fair, uniform rules.
 
 ### Application core
 
@@ -97,9 +105,11 @@ and temporal validity into one value.
 
 ### Form boundary
 
-Depiction is derived from observed state, never authored. The rules that turn an
-observation into a form are owned here, and they are the same rules for every
-civilization: nothing gains a special appearance by being important.
+Depiction of observed activity is derived from observed state, never authored.
+The observation-to-depiction rules are owned here. Already-governed institutional
+state is a distinct declared input, not an observation. Wherever either is
+depicted, the rules are fair and uniform for every civilization: nothing gains
+a special appearance by being important.
 
 Absence of observation and absence of activity are distinct inputs and must
 remain distinguishable at this boundary. A surface cannot recover the difference

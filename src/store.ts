@@ -13,6 +13,7 @@ import {
   type ParsedConnectionConfig,
 } from "./config.ts";
 import { canonicalJson, type JsonScalar, type JsonValue, sha256 } from "./json.ts";
+import type { FoundedCivilizationSnapshot } from "./institution-snapshot.ts";
 import {
   mandateDigest,
   parseMandateConfig,
@@ -1009,6 +1010,7 @@ export class ObservationStore {
     }));
   }
 
+  /** Replace the latest active mandate through the shared revision lookup. */
   redrawMandate(
     civilizationId: string,
     parsed: ParsedMandateConfig,
@@ -1022,15 +1024,7 @@ export class ObservationStore {
       if (existing === undefined) {
         throw new CivilizationNotFoundError(civilizationId);
       }
-      const previous = this.#database
-        .prepare(
-          `SELECT mandate_id, revision, status FROM mandate_revisions
-            WHERE civilization_id = ?
-            ORDER BY revision_order DESC LIMIT 1`,
-        )
-        .get(civilizationId) as
-        | { mandate_id: string; revision: string; status: "active" | "dissolved" }
-        | undefined;
+      const previous = this.#latestMandateRevision(civilizationId);
       if (previous === undefined) {
         throw new MandateUnreadableError(civilizationId);
       }
@@ -1059,9 +1053,10 @@ export class ObservationStore {
    * Resolve a civilization's current authority context.
    *
    * The digest is derived here, from the bytes actually stored, on every read.
-   * It is deliberately not a column: a cached digest agrees with its content
-   * only until someone edits the content underneath it, and that is precisely
-   * the drift this boundary exists to detect.
+   * It is compared with the stored digest rather than trusting that column.
+   * Only the mandate body is covered, not status, IDs, revision, timestamps,
+   * or civilization name. Unlike the display read, this authority path refuses
+   * dissolved civilizations and unreadable mandates instead of showing unknown.
    */
   resolveAuthorityContext(civilizationId: string): ResolvedAuthorityContext {
     const civilization = this.#database
@@ -1070,22 +1065,7 @@ export class ObservationStore {
     if (civilization === undefined) {
       throw new CivilizationNotFoundError(civilizationId);
     }
-    const row = this.#database
-      .prepare(
-        `SELECT mandate_id, revision, status, mandate_json, mandate_digest
-           FROM mandate_revisions
-          WHERE civilization_id = ?
-          ORDER BY revision_order DESC LIMIT 1`,
-      )
-      .get(civilizationId) as
-      | {
-          mandate_digest: string;
-          mandate_id: string;
-          mandate_json: string;
-          revision: string;
-          status: "active" | "dissolved";
-        }
-      | undefined;
+    const row = this.#latestMandateRevision(civilizationId);
     if (row === undefined) {
       throw new CivilizationNotFoundError(civilizationId);
     }
@@ -1110,24 +1090,10 @@ export class ObservationStore {
     };
   }
 
+  /** Append a dissolved revision after checking the latest mandate body's digest. */
   dissolveCivilization(civilizationId: string, now = new Date()): boolean {
     return this.#transaction(() => {
-      const current = this.#database
-        .prepare(
-          `SELECT mandate_id, revision, status, mandate_json, mandate_digest
-             FROM mandate_revisions
-            WHERE civilization_id = ?
-            ORDER BY revision_order DESC LIMIT 1`,
-        )
-        .get(civilizationId) as
-        | {
-            mandate_digest: string;
-            mandate_id: string;
-            mandate_json: string;
-            revision: string;
-            status: "active" | "dissolved";
-          }
-        | undefined;
+      const current = this.#latestMandateRevision(civilizationId);
       if (current === undefined || current.status === "dissolved") {
         return false;
       }
@@ -1150,6 +1116,82 @@ export class ObservationStore {
       );
       return true;
     });
+  }
+
+  /**
+   * Enumerate institution-owned declarations in one SQL snapshot, never activity.
+   * PRODUCT.md's missing/unverifiable state is presented as unknown per entry:
+   * one broken mandate must not deny a view of every other civilization.
+   * Dissolved entries remain visible; forgotten entries are absent. Status reports
+   * what the store holds, not a digest-protected fact. The digest checks only the
+   * mandate body, not IDs, revision, timestamps, or civilization name, and is not
+   * exposed as authority-context material on this read-only display path.
+   */
+  listFoundedCivilizations(): FoundedCivilizationSnapshot[] {
+    return this.#latestMandateRevision().map((row) => {
+      const entry: FoundedCivilizationSnapshot = {
+        civilizationId: row.civilization_id,
+        name: row.name,
+        foundedAt: row.founded_at,
+        domain: "",
+        sources: [],
+        mayActAlone: [],
+        mustEscalate: [],
+        mandate: { status: "unreadable" },
+      };
+      // A missing revision is an invariant violation, also unknown for this entry.
+      if (row.mandate_json === null) return entry;
+      try {
+        const mandate = parseStoredMandate(row.mandate_json, row.civilization_id);
+        if (mandateDigest(mandate as unknown as JsonValue) !== row.mandate_digest) {
+          return entry;
+        }
+        const revision = row as FoundedMandateRow & MandateRevisionRow;
+        return {
+          ...entry,
+          domain: mandate.domain,
+          sources: mandate.sources,
+          mayActAlone: mandate.mayActAlone,
+          mustEscalate: mandate.mustEscalate,
+          mandate: {
+            status: revision.status,
+            mandateId: revision.mandate_id,
+            revision: revision.revision,
+            recordedAt: revision.recorded_at,
+          },
+        };
+      } catch (error) {
+        if (!(error instanceof MandateUnreadableError)) throw error;
+        return entry;
+      }
+    });
+  }
+
+  #latestMandateRevision(civilizationId: string): MandateRevisionRow | undefined;
+  #latestMandateRevision(): FoundedMandateRow[];
+  #latestMandateRevision(
+    civilizationId?: string,
+  ): MandateRevisionRow | undefined | FoundedMandateRow[] {
+    // Both modes use the same latest-row selection. Enumeration is one statement,
+    // including civilizations with no revision, so redraw cannot tear the read.
+    const rows = this.#database.prepare(
+      `SELECT c.civilization_id, c.name, c.founded_at,
+              m.mandate_id, m.revision, m.status, m.mandate_json,
+              m.mandate_digest, m.recorded_at
+         FROM civilizations c
+         LEFT JOIN mandate_revisions m ON m.revision_order = (
+           SELECT revision_order FROM mandate_revisions
+            WHERE civilization_id = c.civilization_id
+            ORDER BY revision_order DESC LIMIT 1
+         )
+         ${civilizationId === undefined ? "" : "WHERE c.civilization_id = ?"}
+         ORDER BY c.founded_at ASC, c.civilization_id ASC`,
+    ).all(...(civilizationId === undefined ? [] : [civilizationId])) as FoundedMandateRow[];
+    if (civilizationId === undefined) return rows;
+    const row = rows[0];
+    return row === undefined || row.mandate_id === null
+      ? undefined
+      : row as MandateRevisionRow;
   }
 
   #insertMandateRevision(
@@ -3945,6 +3987,21 @@ export class ObservationStore {
     }
   }
 }
+
+interface MandateRevisionRow {
+  mandate_id: string;
+  revision: string;
+  status: "active" | "dissolved";
+  mandate_json: string;
+  mandate_digest: string;
+  recorded_at: string;
+}
+
+type FoundedMandateRow = {
+  civilization_id: string;
+  name: string;
+  founded_at: string;
+} & { [Key in keyof MandateRevisionRow]: MandateRevisionRow[Key] | null };
 
 interface CollectionAttemptRow {
   activation_id: string;
