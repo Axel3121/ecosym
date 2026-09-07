@@ -241,18 +241,33 @@ or read external sources. `src/world-snapshot.ts` runtime-validates the closed
 display shape, exact civilization/source links, connection versions, separate
 observation and claim lists, and timestamps, returning detached data. Institutional
 state is not routed through the observation owner. Observation-derived depiction
-belongs to the form boundary; HTTP revalidates and serializes the callback's
+belongs to the pure `src/world-form.ts` field projection consumed by the temporary
+browser; HTTP revalidates and serializes the callback's
 already-composed snapshot rather than implementing a second mapping. No source handle, reader configuration, or
 database handle belongs in the browser contract.
+
+`ObservationStore.narrate()` reads statuses, in-progress attempts, facts, and
+truncation counts inside one read transaction. Facts are filtered by active
+connection ID/configuration hash; attempts and statuses also use the activation.
+Disconnect removes that source's active evidence. An identical-config reconnect
+can retain prior-activation facts and their original provenance while reporting
+`never-run`; a changed-config reconnect excludes old-version facts. The world
+validator retains whole-snapshot fail-closed behavior for corruption, rather than
+turning inconsistent evidence into plausible unknowns. This transaction does not
+include the separate institution snapshot read.
 
 The contract preserves these distinctions:
 
 - No founded civilizations is an empty world; a founding alone is not activity.
 - An empty declared source list is distinct from a declared source with no facts.
-- `collection: null` means no matching active connection, not a quiet source.
+- `collection: null` means no matching active connection, not unread or quiet.
 - `collection.status` is Ecosym-owned collection health: `changed`, `quiet`, or
   `unread`, with a separate reason such as `never-run`, `incomplete`, or `failed`.
   A successful empty/unchanged picture can be quiet only in this collection sense.
+  The form gives each reason its own meaning: no attempt in this activation,
+  incomplete attempt, failed attempt, explicit retirement, skipped attempt, or
+  unknown JSONL record-index interpretation. These are owner states, not a new
+  form lifecycle.
 - `attemptsInProgress` records incomplete attempts, not proof that a collector
   process is still alive. Retained facts do not hide an unread collection path.
 - Every fact carries its external `factOwner`, connection ID/version, source
@@ -260,6 +275,9 @@ The contract preserves these distinctions:
   `collectionAsOf`, and `temporalStatus` (`unknown`, `current`, or `historical`).
   These are not collapsed into a trusted/current flag. Currentness describes
   stored collection evidence, not live source truth.
+- `connectionVersion` is an opaque configuration fingerprint retained as
+  observation provenance, not a source handle. Actual reader paths/configuration
+  and unselected source fields remain excluded from the loopback HTTP contract.
 - `observationsTruncated` and `claimsTruncated` are owner-wide limits, not
   per-civilization completeness assessments. Empty lists under truncation do not
   establish that a declared source has no facts.
@@ -269,9 +287,13 @@ commands against three synthetic tasks, including an unassigned task, and
 asserts the selected facts and verification agreement.
 `test/world-observations.test.ts` separately exercises synthetic SQLite
 registration, collection, founding, production composition, the world HTTP API,
-and browser inspection projection, including exact source links, collection
+and the browser-facing pure form projection, including exact source links, collection
 health, and observation/claim and temporal distinctions. Neither test accesses
-a real Hermes board or personal Ecosym store.
+a real Hermes board or personal Ecosym store, or executes a real browser or DOM
+wiring. `test/world-transitions.test.ts` exercises reachable first-run, reconnect,
+skipped, retired, and unknown-index states and a second-writer interleaving that
+proves narration keeps one read snapshot. Frontend execution and visual design
+remain separate replatform work.
 
 ## Read-only operational boundary
 

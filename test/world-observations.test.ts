@@ -14,7 +14,7 @@ import { CollectionFailedError, ObservationStore } from "../src/store.ts";
 import { composeWorldSnapshot } from "../src/world-application.ts";
 import { createWorldServer } from "../src/world-server.ts";
 import { validateWorldSnapshot, type WorldSnapshot } from "../src/world-snapshot.ts";
-import { inspectSourceFields } from "../web/state.ts";
+import { inspectSourceFields } from "../src/world-form.ts";
 
 function fixture(t: TestContext) {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-world-observations-"));
@@ -49,9 +49,9 @@ function fixture(t: TestContext) {
     store.register(parsed);
     return parsed;
   }
-  function found(name: string, sources: string[]) {
+  function found(name: string, sources: string[], domain = "synthetic") {
     return store.foundCivilization(parseCivilizationConfig({
-      schemaVersion: 1, name, domain: "synthetic", sources, mayActAlone: ["read"], mustEscalate: ["spend"],
+      schemaVersion: 1, name, domain, sources, mayActAlone: ["read"], mustEscalate: ["spend"],
     }), new Date("2026-01-01T00:00:00.000Z"));
   }
   return { directory, path, database, store, register, found };
@@ -177,12 +177,15 @@ test("inspection distinguishes founding-only, missing, never-run, and quiet with
   const describe = (id: string) => inspectSourceFields(picture(snapshot, id), snapshot)
     .map((field) => `${field.label}: ${field.values.join("\n")}`).join("\n");
   assert.match(describe(empty.civilizationId), /No declared sources/);
-  assert.match(describe(linked.civilizationId), /Missing registered source: unread/);
-  assert.match(describe(linked.civilizationId), /never-run/);
+  assert.match(describe(linked.civilizationId), /Missing registered source: no active connection/);
+  assert.match(describe(linked.civilizationId), /no collection attempt in this active configuration\/activation lifetime/);
+  const missing = inspectSourceFields(picture(snapshot, linked.civilizationId), snapshot)
+    .find((field) => field.label === "Collection picture: missing")!;
+  assert.doesNotMatch(missing.values.join("\n"), /unread|quiet/i);
   await collectConnection(store, "board");
   snapshot = composeWorldSnapshot(store);
   assert.match(describe(linked.civilizationId), /quiet only in the collection picture/);
-  assert.match(describe(linked.civilizationId), /Missing registered source: unread/);
+  assert.match(describe(linked.civilizationId), /Missing registered source: no active connection/);
   assert.deepEqual(picture(snapshot, linked.civilizationId).sources[1], picture(snapshot, shared.civilizationId).sources[0]);
   const conflict = structuredClone(snapshot);
   picture(conflict, shared.civilizationId).sources[0]!.collection = null;
@@ -225,7 +228,7 @@ test("failed and incomplete collection retain owner evidence without establishin
   }
 });
 
-test("browser inspection preserves claim, observation and temporal provenance without source-time fallback", async (t) => {
+test("pure form projection preserves claim, observation and temporal provenance without source-time fallback", async (t) => {
   const { database, store, register, found } = fixture(t);
   register("dated", true);
   register("undated");
@@ -252,6 +255,12 @@ test("browser inspection preserves claim, observation and temporal provenance wi
     const claims = fields.filter((field) => /claims/i.test(field.label)).flatMap((field) => field.values).join("\n");
     assert.ok(observations.includes("hermes.kanban-task.status"));
     assert.ok(!observations.includes("hermes.completion-report"));
+    assert.ok(observations.includes('"value":"done"'));
+    const observationProse = selected.sources.flatMap((source) => source.observations)
+      .reduce((text, fact) => text.replace(JSON.stringify(fact), ""), observations);
+    assert.doesNotMatch(observationProse, /complet|success|activ(?:e|ity)/i);
+    const semantics = fields.find((field) => field.label === "Source semantics")!.values.join("\n");
+    assert.doesNotMatch(semantics.replace("not completed work, operational success or civilization activity", ""), /completed work|operational success|civilization activity/i);
     assert.ok(claims.includes("hermes.completion-report"));
     assert.ok(!claims.includes("hermes.kanban-task.status"));
     for (const [facts, rendered] of [[selected.sources.flatMap((source) => source.observations), observations],
@@ -270,14 +279,37 @@ test("browser inspection preserves claim, observation and temporal provenance wi
     const undatedFields = inspectSourceFields({ ...selected, sources: [selected.sources[1]!] }, snapshot);
     const undatedText = undatedFields.flatMap((field) => field.values).join("\n");
     assert.match(undatedText, /source[^\n]*unavailable/i);
+    const undatedObservation = undatedFields.find((field) => field.label === "Recorded source fields: undated")!.values[0]!;
+    assert.ok(undatedObservation.includes('"sourceRecordedAt":null'));
+    assert.ok(undatedObservation.includes("Source recorded time: unavailable. Temporal status: unknown."));
+    const prose = undatedObservation.slice(0, undatedObservation.indexOf('{'));
+    assert.ok(!prose.includes(undated.collectedAt));
+    assert.ok(!prose.includes(undated.collectionAsOf!.completedAt));
     assert.doesNotMatch(undatedText, /source(?:RecordedAt|[- ]recorded(?:[- ]at| time)?| time)\s*[:=]\s*\d{4}-/i);
     assert.deepEqual(composeWorldSnapshot(store), snapshot);
   }
   const truncated = composeWorldSnapshot(store, 1);
   assert.equal(truncated.observationsTruncated, true);
   assert.equal(truncated.claimsTruncated, true);
-  assert.match(inspectSourceFields(picture(truncated, civilization.civilizationId), truncated)
-    .flatMap((field) => field.values).join("\n"), /truncat|partial|limit/i);
+  for (const observationsTruncated of [false, true]) {
+    for (const claimsTruncated of [false, true]) {
+      const value = { ...truncated, observationsTruncated, claimsTruncated };
+      const fields = inspectSourceFields(picture(value, civilization.civilizationId), value);
+      const limits = fields.find((field) => field.label === "Stored picture limits")!.values;
+      assert.equal(limits[0], `observationsTruncated: ${observationsTruncated}; claimsTruncated: ${claimsTruncated}`);
+      assert.equal(limits[1], observationsTruncated
+        ? "Observations are truncated across active connections; per-source emptiness is unknown."
+        : "Observations are not truncated across active connections.");
+      assert.equal(limits[2], claimsTruncated
+        ? "Claims are truncated across active connections; per-source emptiness is unknown."
+        : "Claims are not truncated across active connections.");
+      for (const [label, flag] of [["Recorded source fields", observationsTruncated], ["Claims", claimsTruncated]] as const) {
+        const empty = fields.find((field) => field.label === `${label}: dated`)!.values;
+        assert.deepEqual(empty, [flag ? "No entries returned; owner-wide truncation leaves this source's emptiness unknown."
+          : "No collected entries in this returned picture; not evidence of no activity."]);
+      }
+    }
+  }
 });
 
 test("world validator rejects closed nested fields, invalid links and accessors, and detaches accepted data", async (t) => {
@@ -338,6 +370,74 @@ test("world validator rejects closed nested fields, invalid links and accessors,
   for (const target of targets) assert.notEqual(target(normalized), target(snapshot));
   normalized.sourcePictures[0]!.sources[0]!.observations[0]!.payload.value = "mutated";
   assert.equal(snapshot.sourcePictures[0]!.sources[0]!.observations[0]!.payload.value, "done");
+});
+
+test("form meanings and validator follow every owner collection reason and last-attempt constraint", (t) => {
+  const { store, register, found } = fixture(t);
+  register("board");
+  found("Reasons", ["board"]);
+  const base = composeWorldSnapshot(store);
+  const cases = [
+    ["collected", "changed", /new or changed stored facts; not operational success/],
+    ["nothing-new", "quiet", /no new or changed facts: quiet only in the collection picture/],
+    ["never-run", "unread", /no collection attempt in this active configuration\/activation lifetime/],
+    ["incomplete", "unread", /latest attempt has no recorded completion/],
+    ["failed", "unread", /latest collection attempt failed/],
+    ["retired", "unread", /latest collection attempt was explicitly retired/],
+    ["skipped", "unread", /latest collection attempt was skipped/],
+    ["record-index-unknown", "unread", /stored JSONL record-index interpretation is unknown/],
+  ] as const;
+  const meanings = new Set<string>();
+  for (const [reason, status, meaning] of cases) {
+    for (const lastAttemptAt of [null, "2026-01-03T00:00:00.000Z"]) {
+      const value = structuredClone(base);
+      const source = value.sourcePictures[0]!.sources[0]!;
+      Object.assign(source.collection!, { reason, status, lastAttemptAt });
+      if (reason === "incomplete") source.attemptsInProgress = [{
+        attemptId: "synthetic-running", connectionId: "board", connectionVersion: source.collection!.connectionVersion,
+        startedAt: "2026-01-03T00:00:00.000Z",
+      }];
+      const valid = reason === "record-index-unknown" || (reason === "never-run" ? lastAttemptAt === null : lastAttemptAt !== null);
+      if (!valid) {
+        assert.throws(() => validateWorldSnapshot(value), /Inconsistent collection status/);
+        continue;
+      }
+      const accepted = validateWorldSnapshot(value);
+      const fields = inspectSourceFields(accepted.sourcePictures[0]!, accepted);
+      const collection = fields.find((field) => field.label === "Collection picture: board")!.values;
+      // Check the explanatory prose, not the raw provenance JSON.
+      assert.match(collection[1]!, meaning);
+      assert.equal(collection[2], JSON.stringify(source.collection));
+      meanings.add(collection[1]!);
+      for (const wrongStatus of ["changed", "quiet", "unread"] as const) {
+        if (wrongStatus === status) continue;
+        const invalid = structuredClone(value);
+        invalid.sourcePictures[0]!.sources[0]!.collection!.status = wrongStatus;
+        assert.throws(() => validateWorldSnapshot(invalid), /Inconsistent collection status/);
+      }
+    }
+  }
+  assert.equal(meanings.size, cases.length);
+});
+
+test("only explicit sources equality links despite adversarial names, domains and fact subjects", async (t) => {
+  const { database, store, register, found } = fixture(t);
+  register("source-a");
+  register("source-b");
+  database.exec("UPDATE tasks SET id = 'source-b'");
+  await collectConnection(store, "source-a");
+  database.exec("UPDATE tasks SET id = 'source-a'");
+  await collectConnection(store, "source-b");
+  const misleading = found("source-b", ["source-a"], "source-b");
+  const unlinked = found("source-a", [], "source-b");
+  const snapshot = composeWorldSnapshot(store);
+  const sources = picture(snapshot, misleading.civilizationId).sources;
+  assert.deepEqual(sources.map((source) => source.connectionId), ["source-a"]);
+  assert.equal(sources[0]!.observations[0]!.subject, "source-b");
+  assert.equal(sources[0]!.claims[0]!.subject, "source-b");
+  assert.ok([...sources[0]!.observations, ...sources[0]!.claims].every((fact) => fact.connectionId === "source-a"));
+  assert.deepEqual(picture(snapshot, unlinked.civilizationId).sources, []);
+  assert.deepEqual(validateWorldSnapshot(snapshot), snapshot);
 });
 
 test("HTTP rejects invalid nested snapshots and callback failures without private details or stale data", async (t) => {

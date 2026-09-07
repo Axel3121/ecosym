@@ -1,4 +1,5 @@
-import { inspectFields, inspectSourceFields, placePosition, stateCopy, worldState } from "./state.ts";
+import { inspectFields, placePosition, stateCopy, worldState } from "./state.ts";
+import { inspectSourceFields } from "../src/world-form.ts";
 import { drawPlace, drawTerrain } from "./terrain.ts";
 
 function element<T extends HTMLElement>(id: string): T {
