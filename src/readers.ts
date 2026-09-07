@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { lstatSync, statSync } from "node:fs";
 import { open, glob } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
@@ -120,13 +120,7 @@ export async function readJsonlSourceWithRecordIndexModes(
       physicalLineIndex += 1;
     }
     const after = await handle.stat({ bigint: true });
-    if (
-      before.dev !== after.dev ||
-      before.ino !== after.ino ||
-      before.size !== after.size ||
-      before.mtimeNs !== after.mtimeNs ||
-      before.ctimeNs !== after.ctimeNs
-    ) {
+    if (!sameSourceRevision(before, after)) {
       throw new SourceReadError("source_changed");
     }
     return {
@@ -149,16 +143,35 @@ export function jsonlSourceMatchesRevision(
   revision: JsonlSourceRevision,
 ): boolean {
   try {
-    const current = statSync(path, { bigint: true });
-    return (
-      current.dev === revision.dev &&
-      current.ino === revision.ino &&
-      current.size === revision.size &&
-      current.mtimeNs === revision.mtimeNs &&
-      current.ctimeNs === revision.ctimeNs
-    );
+    assertPathSourceRevision(path, revision);
+    return true;
   } catch {
     return false;
+  }
+}
+
+function sameSourceRevision(current: JsonlSourceRevision, revision: JsonlSourceRevision): boolean {
+  return current.dev === revision.dev &&
+    current.ino === revision.ino &&
+    current.size === revision.size &&
+    current.mtimeNs === revision.mtimeNs &&
+    current.ctimeNs === revision.ctimeNs;
+}
+
+function assertPathSourceRevision(
+  path: string,
+  revision: JsonlSourceRevision,
+  stat: (path: string) => JsonlSourceRevision = (path) => statSync(path, { bigint: true }),
+): void {
+  try {
+    const current = stat(path);
+    if (!sameSourceRevision(current, revision)) {
+      throw new SourceReadError("source_changed");
+    }
+  } catch (error) {
+    throw isErrorCode(error, "ENOENT")
+      ? new SourceReadError("source_changed", error)
+      : sourceError(error);
   }
 }
 
@@ -224,7 +237,9 @@ async function* readJsonLines(
     return;
   }
   const handle = await openFileReadOnly(config.reader.path);
+  let before: JsonlSourceRevision | undefined;
   try {
+    before = await handle.stat({ bigint: true });
     const lines = createInterface({
       crlfDelay: Number.POSITIVE_INFINITY,
       input: handle.createReadStream({ autoClose: false, encoding: "utf8" }),
@@ -246,12 +261,19 @@ async function* readJsonLines(
       };
       recordIndex += 1;
     }
+    await assertSourceRevision(handle, config.reader.path, before);
+  } catch (error) {
+    if (before !== undefined) await assertSourceRevision(handle, config.reader.path, before);
+    throw sourceError(error);
   } finally {
     await handle.close();
   }
 }
 
-async function* readJsonFiles(config: ConnectionConfig): AsyncGenerator<SourceRecord> {
+export async function* readJsonFiles(
+  config: ConnectionConfig,
+  stat: (path: string) => JsonlSourceRevision = (path) => statSync(path, { bigint: true }),
+): AsyncGenerator<SourceRecord> {
   if (config.reader.type !== "json") {
     return;
   }
@@ -269,9 +291,26 @@ async function* readJsonFiles(config: ConnectionConfig): AsyncGenerator<SourceRe
     throw new SourceReadError("source_absent");
   }
 
+  const revisions = new Map<string, JsonlSourceRevision>();
   for (const path of paths) {
-    const handle = await openFileReadOnly(path);
     try {
+      revisions.set(path, sourceRevision(statSync(path, { bigint: true })));
+    } catch (error) {
+      throw jsonInventoryStatError(error, path);
+    }
+  }
+  for (const path of paths) {
+    const before = revisions.get(path)!;
+    assertPathSourceRevision(path, before, stat);
+    let handle: FileHandle;
+    try {
+      handle = await openFileReadOnly(path);
+    } catch (error) {
+      assertPathSourceRevision(path, before, stat);
+      throw error;
+    }
+    try {
+      await assertSourceRevision(handle, path, before, stat);
       let contents: string;
       try {
         contents = await handle.readFile({ encoding: "utf8" });
@@ -300,10 +339,37 @@ async function* readJsonFiles(config: ConnectionConfig): AsyncGenerator<SourceRe
           root,
         };
       }
+      await assertSourceRevision(handle, path, before, stat);
+    } catch (error) {
+      await assertSourceRevision(handle, path, before, stat);
+      throw sourceError(error);
     } finally {
       await handle.close();
     }
   }
+  try {
+    const afterPaths = [];
+    for await (const path of glob(config.reader.pathPattern)) afterPaths.push(path);
+    afterPaths.sort();
+    if (afterPaths.length !== paths.length || afterPaths.some((path, index) => path !== paths[index])) {
+      throw new SourceReadError("source_changed");
+    }
+    for (const path of paths) assertPathSourceRevision(path, revisions.get(path)!, stat);
+  } catch (error) {
+    throw sourceError(error);
+  }
+}
+
+async function assertSourceRevision(
+  handle: FileHandle,
+  path: string,
+  before: JsonlSourceRevision,
+  stat?: (path: string) => JsonlSourceRevision,
+): Promise<void> {
+  if (!sameSourceRevision(await handle.stat({ bigint: true }), before)) {
+    throw new SourceReadError("source_changed");
+  }
+  assertPathSourceRevision(path, before, stat);
 }
 
 async function* readCsv(config: ConnectionConfig): AsyncGenerator<SourceRecord> {
@@ -311,7 +377,9 @@ async function* readCsv(config: ConnectionConfig): AsyncGenerator<SourceRecord> 
     return;
   }
   const handle = await openFileReadOnly(config.reader.path);
+  let before: JsonlSourceRevision | undefined;
   try {
+    before = await handle.stat({ bigint: true });
     let contents: string;
     try {
       contents = await handle.readFile({ encoding: "utf8" });
@@ -342,6 +410,10 @@ async function* readCsv(config: ConnectionConfig): AsyncGenerator<SourceRecord> 
         root: record,
       };
     }
+    await assertSourceRevision(handle, config.reader.path, before);
+  } catch (error) {
+    if (before !== undefined) await assertSourceRevision(handle, config.reader.path, before);
+    throw sourceError(error);
   } finally {
     await handle.close();
   }
@@ -507,6 +579,24 @@ function parseCsv(text: string, delimiter: string): string[][] {
     rows.push(row);
   }
   return rows;
+}
+
+export function jsonInventoryStatError(
+  error: unknown,
+  path: string,
+  lstat: (path: string) => unknown = lstatSync,
+): SourceReadError {
+  if (isErrorCode(error, "ENOENT")) {
+    try {
+      // A dangling symlink still has an entry; a vanished glob member does not.
+      lstat(path);
+    } catch (entryError) {
+      return isErrorCode(entryError, "ENOENT")
+        ? new SourceReadError("source_changed", error)
+        : sourceError(entryError);
+    }
+  }
+  return sourceError(error);
 }
 
 function sourceError(error: unknown): SourceReadError {

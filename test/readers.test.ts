@@ -7,7 +7,9 @@ import { after, test } from "node:test";
 
 import { parseConnectionConfig } from "../src/config.ts";
 import {
+  jsonInventoryStatError,
   jsonlSourceMatchesRevision,
+  readJsonFiles,
   readJsonlSourceWithRecordIndexModes,
   readSource,
   SourceReadError,
@@ -190,6 +192,75 @@ test("a JSON glob that matched no file is an absent source, not an empty one", a
   assert.equal((await readAll(config(reader))).length, 1);
 });
 
+test("JSON inventory stat distinguishes a vanished member from an existing dangling entry", () => {
+  const missing = { code: "ENOENT" };
+  const path = "/inventory/member.json";
+  for (const entryExists of [false, true]) {
+    let calls = 0;
+    const error = jsonInventoryStatError(missing, path, (actualPath) => {
+      calls += 1;
+      assert.equal(actualPath, path);
+      if (!entryExists) throw missing;
+      return {};
+    });
+    assert.ok(error instanceof SourceReadError);
+    assert.equal(error.code, entryExists ? "source_absent" : "source_changed");
+    assert.equal(calls, 1);
+  }
+});
+
+test("JSON inventory stat preserves other filesystem error mappings", () => {
+  for (const code of ["EACCES", "EPERM", "EIO"]) {
+    assert.equal(jsonInventoryStatError({ code }, "/inventory/member.json", () => {
+      assert.fail("only ENOENT needs an entry check");
+    }).code, "source_unreadable");
+    assert.equal(jsonInventoryStatError({ code: "ENOENT" }, "/inventory/member.json", () => {
+      throw { code };
+    }).code, "source_unreadable");
+  }
+});
+
+test("JSON known-revision checks preserve stat diagnostics at every stage", async () => {
+  for (const stage of ["pre-open", "path-recheck", "post-read", "final", "open-failure"]) {
+    for (const outcome of ["unchanged", "mismatch", "ENOENT", "EACCES", "EPERM", "EIO"]) {
+      if (stage === "open-failure" && outcome === "unchanged") continue;
+      const directory = workspace();
+      const path = join(directory, "source.json");
+      writeFileSync(path, '[{"id":"r1"}]');
+      const before = statSync(path, { bigint: true });
+      const failAt = stage === "pre-open" ? 1 : stage === "post-read" ? 3 : stage === "final" ? 4 : 2;
+      let calls = 0;
+      let yielded = 0;
+      const consume = async () => {
+        for await (const record of readJsonFiles(config({ type: "json", pathPattern: path, recordsPath: "" }), (actualPath) => {
+          assert.equal(actualPath, path);
+          calls += 1;
+          if (stage === "open-failure" && calls === 1) rmSync(path);
+          if (calls >= failAt) {
+            if (outcome === "mismatch") return { ...before, size: before.size + 1n };
+            if (outcome !== "unchanged") throw { code: outcome };
+          }
+          return before;
+        })) {
+          assert.equal(record.record.id, "r1");
+          yielded += 1;
+        }
+      };
+      const label = `${stage}: ${outcome}`;
+      if (outcome === "unchanged") {
+        await consume();
+        assert.equal(calls, 4, label);
+        assert.equal(yielded, 1, label);
+      } else {
+        await assert.rejects(consume(), (error: unknown) => error instanceof SourceReadError &&
+          error.code === (outcome === "mismatch" || outcome === "ENOENT" ? "source_changed" : "source_unreadable"), label);
+        assert.ok(calls >= failAt, label);
+        assert.equal(yielded, stage === "post-read" || stage === "final" ? 1 : 0, label);
+      }
+    }
+  }
+});
+
 test("a SQLite selector names a column, not a nested path", async () => {
   const directory = workspace();
   const path = join(directory, "source.db");
@@ -334,6 +405,28 @@ test("JSONL index-mode reading refuses source metadata that changes during the r
     );
     assert.equal(statCalls, 2, changedField);
     t.mock.restoreAll();
+  }
+});
+
+test("a concurrent rewrite is source_changed even when the bytes read are malformed", async (t) => {
+  for (const type of ["json", "csv"] as const) {
+    const directory = workspace();
+    const path = join(directory, `source.${type}`);
+    writeFileSync(path, type === "json" ? '[{"id":"r1"}]' : "id\nr1\n");
+    const handle = await open(path, "r");
+    const prototype = Object.getPrototypeOf(handle);
+    await handle.close();
+    t.mock.method(prototype, "readFile", async () => {
+      writeFileSync(path, "malformed replacement");
+      return type === "json" ? "[" : 'id\n"';
+    });
+    try {
+      assert.equal(await readError(config(type === "json"
+        ? { type, pathPattern: path, recordsPath: "" }
+        : { type, path, delimiter: "," })), "source_changed");
+    } finally {
+      t.mock.restoreAll();
+    }
   }
 });
 

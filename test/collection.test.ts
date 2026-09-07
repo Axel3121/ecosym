@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -13,6 +13,8 @@ import { recordIndexModeEvidence } from "../src/record-index-evidence.ts";
 import {
   openFileReadOnly,
   openSqliteReadOnly,
+  readJsonFiles,
+  readSource,
   SourceReadError,
 } from "../src/readers.ts";
 import { CollectionFailedError, ObservationStore } from "../src/store.ts";
@@ -108,6 +110,155 @@ function fileConnection(
     ],
   });
 }
+
+for (const mutation of ["jsonl", "jsonl-malformed", "csv", "json", "add", "remove", "replace", "future-content", "past-content"] as const) {
+  test(`source stability: ${mutation} cannot commit partial facts or establish absence`, async () => {
+    const directory = workspace();
+    const type = mutation.startsWith("jsonl") ? "jsonl" : mutation === "csv" ? "csv" : "json";
+    const path = join(directory, `a.${type}`);
+    const member = join(directory, `b.${type}`);
+    const contents = (id: string) => type === "csv"
+      ? `id,subject,value\n${id},s,7\n`
+      : type === "jsonl" ? `{"id":"${id}","subject":"s","value":7}\n`
+      : JSON.stringify([{ id, subject: "s", value: 7 }]);
+    const parsed = fileConnection("stable-source", type === "json"
+      ? { type, pathPattern: join(directory, "*.json"), recordsPath: "" }
+      : type === "csv" ? { type, path, delimiter: "," } : { type, path });
+    const store = new ObservationStore(join(directory, "state"));
+    try {
+      store.register(parsed);
+      writeFileSync(path, contents("original"));
+      await collectConnection(store, parsed.config.id);
+      const before = store.queryObservations();
+      writeFileSync(path, contents("partial") + (mutation === "jsonl-malformed" ? "invalid\n" : ""));
+      if (["remove", "replace", "future-content", "past-content"].includes(mutation)) {
+        writeFileSync(member, contents("member"));
+      }
+      let yielded = 0;
+      await assert.rejects(store.collect(store.getConnection(parsed.config.id), async (sink) => {
+        for await (const record of readSource(parsed.config)) {
+          sink.recordSourceRecord(() => materializeFacts(parsed.config, record));
+          yielded += 1;
+          if (yielded !== (mutation === "past-content" ? 2 : 1)) continue;
+          if (mutation === "add") writeFileSync(member, contents("added"));
+          else if (mutation === "remove") rmSync(member);
+          else if (mutation === "replace") {
+            const replacement = join(directory, "replacement.tmp");
+            writeFileSync(replacement, contents("member"));
+            renameSync(replacement, member);
+          } else if (mutation === "future-content") writeFileSync(member, contents("changed-member"));
+          else writeFileSync(path, contents("mutated"));
+        }
+      }), (error: unknown) => error instanceof CollectionFailedError && error.code === "source_changed");
+      assert.ok(yielded > 0);
+      assert.deepEqual(store.queryObservations(), before);
+      assert.equal(store.countFacts(), 1);
+      const failed = store.collectionAttempts().find((attempt) => attempt.outcome === "failed");
+      assert.equal(failed?.failureCode, "source_changed");
+    } finally {
+      store.close();
+    }
+  });
+}
+
+test("JSON revision stat failures roll back partial facts and cannot establish absence", async () => {
+  for (const failAt of [1, 2, 3, 4]) {
+    for (const code of ["ENOENT", "EACCES", "EPERM", "EIO"]) {
+      const directory = workspace();
+      const path = join(directory, "source.json");
+      const parsed = fileConnection("stat-failure", { type: "json", pathPattern: path, recordsPath: "" });
+      const store = new ObservationStore(join(directory, "state"));
+      try {
+        store.register(parsed);
+        writeFileSync(path, JSON.stringify([{ id: "original", subject: "s", value: 7 }]));
+        await collectConnection(store, parsed.config.id);
+        const observations = store.queryObservations();
+        writeFileSync(path, JSON.stringify([{ id: "partial", subject: "s", value: 8 }]));
+        const before = statSync(path, { bigint: true });
+        let calls = 0;
+        let yielded = 0;
+        const expected = code === "ENOENT" ? "source_changed" : "source_unreadable";
+        await assert.rejects(store.collect(store.getConnection(parsed.config.id), async (sink) => {
+          for await (const record of readJsonFiles(parsed.config, () => {
+            calls += 1;
+            if (calls >= failAt) throw { code };
+            return before;
+          })) {
+            sink.recordSourceRecord(() => materializeFacts(parsed.config, record));
+            yielded += 1;
+          }
+        }), (error: unknown) => error instanceof CollectionFailedError && error.code === expected);
+        assert.equal(yielded, failAt >= 3 ? 1 : 0);
+        assert.deepEqual(store.queryObservations(), observations);
+        assert.equal(store.countFacts(), 1);
+        assert.equal(store.collectionAttempts().find((attempt) => attempt.outcome === "failed")?.failureCode, expected);
+        assert.equal(store.statuses()[0]?.status, "unread");
+      } finally {
+        store.close();
+      }
+    }
+  }
+});
+
+test("a broken JSON glob symlink fails as source_absent without committing or establishing absence", async () => {
+  const directory = workspace();
+  const path = join(directory, "a.json");
+  const parsed = fileConnection("broken-symlink", {
+    type: "json", pathPattern: join(directory, "*.json"), recordsPath: "",
+  });
+  const store = new ObservationStore(join(directory, "state"));
+  try {
+    store.register(parsed);
+    writeFileSync(path, JSON.stringify([{ id: "original", subject: "s", value: 7 }]));
+    await collectConnection(store, parsed.config.id);
+    const before = store.queryObservations();
+    writeFileSync(path, JSON.stringify([{ id: "partial", subject: "s", value: 8 }]));
+    symlinkSync(join(directory, "missing.json"), join(directory, "b.json"));
+
+    await assert.rejects(collectConnection(store, parsed.config.id),
+      (error: unknown) => error instanceof CollectionFailedError && error.code === "source_absent");
+    assert.deepEqual(store.queryObservations(), before);
+    assert.equal(store.countFacts(), 1);
+    const failed = store.collectionAttempts().find((attempt) => attempt.outcome === "failed");
+    assert.equal(failed?.failureCode, "source_absent");
+  } finally {
+    store.close();
+  }
+});
+
+test("identical fact re-seen after reconnect becomes historical at the new activation's empty attempt", async () => {
+  const directory = workspace();
+  const path = join(directory, "source.jsonl");
+  const parsed = fileConnection("reseen", { type: "jsonl", path });
+  const store = new ObservationStore(join(directory, "state"));
+  try {
+    store.register(parsed);
+    writeFileSync(path, '{"id":"r1","subject":"s","value":7}\n');
+    await collectConnection(store, parsed.config.id);
+    const [original] = store.queryObservations();
+    store.disconnect(parsed.config.id);
+    store.register(parsed);
+    await collectConnection(store, parsed.config.id);
+    const [reseen] = store.queryObservations();
+    assert.equal(reseen?.id, original?.id);
+    assert.equal(reseen?.collectedAt, original?.collectedAt);
+    assert.notEqual(reseen?.collectionAsOf?.activationId, original?.collectionAsOf?.activationId);
+    writeFileSync(path, "");
+    const empty = await collectConnection(store, parsed.config.id);
+    const attempt = store.collectionAttempts().find((candidate) => candidate.attemptId === empty.result.attemptId);
+    assert.ok(attempt);
+    assert.equal(attempt.activationId, reseen?.collectionAsOf?.activationId);
+    const [historical] = store.queryObservations();
+    assert.equal(historical?.temporalStatus, "historical");
+    assert.deepEqual(historical?.collectionAsOf, {
+      attemptId: attempt.attemptId, activationId: attempt.activationId,
+      startedAt: attempt.startedAt, completedAt: attempt.completedAt,
+    });
+    assert.deepEqual(store.narrate().observations, [historical]);
+  } finally {
+    store.close();
+  }
+});
 
 function indexedJsonlConnection(sourcePath: string) {
   return parseConnectionConfig({
@@ -244,6 +395,11 @@ test("keeps changing values as a source-time series and does not promote a late 
     update.close();
     await collectConnection(store, parsed.config.id);
 
+    assert.deepEqual(
+      store.queryObservations().map((point) => [point.payload.value, point.temporalStatus]),
+      [[7, "historical"], [12, "current"]],
+    );
+
     const late = new DatabaseSync(sourcePath);
     late
       .prepare("UPDATE measurements SET measured_at = ?, public_value = ? WHERE record_id = ?")
@@ -252,11 +408,13 @@ test("keeps changing values as a source-time series and does not promote a late 
     await collectConnection(store, parsed.config.id);
 
     const series = store.queryObservations();
+    // The latest source-time point disappeared in the exhaustive read; the
+    // late older point still cannot become current merely by being collected.
     assert.deepEqual(
       series.map((point) => [point.payload.value, point.temporalStatus]),
       [
         [7, "historical"],
-        [12, "current"],
+        [12, "historical"],
         [5, "historical"],
       ],
     );

@@ -249,8 +249,30 @@ export interface StoredFact extends FactInput {
   collectedAt: string;
   connectionId: string;
   connectionVersion: string;
+  collectionAsOf: null | {
+    attemptId: string;
+    activationId: string;
+    startedAt: string;
+    completedAt: string;
+  };
   temporalStatus: "current" | "historical" | "unknown";
 }
+
+// A last-seen order, unlike attempt_id, advances even for identical sightings.
+// Never carry absence evidence across configuration or activation boundaries.
+const FACT_COLLECTION_AS_OF_JOIN = `
+  LEFT JOIN collection_attempts seen
+    ON seen.attempt_order = f.last_seen_attempt_order
+   AND seen.connection_id = f.connection_id AND seen.config_hash = f.config_hash
+   AND seen.outcome = 'success'
+  LEFT JOIN collection_attempts collected
+    ON collected.attempt_order = (
+      SELECT MAX(attempt.attempt_order) FROM collection_attempts attempt
+       WHERE attempt.connection_id = seen.connection_id
+         AND attempt.config_hash = seen.config_hash
+         AND attempt.activation_id = seen.activation_id
+         AND attempt.outcome = 'success'
+    )`;
 
 export interface QueryOptions {
   activeOnly?: boolean;
@@ -2557,7 +2579,12 @@ export class ObservationStore {
         `SELECT f.fact_id, f.connection_id, f.config_hash, f.fact_owner, f.kind,
                 f.subject, f.epistemic_status, f.source_record_id,
                 f.source_recorded_at, f.payload_json, f.collected_at,
+                collected.attempt_id AS as_of_attempt_id,
+                collected.activation_id AS as_of_activation_id,
+                collected.started_at AS as_of_started_at,
+                collected.completed_at AS as_of_completed_at,
                 CASE
+                  WHEN collected.attempt_order > f.last_seen_attempt_order THEN 'historical'
                   WHEN f.source_recorded_at IS NULL THEN 'unknown'
                   WHEN EXISTS (
                     SELECT 1 FROM facts newer
@@ -2615,6 +2642,7 @@ export class ObservationStore {
                   ELSE 'current'
                 END AS temporal_status
            FROM facts f
+           ${FACT_COLLECTION_AS_OF_JOIN}
           WHERE ${conditions.join(" AND ")}
           ORDER BY f.fact_id${options.order === "desc" ? " DESC" : ""}
           LIMIT ?`,
@@ -3231,6 +3259,7 @@ export class ObservationStore {
                 f.payload_json, f.payload_hash, f.collected_at,
                 f.last_seen_attempt_order,
                 CASE
+                  WHEN collected.attempt_order > f.last_seen_attempt_order THEN 'historical'
                   WHEN f.source_recorded_at IS NULL THEN 'unknown'
                   WHEN EXISTS (
                     SELECT 1 FROM facts newer
@@ -3285,6 +3314,7 @@ export class ObservationStore {
                   ELSE 'current'
                 END AS temporal_status
            FROM facts f
+           ${FACT_COLLECTION_AS_OF_JOIN}
           ORDER BY f.fact_id`,
       )
       .all()
@@ -3946,6 +3976,10 @@ interface ConfirmationPreviewRow {
 }
 
 interface StoredFactRow {
+  as_of_attempt_id: null | string;
+  as_of_activation_id: null | string;
+  as_of_started_at: null | string;
+  as_of_completed_at: null | string;
   collected_at: string;
   config_hash: string;
   connection_id: string;
@@ -4005,6 +4039,12 @@ function storedFactFromRow(row: StoredFactRow): StoredFact {
     collectedAt: row.collected_at,
     connectionId: row.connection_id,
     connectionVersion: row.config_hash,
+    collectionAsOf: row.as_of_attempt_id === null ? null : {
+      attemptId: row.as_of_attempt_id,
+      activationId: row.as_of_activation_id!,
+      startedAt: row.as_of_started_at!,
+      completedAt: row.as_of_completed_at!,
+    },
     epistemicStatus: row.epistemic_status,
     factOwner: row.fact_owner,
     kind: row.kind,

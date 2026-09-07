@@ -97,7 +97,7 @@ async function connectAndCollect(configPath: string, id: string, xdgDataHome: st
 
 async function narrate(xdgDataHome: string, arguments_: string[] = []) {
   const result = await runCli(["narrate", ...arguments_], xdgDataHome);
-  assert.equal(result.code, 0);
+  assert.equal(result.code, 0, JSON.stringify(result));
   assert.equal(result.stderr, "");
   assert.equal(result.output.schemaVersion, 1);
   assert.equal(result.output.command, "narrate");
@@ -108,6 +108,102 @@ async function narrate(xdgDataHome: string, arguments_: string[] = []) {
   assert.equal(result.output.truncationCaveat, truncationCaveat);
   return result.output;
 }
+
+test("query and narrate bound currentness to collection, not ephemeral verification", async (t) => {
+  const { directory, xdgDataHome } = fixture(t);
+  const { config, configPath } = sqliteConnection(directory, "currentness", 1, 1);
+  const source = new DatabaseSync(config.reader.path);
+  t.after(() => source.close());
+  source.exec("ALTER TABLE tasks ADD COLUMN at TEXT DEFAULT '2026-08-30T00:00:00Z'");
+  writeFileSync(configPath, JSON.stringify({
+    ...config,
+    sourceRecord: {
+      ...config.sourceRecord,
+      recordedAt: { selector: { scope: "record", path: "at" }, format: "iso8601" },
+    },
+  }));
+  await connectAndCollect(configPath, config.id, xdgDataHome);
+  const store = new ObservationStore(join(xdgDataHome, "ecosym"));
+  t.after(() => store.close());
+  const readPicture = async () => {
+    const picture = await narrate(xdgDataHome);
+    for (const kind of ["observations", "claims"]) {
+      const query = await runCli(["query", kind], xdgDataHome);
+      assert.equal(query.code, 0);
+      assert.equal(query.output.currentnessCaveat, picture.currentnessCaveat);
+      assert.deepEqual(query.output.records, picture[kind]);
+    }
+    return picture;
+  };
+  const initial = await readPicture();
+  const [attempt] = store.collectionAttempts();
+  assert.ok(attempt);
+  const expectedBoundary = {
+    attemptId: attempt.attemptId, activationId: attempt.activationId,
+    startedAt: attempt.startedAt, completedAt: attempt.completedAt,
+  };
+  assert.deepEqual((initial.observations as Record<string, unknown>[])[0]?.collectionAsOf, expectedBoundary);
+  assert.match(initial.currentnessCaveat as string, /stored collection evidence/);
+  assert.equal((initial.observations as StoredFact[])[0]?.temporalStatus, "current");
+  source.exec("DELETE FROM tasks");
+  const beforeVerify = store.narrate();
+  const attempts = store.collectionAttempts();
+  const verification = await runCli(["verify"], xdgDataHome);
+  assert.equal(verification.code, 1);
+  assert.equal((verification.output.connections as { counts: { missingAtSource: number } }[])[0]?.counts.missingAtSource, 2);
+  assert.deepEqual(store.narrate(), beforeVerify);
+  assert.deepEqual(store.collectionAttempts(), attempts);
+  assert.deepEqual((await readPicture()).observations, initial.observations);
+
+  assert.equal((await runCli(["collect", config.id], xdgDataHome)).code, 0);
+  const absent = await readPicture();
+  assert.equal(absent.dataCompleteness, "complete");
+  for (const kind of ["observations", "claims"]) {
+    assert.equal((absent[kind] as StoredFact[])[0]?.temporalStatus, "historical");
+  }
+  assert.notDeepEqual((absent.observations as Record<string, unknown>[])[0]?.collectionAsOf, expectedBoundary);
+  const historicalVerification = await runCli(["verify"], xdgDataHome);
+  assert.equal(historicalVerification.code, 1);
+  const [historicalReport] = historicalVerification.output.connections as {
+    counts: { storedFacts: number; sourceFacts: number; missingAtSource: number };
+  }[];
+  assert.equal(historicalReport?.counts.storedFacts, 2);
+  assert.equal(historicalReport?.counts.sourceFacts, 0);
+  assert.equal(historicalReport?.counts.missingAtSource, 2);
+  const exported = JSON.parse(store.exportOwnedState().bytes) as {
+    observationStore: { facts: StoredFact[] };
+  };
+  assert.deepEqual(
+    exported.observationStore.facts.map((fact) => [fact.id, fact.temporalStatus]),
+    [...absent.observations as StoredFact[], ...absent.claims as StoredFact[]]
+      .sort((left, right) => left.id - right.id)
+      .map((fact) => [fact.id, fact.temporalStatus]),
+  );
+  source.exec("DROP TABLE tasks");
+  assert.notEqual((await runCli(["collect", config.id], xdgDataHome)).code, 0);
+  const failed = await readPicture();
+  assert.equal(failed.dataCompleteness, "partial");
+  assert.deepEqual(failed.observations, absent.observations);
+  source.exec("CREATE TABLE tasks (id TEXT, value INTEGER, state TEXT, at TEXT); INSERT INTO tasks VALUES ('synthetic-task-0', 0, 'reported-done', '2026-08-30T00:00:00Z')");
+  const beforeRestore = store.collectionAttempts();
+  assert.equal((await runCli(["collect", config.id], xdgDataHome)).code, 0);
+  const restoringAttempt = store.collectionAttempts().find(
+    (candidate) => !beforeRestore.some((previous) => previous.attemptId === candidate.attemptId),
+  );
+  assert.ok(restoringAttempt);
+  assert.equal(restoringAttempt.outcome, "success");
+  const restored = await readPicture();
+  for (const kind of ["observations", "claims"]) {
+    assert.equal((restored[kind] as StoredFact[])[0]?.temporalStatus, "current");
+    assert.deepEqual((restored[kind] as StoredFact[])[0]?.collectionAsOf, {
+      attemptId: restoringAttempt.attemptId,
+      activationId: restoringAttempt.activationId,
+      startedAt: restoringAttempt.startedAt,
+      completedAt: restoringAttempt.completedAt,
+    });
+  }
+  assert.equal(store.countFacts(), 2);
+});
 
 test("1. narrate reports an empty store as complete", async (t) => {
   const { xdgDataHome } = fixture(t);
