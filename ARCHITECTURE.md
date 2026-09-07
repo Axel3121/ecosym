@@ -30,8 +30,8 @@ World surface
   ↓
 Ecosym application core
   ├── institution owner        — civilizations, jurisdiction, mandate, authority
-  ├── observation owner        — what was seen, from where, when
-  ├── form boundary            — observation → depiction
+  ├── observation owner        — what was seen, provenance, collection health
+  ├── form boundary            — observation-derived depiction
   ├── model boundary           — reasoning over selected input
   └── petition boundary        — a request leaving for an authority
        ↓
@@ -60,9 +60,9 @@ later, and it is not optional: a surface allowed to reach a source directly can
 render something that was never observed.
 
 What it renders is composed by the application core from what each owner
-explicitly exposes. Institutional state comes from the institution owner as an
-already-governed, user-declared input, never inferred. Observed activity comes
-from the observation owner through the form boundary: it is derived, never
+explicitly exposes. Institutional state comes from the institution owner as a
+user-declared input, never inferred or evidence of runtime enforcement. Observed
+state comes from the observation owner through the form boundary: it is derived, never
 authored. Institutional state need not become an observation or pass through the
 observation owner or form boundary to reach the surface, but its depiction must
 still obey the same fair, uniform rules.
@@ -71,6 +71,13 @@ still obey the same fair, uniform rules.
 
 The core coordinates behavior and validates requests across the boundaries
 below. Model output is input to this core, never an alternative control plane.
+
+The core composes a closed, runtime-validated world display contract from
+institution-owned and observation-owned projections. Transport serializes that
+already-composed contract; it does not own observation-to-depiction semantics.
+Neither transport nor surface receives external source or database handles in
+that contract. Institutional state is composed alongside observations, not routed
+through the observation owner to make it displayable.
 
 ### Institution owner
 
@@ -103,10 +110,16 @@ inferred from having followed a petition in time.
 No generic trusted flag may collapse provenance, epistemic status, authority,
 and temporal validity into one value.
 
+The observation owner also owns collection attempts and connection health:
+whether Ecosym read a source, quietly re-read it, has never read it, or cannot
+currently read it. This metadata describes Ecosym's collection process, not an
+external observation or the outcome of work. Successful empty or unchanged
+collection establishes quiet only in the collected picture, not domain inactivity.
+
 ### Form boundary
 
 Depiction of observed activity is derived from observed state, never authored.
-The observation-to-depiction rules are owned here. Already-governed institutional
+The observation-to-depiction rules are owned here. User-declared institutional
 state is a distinct declared input, not an observation. Wherever either is
 depicted, the rules are fair and uniform for every civilization: nothing gains
 a special appearance by being important.
@@ -114,6 +127,13 @@ a special appearance by being important.
 Absence of observation and absence of activity are distinct inputs and must
 remain distinguishable at this boundary. A surface cannot recover the difference
 once it has been collapsed.
+
+No founding, a founded civilization without observations, known collection
+quiet, and an unread source are distinct. Unknown, current, and historical
+temporal evidence stays distinct from collection health. Missing source time
+remains unknown; collection time or display time never substitutes for it.
+Depicting an external recorded workflow field does not turn it into an observed
+effect or a cause of civilization activity.
 
 ### Model boundary
 
@@ -162,7 +182,8 @@ would depict government over a runtime that does as it pleases.
 - Ecosym's institution store owns civilizations, mandates, jurisdiction, and
   authority rules.
 - Ecosym's observation store owns observation records and their provenance,
-  timing, and status.
+  timing, and status, and separately owns collection-attempt and connection-health
+  metadata.
 - External systems own their current external facts and effect outcomes.
 - A connected runtime owns its own state: agents, lineage, delegation, and tool
   access. Which runtimes are connected, and what each can enforce, is observed —

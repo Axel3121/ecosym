@@ -2,15 +2,10 @@ import { promises as fs } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 
-import { INSTITUTION_SNAPSHOT_SCHEMA_VERSION, type FoundedCivilizationSnapshot } from "./institution-snapshot.ts";
-import { validateInstitutionSnapshot } from "./validate-institution-snapshot.ts";
-
-export interface InstitutionSnapshotSource {
-  listFoundedCivilizations(): FoundedCivilizationSnapshot[];
-}
+import { validateWorldSnapshot, type WorldSnapshot } from "./world-snapshot.ts";
 
 /** The launcher binds this server to 127.0.0.1; no store mutation capability is accepted. */
-export function createWorldServer(source: InstitutionSnapshotSource, buildDirectory: string): Server {
+export function createWorldServer(readSnapshot: () => WorldSnapshot, buildDirectory: string): Server {
   const server = createServer(async (request, response) => {
     const fail = (status: number, error: string) => {
       response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
@@ -42,16 +37,13 @@ export function createWorldServer(source: InstitutionSnapshotSource, buildDirect
       fail(400, "Ugyldig sti");
       return;
     }
-    if (pathname === "/api/institution-snapshot") {
+    if (pathname === "/api/world-snapshot") {
       try {
-        const snapshot = validateInstitutionSnapshot({
-          schemaVersion: INSTITUTION_SNAPSHOT_SCHEMA_VERSION,
-          civilizations: source.listFoundedCivilizations(),
-        });
+        const snapshot = validateWorldSnapshot(readSnapshot());
         response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
         response.end(JSON.stringify(snapshot));
       } catch {
-        fail(500, "Institusjonsdata kunne ikke leses");
+        fail(500, "Verdensdata kunne ikke leses");
       }
       return;
     }

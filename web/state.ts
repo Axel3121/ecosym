@@ -1,15 +1,15 @@
-import type { FoundedCivilizationSnapshot, InstitutionSnapshot } from "../src/institution-snapshot.ts";
-import { validateInstitutionSnapshot } from "../src/validate-institution-snapshot.ts";
+import type { FoundedCivilizationSnapshot } from "../src/institution-snapshot.ts";
+import { validateWorldSnapshot, type WorldSnapshot } from "../src/world-snapshot.ts";
 
 export type WorldState =
   | { kind: "loading" | "error" }
-  | { kind: "empty" | "ready"; snapshot: InstitutionSnapshot };
+  | { kind: "empty" | "ready"; snapshot: WorldSnapshot };
 
 export function worldState(value?: unknown, failed = false): WorldState {
   if (failed) return { kind: "error" };
   if (value === undefined) return { kind: "loading" };
   try {
-    const snapshot = validateInstitutionSnapshot(value);
+    const snapshot = validateWorldSnapshot(value);
     return { kind: snapshot.civilizations.length === 0 ? "empty" : "ready", snapshot };
   } catch { return { kind: "error" }; }
 }

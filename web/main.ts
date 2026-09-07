@@ -1,4 +1,5 @@
 import { inspectFields, placePosition, stateCopy, worldState } from "./state.ts";
+import { inspectSourceFields } from "../src/world-form.ts";
 import { drawPlace, drawTerrain } from "./terrain.ts";
 
 function element<T extends HTMLElement>(id: string): T {
@@ -26,7 +27,7 @@ new ResizeObserver(paint).observe(world);
 async function load(): Promise<void> {
   let state;
   try {
-    const response = await fetch("/api/institution-snapshot", { cache: "no-store", signal: AbortSignal.timeout(10000) });
+    const response = await fetch("/api/world-snapshot", { cache: "no-store", signal: AbortSignal.timeout(10000) });
     state = response.ok ? worldState(await response.json()) : worldState(undefined, true);
   } catch { state = worldState(undefined, true); }
   const notice = element("notice");
@@ -59,7 +60,8 @@ async function load(): Promise<void> {
       element("inspect-title").textContent = entry.name;
       const fields = element("fields");
       fields.replaceChildren();
-      for (const field of [{ label: "Skjemaversjon", values: [String(snapshot.schemaVersion)] }, ...inspectFields(entry)]) {
+      const picture = snapshot.sourcePictures.find((picture) => picture.civilizationId === entry.civilizationId)!;
+      for (const field of [{ label: "Skjemaversjon", values: [String(snapshot.schemaVersion)] }, ...inspectFields(entry), ...inspectSourceFields(picture, snapshot)]) {
         const term = document.createElement("dt");
         term.textContent = field.label;
         fields.append(term);

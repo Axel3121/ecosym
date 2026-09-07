@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 
 import { ObservationStore } from "./store.ts";
 import { createWorldServer } from "./world-server.ts";
+import { composeWorldSnapshot } from "./world-application.ts";
 
 const args = process.argv.slice(2);
 if (args.length !== 0 && (args.length !== 2 || args[0] !== "--port"
@@ -10,7 +11,7 @@ if (args.length !== 0 && (args.length !== 2 || args[0] !== "--port"
   process.exitCode = 1;
 } else {
   const store = new ObservationStore();
-  const server = createWorldServer(store, fileURLToPath(new URL("../dist/world/", import.meta.url)));
+  const server = createWorldServer(() => composeWorldSnapshot(store), fileURLToPath(new URL("../dist/world/", import.meta.url)));
   let closed = false;
   const closeStore = () => {
     if (!closed) { closed = true; store.close(); }

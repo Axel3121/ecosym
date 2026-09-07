@@ -14,6 +14,13 @@ import {
 } from "./config.ts";
 import { canonicalJson, type JsonScalar, type JsonValue, sha256 } from "./json.ts";
 import type { FoundedCivilizationSnapshot } from "./institution-snapshot.ts";
+import type {
+  ConnectionStatus,
+  EpistemicStatus,
+  FactInput,
+  NarrationSnapshot,
+  StoredFact,
+} from "./observation-snapshot.ts";
 import {
   mandateDigest,
   parseMandateConfig,
@@ -38,6 +45,15 @@ import {
   verificationFactFromInput,
   verificationFactKey,
 } from "./verification-facts.ts";
+
+export type {
+  ConnectionStatus,
+  EpistemicStatus,
+  FactInput,
+  NarrationAttempt,
+  NarrationSnapshot,
+  StoredFact,
+} from "./observation-snapshot.ts";
 
 const STORE_SCHEMA_VERSION = 15;
 const LEGACY_REBUILD_SCHEMA_VERSION = 9;
@@ -233,32 +249,6 @@ export interface ActiveConnection {
   jsonlRecordIndexMode: JsonlRecordIndexMode | "unknown";
 }
 
-export type EpistemicStatus = "claim" | "observation";
-
-export interface FactInput {
-  epistemicStatus: EpistemicStatus;
-  factOwner: string;
-  kind: string;
-  payload: Record<string, JsonScalar>;
-  sourceRecordedAt: null | string;
-  sourceRecordId: string;
-  subject: string;
-}
-
-export interface StoredFact extends FactInput {
-  id: number;
-  collectedAt: string;
-  connectionId: string;
-  connectionVersion: string;
-  collectionAsOf: null | {
-    attemptId: string;
-    activationId: string;
-    startedAt: string;
-    completedAt: string;
-  };
-  temporalStatus: "current" | "historical" | "unknown";
-}
-
 // A last-seen order, unlike attempt_id, advances even for identical sightings.
 // Never carry absence evidence across configuration or activation boundaries.
 const FACT_COLLECTION_AS_OF_JOIN = `
@@ -284,22 +274,6 @@ export interface QueryOptions {
   limit?: number;
   order?: "asc" | "desc";
   subject?: string;
-}
-
-export interface NarrationAttempt {
-  attemptId: string;
-  connectionId: string;
-  connectionVersion: string;
-  startedAt: string;
-}
-
-export interface NarrationSnapshot {
-  connections: ConnectionStatus[];
-  attemptsInProgress: NarrationAttempt[];
-  observations: StoredFact[];
-  observationsTruncated: boolean;
-  claims: StoredFact[];
-  claimsTruncated: boolean;
 }
 
 export interface CollectionResult {
@@ -350,22 +324,6 @@ type CollectionAttemptRetirementSnapshot = Omit<
   CollectionAttemptRetirementPlan,
   "confirmationToken"
 > & { stateFingerprint: string };
-
-export interface ConnectionStatus {
-  connectionId: string;
-  connectionVersion: string;
-  lastAttemptAt: null | string;
-  reason:
-    | "collected"
-    | "failed"
-     | "incomplete"
-     | "never-run"
-     | "nothing-new"
-     | "record-index-unknown"
-     | "retired"
-     | "skipped";
-  status: "changed" | "quiet" | "unread";
-}
 
 export interface VerificationFact {
   epistemicStatus: EpistemicStatus;

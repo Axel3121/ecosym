@@ -3,9 +3,11 @@ export const INSTITUTION_SNAPSHOT_SCHEMA_VERSION = 1;
 
 /**
  * User-declared institutional state, not evidence of activity. No observation,
- * claim, connection status, or work claim is attributed here: there is no
- * authoritative link for doing so, and names or keywords would invent one
- * (the authority mirage described in README.md and SECURITY.md).
+ * claim, connection status, or work claim is attributed by this institution-only
+ * contract. Application composition links sources to connection IDs by exact
+ * equality in WorldSnapshot, alongside observation-owned facts and collection
+ * health. That declared link is not causal attribution or runtime enforcement;
+ * names and keywords must never invent one.
  *
  * mandateDigest is deliberately absent. It is authority-context material for
  * petition callers of resolveAuthorityContext, not for a surface that owns no
@@ -33,7 +35,9 @@ export interface FoundedCivilizationSnapshot {
 
 /**
  * Institution-only input for application-core composition, not a world snapshot
- * or raw export. Civilizations are ordered by foundedAt then civilizationId;
+ * or raw export. WorldSnapshot composes this input alongside observation-owned
+ * state without routing institutional state through the observation owner.
+ * Civilizations are ordered by foundedAt then civilizationId;
  * forgotten civilizations are absent. Unverifiable mandates are unknown per
  * entry so a damaged record does not make all founded civilizations unviewable.
  */
