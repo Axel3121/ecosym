@@ -2412,6 +2412,43 @@ test("corrections remain ordered across configuration revisions", async () => {
   }
 });
 
+test("empty recollection makes a fact with unavailable source time historical", async (t) => {
+  const { store } = temporaryStore();
+  t.after(() => store.close());
+  const input = JSON.parse(parseConnectionConfigInput("source-a", "owner-a"));
+  input.sourceRecord.recordedAt = { unavailable: true };
+  const parsed = parseConnectionConfig(input);
+  store.register(parsed);
+  const active = store.getConnection(parsed.config.id);
+  await store.collect(active, (sink) => {
+    sink.recordSourceRecord(() => [fact({ sourceRecordedAt: null })]);
+  });
+  assert.equal(store.queryObservations()[0]?.sourceRecordedAt, null);
+  assert.equal(store.queryObservations()[0]?.temporalStatus, "unknown");
+  await store.collect(active, () => {});
+  assert.equal(store.queryObservations()[0]?.temporalStatus, "historical");
+});
+
+test("absence evidence stays isolated between connection ids", async (t) => {
+  const { store } = temporaryStore();
+  t.after(() => store.close());
+  const first = connection("source-a", "shared-owner");
+  const second = connection("source-b", "shared-owner");
+  const sharedFact = fact({ factOwner: "shared-owner" });
+  for (const parsed of [first, second]) {
+    store.register(parsed);
+    await store.collect(store.getConnection(parsed.config.id), (sink) => {
+      sink.recordSourceRecord(() => [sharedFact]);
+    });
+  }
+  assert.deepEqual(store.queryObservations().map((record) => record.temporalStatus), ["current", "current"]);
+  await store.collect(store.getConnection(second.config.id), () => {});
+  assert.deepEqual(
+    store.queryObservations().map((record) => [record.connectionId, record.temporalStatus]),
+    [[first.config.id, "current"], [second.config.id, "historical"]],
+  );
+});
+
 test("correction state stays isolated between connection ids", async () => {
   const { store } = temporaryStore();
   const first = connection("source-a", "shared-owner");

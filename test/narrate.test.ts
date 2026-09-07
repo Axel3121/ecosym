@@ -162,15 +162,46 @@ test("query and narrate bound currentness to collection, not ephemeral verificat
     assert.equal((absent[kind] as StoredFact[])[0]?.temporalStatus, "historical");
   }
   assert.notDeepEqual((absent.observations as Record<string, unknown>[])[0]?.collectionAsOf, expectedBoundary);
+  const historicalVerification = await runCli(["verify"], xdgDataHome);
+  assert.equal(historicalVerification.code, 1);
+  const [historicalReport] = historicalVerification.output.connections as {
+    counts: { storedFacts: number; sourceFacts: number; missingAtSource: number };
+  }[];
+  assert.equal(historicalReport?.counts.storedFacts, 2);
+  assert.equal(historicalReport?.counts.sourceFacts, 0);
+  assert.equal(historicalReport?.counts.missingAtSource, 2);
+  const exported = JSON.parse(store.exportOwnedState().bytes) as {
+    observationStore: { facts: StoredFact[] };
+  };
+  assert.deepEqual(
+    exported.observationStore.facts.map((fact) => [fact.id, fact.temporalStatus]),
+    [...absent.observations as StoredFact[], ...absent.claims as StoredFact[]]
+      .sort((left, right) => left.id - right.id)
+      .map((fact) => [fact.id, fact.temporalStatus]),
+  );
   source.exec("DROP TABLE tasks");
   assert.notEqual((await runCli(["collect", config.id], xdgDataHome)).code, 0);
   const failed = await readPicture();
   assert.equal(failed.dataCompleteness, "partial");
   assert.deepEqual(failed.observations, absent.observations);
   source.exec("CREATE TABLE tasks (id TEXT, value INTEGER, state TEXT, at TEXT); INSERT INTO tasks VALUES ('synthetic-task-0', 0, 'reported-done', '2026-08-30T00:00:00Z')");
+  const beforeRestore = store.collectionAttempts();
   assert.equal((await runCli(["collect", config.id], xdgDataHome)).code, 0);
+  const restoringAttempt = store.collectionAttempts().find(
+    (candidate) => !beforeRestore.some((previous) => previous.attemptId === candidate.attemptId),
+  );
+  assert.ok(restoringAttempt);
+  assert.equal(restoringAttempt.outcome, "success");
   const restored = await readPicture();
-  assert.equal((restored.observations as StoredFact[])[0]?.temporalStatus, "current");
+  for (const kind of ["observations", "claims"]) {
+    assert.equal((restored[kind] as StoredFact[])[0]?.temporalStatus, "current");
+    assert.deepEqual((restored[kind] as StoredFact[])[0]?.collectionAsOf, {
+      attemptId: restoringAttempt.attemptId,
+      activationId: restoringAttempt.activationId,
+      startedAt: restoringAttempt.startedAt,
+      completedAt: restoringAttempt.completedAt,
+    });
+  }
   assert.equal(store.countFacts(), 2);
 });
 
