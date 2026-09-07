@@ -1123,7 +1123,8 @@ export class ObservationStore {
    * PRODUCT.md's missing/unverifiable state is presented as unknown per entry:
    * one broken mandate must not deny a view of every other civilization.
    * Dissolved entries remain visible; forgotten entries are absent. Status reports
-   * what the store holds, not a digest-protected fact. The digest checks only the
+   * what the store holds even if the body is unreadable, not a digest-protected fact.
+   * Only a missing revision leaves status unknown. The digest checks only the
    * mandate body, not IDs, revision, timestamps, or civilization name, and is not
    * exposed as authority-context material on this read-only display path.
    */
@@ -1133,6 +1134,7 @@ export class ObservationStore {
         civilizationId: row.civilization_id,
         name: row.name,
         foundedAt: row.founded_at,
+        bodyReadable: false,
         domain: "",
         sources: [],
         mayActAlone: [],
@@ -1140,25 +1142,26 @@ export class ObservationStore {
         mandate: { status: "unreadable" },
       };
       // A missing revision is an invariant violation, also unknown for this entry.
-      if (row.mandate_json === null) return entry;
+      if (row.mandate_id === null) return entry;
+      const revision = row as FoundedMandateRow & MandateRevisionRow;
+      entry.mandate = {
+        status: revision.status,
+        mandateId: revision.mandate_id,
+        revision: revision.revision,
+        recordedAt: revision.recorded_at,
+      };
       try {
-        const mandate = parseStoredMandate(row.mandate_json, row.civilization_id);
+        const mandate = parseStoredMandate(revision.mandate_json, row.civilization_id);
         if (mandateDigest(mandate as unknown as JsonValue) !== row.mandate_digest) {
           return entry;
         }
-        const revision = row as FoundedMandateRow & MandateRevisionRow;
         return {
           ...entry,
+          bodyReadable: true,
           domain: mandate.domain,
           sources: mandate.sources,
           mayActAlone: mandate.mayActAlone,
           mustEscalate: mandate.mustEscalate,
-          mandate: {
-            status: revision.status,
-            mandateId: revision.mandate_id,
-            revision: revision.revision,
-            recordedAt: revision.recorded_at,
-          },
         };
       } catch (error) {
         if (!(error instanceof MandateUnreadableError)) throw error;

@@ -11,8 +11,9 @@ export const INSTITUTION_SNAPSHOT_SCHEMA_VERSION = 1;
  * petition callers of resolveAuthorityContext, not for a surface that owns no
  * authority and has no petition path through this read-only contract.
  *
- * An unreadable mandate has domain "" and empty sources/mayActAlone/mustEscalate
- * placeholders: these mean unknown, not a verified empty mandate. Only its
+ * When bodyReadable is false, domain "" and empty sources/mayActAlone/mustEscalate
+ * are placeholders: these mean unknown, not a verified empty mandate. Revision
+ * metadata remains available; status "unreadable" means no revision row exists. Only its
  * body is digest-checked; status, IDs, revision, timestamps, and name are not
  * digest-protected. This contract adds no integrity guarantee for those fields.
  */
@@ -20,6 +21,7 @@ export interface FoundedCivilizationSnapshot {
   civilizationId: string;
   name: string;
   foundedAt: string;
+  bodyReadable: boolean;
   domain: string;
   sources: string[];
   mayActAlone: string[];

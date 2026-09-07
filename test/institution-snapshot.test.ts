@@ -42,6 +42,7 @@ test("institution snapshots are closed, ordered, and reflect redraw and dissolut
     civilizationId: founded.civilizationId,
     name,
     foundedAt: time,
+    bodyReadable: true,
     domain: body.domain,
     sources: body.sources,
     mayActAlone: body.mayActAlone,
@@ -52,7 +53,7 @@ test("institution snapshots are closed, ordered, and reflect redraw and dissolut
   assert.deepEqual(snapshot().civilizations, expected);
   for (const entry of snapshot().civilizations) {
     assert.deepEqual(Object.keys(entry).sort(), [
-      "civilizationId", "name", "foundedAt", "domain", "sources", "mayActAlone", "mustEscalate", "mandate",
+      "civilizationId", "name", "foundedAt", "bodyReadable", "domain", "sources", "mayActAlone", "mustEscalate", "mandate",
     ].sort());
     assert.deepEqual(Object.keys(entry.mandate).sort(), ["status", "mandateId", "revision", "recordedAt"].sort());
   }
@@ -85,9 +86,14 @@ for (const corruption of ["digest mismatch", "invalid JSON", "invalid mandate", 
     t.after(() => { database.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
     const time = new Date("2026-01-01T00:00:00.000Z");
     const broken = store.foundCivilization(parseCivilizationConfig({ ...body, name: "Broken" }), time);
-    store.foundCivilization(parseCivilizationConfig({ ...body, name: "Healthy" }), time);
+    const healthy = store.foundCivilization(parseCivilizationConfig({ ...body, name: "Healthy" }), time);
+    const sortedIds = [broken.civilizationId, healthy.civilizationId].sort();
+    // Force physical row order opposite to ID order, independent of random UUIDs.
+    sortedIds.toReversed().forEach((id, index) => {
+      database.prepare("UPDATE civilizations SET rowid = ? WHERE civilization_id = ?").run(index + 3, id);
+    });
     const before = store.listFoundedCivilizations();
-    assert.deepEqual(before.map((entry) => entry.civilizationId), before.map((entry) => entry.civilizationId).sort());
+    assert.deepEqual(before.map((entry) => entry.civilizationId), sortedIds);
     assert.deepEqual(store.listFoundedCivilizations(), before);
     if (corruption === "missing revision") {
       database.prepare("DELETE FROM mandate_revisions WHERE civilization_id = ?").run(broken.civilizationId);
@@ -100,8 +106,34 @@ for (const corruption of ["digest mismatch", "invalid JSON", "invalid mandate", 
     }
     const after = store.listFoundedCivilizations();
     assert.deepEqual(after, before.map((entry) => entry.civilizationId === broken.civilizationId
-      ? { ...entry, domain: "", sources: [], mayActAlone: [], mustEscalate: [], mandate: { status: "unreadable" } }
+      ? { ...entry, bodyReadable: false, domain: "", sources: [], mayActAlone: [], mustEscalate: [],
+        mandate: corruption === "missing revision" ? { status: "unreadable" } : entry.mandate }
       : entry));
-    assert.deepEqual(Object.keys(after.find((entry) => entry.civilizationId === broken.civilizationId)!.mandate), ["status"]);
+    assert.deepEqual(Object.keys(after.find((entry) => entry.civilizationId === broken.civilizationId)!.mandate).sort(),
+      corruption === "missing revision" ? ["status"] : ["status", "mandateId", "revision", "recordedAt"].sort());
   });
 }
+
+test("institution snapshot preserves dissolved revision metadata when its body is corrupted", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-institution-snapshot-dissolved-"));
+  const store = new ObservationStore(directory);
+  const database = new DatabaseSync(store.path);
+  t.after(() => { database.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const foundedAt = "2026-01-01T00:00:00.000Z";
+  const dissolvedAt = "2026-01-02T00:00:00.000Z";
+  const founded = store.foundCivilization(parseCivilizationConfig({ ...body, name: "Dissolved" }), new Date(foundedAt));
+  assert.equal(store.dissolveCivilization(founded.civilizationId, new Date(dissolvedAt)), true);
+  database.prepare("UPDATE mandate_revisions SET mandate_json = ? WHERE civilization_id = ? AND revision = ?")
+    .run("{", founded.civilizationId, "revision:2");
+  assert.deepEqual(store.listFoundedCivilizations(), [{
+    civilizationId: founded.civilizationId,
+    name: "Dissolved",
+    foundedAt,
+    bodyReadable: false,
+    domain: "",
+    sources: [],
+    mayActAlone: [],
+    mustEscalate: [],
+    mandate: { status: "dissolved", mandateId: founded.mandateId, revision: "revision:2", recordedAt: dissolvedAt },
+  }]);
+});
