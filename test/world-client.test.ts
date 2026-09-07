@@ -26,6 +26,24 @@ test("loading, HTTP, invalid response, request failure, empty and populated are 
   assert.deepEqual(await loadWorld({ fetch: async () => new Response(new ReadableStream({ start(controller) { controller.error(new SyntaxError("transport, not JSON")); } })) }), { kind: "failure", reason: "request" });
 });
 
+for (const rejects of [false, true]) {
+  test(`HTTP failure cancels its body even when cancellation ${rejects ? "rejects" : "succeeds"}`, async () => {
+    let cancellations = 0;
+    const response = new Response(new ReadableStream({
+      cancel() {
+        cancellations++;
+        return rejects ? Promise.reject(new Error("private cancellation details")) : Promise.resolve();
+      },
+    }), { status: 503 });
+    assert.deepEqual(await loadWorld({ fetch: async () => response }), { kind: "failure", reason: "http", status: 503 });
+    assert.equal(cancellations, 1);
+  });
+}
+
+test("HTTP failure without a body preserves its status", async () => {
+  assert.deepEqual(await loadWorld({ fetch: async () => new Response(null, { status: 500 }) }), { kind: "failure", reason: "http", status: 500 });
+});
+
 test("the exposed form retains every truth axis and pairs exact validated objects", async () => {
   const input = snapshot();
   const reasons = [null, "never-run", "nothing-new", "failed", "incomplete", "retired", "skipped", "record-index-unknown", "collected"] as const;

@@ -22,7 +22,10 @@ export async function loadWorld(options: { signal?: AbortSignal; fetch?: typeof 
   try {
     const read = async (): Promise<WorldLoadResult> => {
       const response = await (options.fetch ?? fetch)("/api/world-snapshot", { method: "GET", cache: "no-store", signal: request.signal });
-      if (!response.ok) return { kind: "failure", reason: "http", status: response.status };
+      if (!response.ok) {
+        try { await response.body?.cancel(); } catch { /* Cleanup must not replace the HTTP failure. */ }
+        return { kind: "failure", reason: "http", status: response.status };
+      }
       // Read separately so a body transport error cannot masquerade as malformed JSON.
       const body = await response.text();
       try {
