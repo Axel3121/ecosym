@@ -273,7 +273,13 @@ If stored last-seen evidence cannot establish that lifetime, the boundary is
 null. `collectedAt` is retained provenance, not this freshness boundary.
 
 The current readers exhaust the configured table, file, or file-set, with no
-pagination, filter, or time window. A later successful attempt in that same
+pagination, filter, or time window. File readers require unchanged bigint
+device, inode, size, modification-time, and change-time metadata across the read;
+JSON file sets also require an unchanged sorted path inventory and member
+revisions across the whole read. Detected changes fail as `source_changed`,
+without committing partial facts or establishing absence. SQLite supplies its
+SELECT snapshot. These checks do not guarantee stability after the read.
+A later successful attempt in that same
 lifetime that does not see a fact therefore makes it `historical`, even without
 a successor. This means previously seen but known not-current in that collected
 picture; it does not assert deletion or inactivity in the external domain.

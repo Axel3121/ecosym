@@ -337,6 +337,28 @@ test("JSONL index-mode reading refuses source metadata that changes during the r
   }
 });
 
+test("a concurrent rewrite is source_changed even when the bytes read are malformed", async (t) => {
+  for (const type of ["json", "csv"] as const) {
+    const directory = workspace();
+    const path = join(directory, `source.${type}`);
+    writeFileSync(path, type === "json" ? '[{"id":"r1"}]' : "id\nr1\n");
+    const handle = await open(path, "r");
+    const prototype = Object.getPrototypeOf(handle);
+    await handle.close();
+    t.mock.method(prototype, "readFile", async () => {
+      writeFileSync(path, "malformed replacement");
+      return type === "json" ? "[" : 'id\n"';
+    });
+    try {
+      assert.equal(await readError(config(type === "json"
+        ? { type, pathPattern: path, recordsPath: "" }
+        : { type, path, delimiter: "," })), "source_changed");
+    } finally {
+      t.mock.restoreAll();
+    }
+  }
+});
+
 test("an unescaped quote inside an unquoted CSV field is malformed", async () => {
   const directory = workspace();
   const path = join(directory, "source.csv");

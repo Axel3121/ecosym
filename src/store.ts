@@ -3977,9 +3977,9 @@ interface ConfirmationPreviewRow {
 
 interface StoredFactRow {
   as_of_attempt_id: null | string;
-  as_of_activation_id: string;
-  as_of_started_at: string;
-  as_of_completed_at: string;
+  as_of_activation_id: null | string;
+  as_of_started_at: null | string;
+  as_of_completed_at: null | string;
   collected_at: string;
   config_hash: string;
   connection_id: string;
@@ -4041,9 +4041,9 @@ function storedFactFromRow(row: StoredFactRow): StoredFact {
     connectionVersion: row.config_hash,
     collectionAsOf: row.as_of_attempt_id === null ? null : {
       attemptId: row.as_of_attempt_id,
-      activationId: row.as_of_activation_id,
-      startedAt: row.as_of_started_at,
-      completedAt: row.as_of_completed_at,
+      activationId: row.as_of_activation_id!,
+      startedAt: row.as_of_started_at!,
+      completedAt: row.as_of_completed_at!,
     },
     epistemicStatus: row.epistemic_status,
     factOwner: row.fact_owner,

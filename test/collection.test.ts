@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -13,6 +13,7 @@ import { recordIndexModeEvidence } from "../src/record-index-evidence.ts";
 import {
   openFileReadOnly,
   openSqliteReadOnly,
+  readSource,
   SourceReadError,
 } from "../src/readers.ts";
 import { CollectionFailedError, ObservationStore } from "../src/store.ts";
@@ -108,6 +109,90 @@ function fileConnection(
     ],
   });
 }
+
+for (const mutation of ["jsonl", "jsonl-malformed", "csv", "json", "add", "remove", "replace", "future-content", "past-content"] as const) {
+  test(`source stability: ${mutation} cannot commit partial facts or establish absence`, async () => {
+    const directory = workspace();
+    const type = mutation.startsWith("jsonl") ? "jsonl" : mutation === "csv" ? "csv" : "json";
+    const path = join(directory, `a.${type}`);
+    const member = join(directory, `b.${type}`);
+    const contents = (id: string) => type === "csv"
+      ? `id,subject,value\n${id},s,7\n`
+      : type === "jsonl" ? `{"id":"${id}","subject":"s","value":7}\n`
+      : JSON.stringify([{ id, subject: "s", value: 7 }]);
+    const parsed = fileConnection("stable-source", type === "json"
+      ? { type, pathPattern: join(directory, "*.json"), recordsPath: "" }
+      : type === "csv" ? { type, path, delimiter: "," } : { type, path });
+    const store = new ObservationStore(join(directory, "state"));
+    try {
+      store.register(parsed);
+      writeFileSync(path, contents("original"));
+      await collectConnection(store, parsed.config.id);
+      const before = store.queryObservations();
+      writeFileSync(path, contents("partial") + (mutation === "jsonl-malformed" ? "invalid\n" : ""));
+      if (["remove", "replace", "future-content", "past-content"].includes(mutation)) {
+        writeFileSync(member, contents("member"));
+      }
+      let yielded = 0;
+      await assert.rejects(store.collect(store.getConnection(parsed.config.id), async (sink) => {
+        for await (const record of readSource(parsed.config)) {
+          sink.recordSourceRecord(() => materializeFacts(parsed.config, record));
+          yielded += 1;
+          if (yielded !== (mutation === "past-content" ? 2 : 1)) continue;
+          if (mutation === "add") writeFileSync(member, contents("added"));
+          else if (mutation === "remove") rmSync(member);
+          else if (mutation === "replace") {
+            const replacement = join(directory, "replacement.tmp");
+            writeFileSync(replacement, contents("member"));
+            renameSync(replacement, member);
+          } else if (mutation === "future-content") writeFileSync(member, contents("changed-member"));
+          else writeFileSync(path, contents("mutated"));
+        }
+      }), (error: unknown) => error instanceof CollectionFailedError && error.code === "source_changed");
+      assert.ok(yielded > 0);
+      assert.deepEqual(store.queryObservations(), before);
+      assert.equal(store.countFacts(), 1);
+      const failed = store.collectionAttempts().find((attempt) => attempt.outcome === "failed");
+      assert.equal(failed?.failureCode, "source_changed");
+    } finally {
+      store.close();
+    }
+  });
+}
+
+test("identical fact re-seen after reconnect becomes historical at the new activation's empty attempt", async () => {
+  const directory = workspace();
+  const path = join(directory, "source.jsonl");
+  const parsed = fileConnection("reseen", { type: "jsonl", path });
+  const store = new ObservationStore(join(directory, "state"));
+  try {
+    store.register(parsed);
+    writeFileSync(path, '{"id":"r1","subject":"s","value":7}\n');
+    await collectConnection(store, parsed.config.id);
+    const [original] = store.queryObservations();
+    store.disconnect(parsed.config.id);
+    store.register(parsed);
+    await collectConnection(store, parsed.config.id);
+    const [reseen] = store.queryObservations();
+    assert.equal(reseen?.id, original?.id);
+    assert.equal(reseen?.collectedAt, original?.collectedAt);
+    assert.notEqual(reseen?.collectionAsOf?.activationId, original?.collectionAsOf?.activationId);
+    writeFileSync(path, "");
+    const empty = await collectConnection(store, parsed.config.id);
+    const attempt = store.collectionAttempts().find((candidate) => candidate.attemptId === empty.result.attemptId);
+    assert.ok(attempt);
+    assert.equal(attempt.activationId, reseen?.collectionAsOf?.activationId);
+    const [historical] = store.queryObservations();
+    assert.equal(historical?.temporalStatus, "historical");
+    assert.deepEqual(historical?.collectionAsOf, {
+      attemptId: attempt.attemptId, activationId: attempt.activationId,
+      startedAt: attempt.startedAt, completedAt: attempt.completedAt,
+    });
+    assert.deepEqual(store.narrate().observations, [historical]);
+  } finally {
+    store.close();
+  }
+});
 
 function indexedJsonlConnection(sourcePath: string) {
   return parseConnectionConfig({
