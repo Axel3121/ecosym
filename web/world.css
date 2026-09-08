@@ -69,7 +69,7 @@ footer { display: flex; justify-content: space-between; gap: 14px; padding: 12px
   .inspection { width: 100%; max-width: none; max-height: 48%; padding: 16px 20px; border-left: 0; border-top: 2px solid #847659; }
   .inspection h2 { margin-top: 15px; }
   #navigation-help { font-size: 9px; padding: 6px 12px; }
-  .map-controls { bottom: 55px; left: 12px; }
+  .map-controls { position: static; flex-shrink: 0; align-self: flex-start; margin: 0 12px 3px; }
   .world-message { top: 18%; padding: 18px; }
   .world-message h2 { font-size: 25px; }
   footer { padding: 8px 12px; font-size: 8px; }

@@ -281,7 +281,8 @@ test("the production world surface uses the actual build and launcher with isola
     try {
       await page.route("**/api/world-snapshot", (route) => route.fulfill({ json: snapshot }));
       await page.goto(url);
-      const button = page.locator(".place").first();
+      const place = form.places.find((place) => place.name === "Synthetic 8")!;
+      const button = page.getByRole("button", { name: `Inspect ${place.name}`, exact: true });
       await button.waitFor();
       await button.focus();
       await page.keyboard.press("Enter");
@@ -291,6 +292,20 @@ test("the production world surface uses the actual build and launcher with isola
       t.diagnostic(`Actual scene: ${scene.width} x ${scene.height}px; viewport: ${viewport.width} x ${viewport.height}px`);
       assert.ok(scene.height >= viewport.height * 0.3, `Actual scene height ${scene.height}px < ${viewport.height * 0.3}px`);
       assert.ok(scene.y + scene.height <= inspector.y, "inspector must not cover the scene");
+      const controls = (await page.getByRole("navigation", { name: "World navigation" }).boundingBox())!;
+      assert.ok(scene.y + scene.height <= controls.y, "navigation must not cover the scrollable scene or its evidence marks");
+      assert.equal(await button.locator(".mark").count(), place.marks.length);
+      for (const mark of await button.locator(".mark").all()) {
+        const visible = await mark.evaluate((node) => {
+          node.scrollIntoView({ block: "nearest", inline: "nearest" });
+          const bounds = node.getBoundingClientRect();
+          const scene = node.closest(".scene")!.getBoundingClientRect();
+          return bounds.top >= scene.top && bounds.bottom <= scene.bottom
+            && bounds.left >= scene.left && bounds.right <= scene.right
+            && document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2) === node;
+        });
+        assert.ok(visible, `${await mark.getAttribute("aria-label")} must be reachable and unobstructed with inspection open`);
+      }
       assert.equal(await page.getByRole("complementary").evaluate((node) => node.scrollWidth <= node.clientWidth), true, "inspection must wrap without horizontal overflow");
       assert.deepEqual(await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.scrollHeight]), [viewport.width, viewport.height]);
     } finally { await page.close(); }
