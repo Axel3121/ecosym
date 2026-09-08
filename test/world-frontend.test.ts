@@ -13,8 +13,8 @@ import ts from "typescript";
 import { validateWorldSnapshot, type WorldSnapshot } from "../src/world-snapshot.ts";
 import { worldForm } from "../src/world-form.ts";
 
-const pureSources = ["world-form.ts", "world-snapshot.ts", "institution-snapshot.ts", "observation-snapshot.ts", "validate-institution-snapshot.ts", "time.ts", "source-report.ts", "source-report-time.ts"];
-const empty: WorldSnapshot = { schemaVersion: 1, civilizations: [], sourcePictures: [], observationsTruncated: false, claimsTruncated: false };
+const pureSources = ["world-form.ts", "world-snapshot.ts", "project-types.ts", "institution-snapshot.ts", "observation-snapshot.ts", "validate-institution-snapshot.ts", "time.ts", "source-report.ts", "source-report-time.ts"];
+const empty: WorldSnapshot = { schemaVersion: 2, civilizations: [], sourcePictures: [], projects: [], observationsTruncated: false, claimsTruncated: false };
 
 function foundedSnapshot(): WorldSnapshot {
   const snapshot = structuredClone(empty);
@@ -184,6 +184,162 @@ test("the production world surface uses the actual build and launcher with isola
   });
   const snapshot = foundedSnapshot();
   const form = worldForm(snapshot);
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+    await t.test(`${viewport.width}px project creation retains failed keys, rotates success and reloads without optimistic insertion`, async () => {
+      const page = await browser.newPage({ viewport });
+      const picture = foundedSnapshot();
+      const civilization = picture.civilizations[0]!;
+      const submissions: { requestKey: string; name: string; harness: string }[] = [];
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      let reads = 0;
+      let release!: () => void;
+      let received!: () => void;
+      const arrived = new Promise<void>((resolve) => { received = resolve; });
+      const pending = new Promise<void>((resolve) => { release = resolve; });
+      try {
+        await page.route("**/api/world-snapshot", (route) => { reads++; return route.fulfill({ json: picture }); });
+        await page.route("**/api/civilizations/*/projects", async (route) => {
+          const request = route.request();
+          assert.equal(new URL(request.url()).pathname, `/api/civilizations/${encodeURIComponent(civilization.civilizationId)}/projects`);
+          assert.equal(request.method(), "POST");
+          const headers = await request.allHeaders();
+          assert.equal(headers["content-type"], "application/json");
+          assert.equal(headers.accept, "application/json");
+          const body = request.postDataJSON();
+          assert.deepEqual(Object.keys(body).sort(), ["harness", "name", "requestKey"]);
+          assert.equal(body.harness, "hermes");
+          assert.match(body.requestKey, /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
+          submissions.push(body);
+          if (submissions.length === 1) {
+            received();
+            await pending;
+            await route.fulfill({ status: 503, json: { error: "PRIVATE NATIVE STDERR", message: "/private/path" } });
+            return;
+          }
+          const project = { projectId: `project:created-${submissions.length}`, civilizationId: civilization.civilizationId,
+            name: body.name, slug: "fjordkart", workspacePath: "/synthetic/fjordkart", state: "established" as const,
+            attempt: 1, reason: null, harness: { id: "hermes" as const, externalId: "p_ab12cd34", externalSlug: "fjordkart-2",
+              externalArchived: true, provenance: "created" as const, observedAt: "2026-01-01T00:00:00.000Z" } };
+          picture.projects.push(project);
+          await route.fulfill({ status: 201, json: project });
+        });
+        await page.goto(url);
+        const place = page.getByRole("button", { name: `Inspect ${civilization.name}`, exact: true });
+        await place.focus();
+        await page.keyboard.press("Enter");
+        const projects = page.getByRole("region", { name: "Prosjekter", exact: true });
+        await projects.getByText("Ingen prosjekter", { exact: true }).waitFor();
+        const close = page.getByRole("button", { name: "Close inspection" });
+        const create = projects.getByRole("button", { name: "Opprett", exact: true });
+        await close.focus();
+        await page.keyboard.press("Shift+Tab");
+        assert.equal(await create.evaluate((node) => node === document.activeElement), true);
+        await page.keyboard.press("Tab");
+        assert.equal(await close.evaluate((node) => node === document.activeElement), true);
+        await page.keyboard.press("Tab");
+        assert.equal(await projects.getByLabel("Prosjektnavn", { exact: true }).evaluate((node) => node === document.activeElement), true);
+        await projects.getByLabel("Prosjektnavn", { exact: true }).fill("Fjordkart");
+        await create.click();
+        await arrived;
+        assert.equal(await create.isDisabled(), true);
+        assert.equal(await projects.getByLabel("Prosjektnavn", { exact: true }).isDisabled(), true);
+        assert.equal(await projects.getByLabel("Harness", { exact: true }).isDisabled(), true);
+        assert.equal(await close.evaluate((node) => node === document.activeElement), true, "sending must retain inspector keyboard access");
+        assert.equal(await projects.locator("li").count(), 0);
+        assert.equal(reads, 1);
+        release();
+        await projects.getByRole("alert").waitFor();
+        assert.equal(await projects.getByRole("alert").innerText(), "invalid_response");
+        assert.doesNotMatch(await projects.innerText(), /PRIVATE|\/private/);
+        assert.equal(await projects.getByLabel("Prosjektnavn", { exact: true }).inputValue(), "Fjordkart");
+        await create.click();
+        await projects.getByRole("heading", { name: "Fjordkart", exact: true }).waitFor();
+        assert.equal(reads, 2);
+        assert.deepEqual(submissions[1], submissions[0]);
+        assert.equal(await projects.getByLabel("Prosjektnavn", { exact: true }).inputValue(), "");
+        assert.match(await projects.innerText(), /Observert registrert i hermes \(fjordkart-2, p_ab12cd34\) 2026-01-01T00:00:00.000Z/);
+        assert.match(await projects.innerText(), /Registreringen var arkivert i hermes ved siste observasjon/);
+        assert.equal(await projects.getByRole("button", { name: "Pr\u00f8v igjen" }).count(), 0);
+        assert.equal(await projects.locator(".mark, [data-axis], [role=progressbar]").count(), 0);
+        await projects.getByLabel("Prosjektnavn", { exact: true }).fill("Another place");
+        await create.click();
+        await projects.getByRole("heading", { name: "Another place", exact: true }).waitFor();
+        assert.notEqual(submissions[2]!.requestKey, submissions[1]!.requestKey);
+        assert.equal(reads, 3);
+        assert.equal(await page.getByRole("complementary").evaluate((node) => node.scrollWidth <= node.clientWidth), true);
+        await page.keyboard.press("Escape");
+        await page.getByRole("complementary").waitFor({ state: "detached" });
+        assert.equal(await place.evaluate((node) => node === document.activeElement), true);
+        await page.reload();
+        await place.focus();
+        await page.keyboard.press("Enter");
+        await projects.getByRole("heading", { name: "Fjordkart", exact: true }).waitFor();
+        assert.equal(await projects.locator("li").count(), 2);
+        assert.deepEqual(errors, []);
+      } finally { release?.(); await page.close(); }
+    });
+  }
+  await t.test("every non-established state can retry; unknown stays distinct and other civilizations do not inherit projects", async () => {
+    const page = await browser.newPage();
+    const picture = foundedSnapshot();
+    const civilizationId = picture.civilizations[0]!.civilizationId;
+    const states = ["requested", "directory-created", "external-unknown", "failed"] as const;
+    picture.projects = states.map((state) => ({ projectId: `project:${state}`, civilizationId, name: state,
+      slug: state, workspacePath: `/synthetic/${state}`, state, attempt: state === "requested" ? 0 : 1,
+      reason: state === "failed" ? "filesystem_denied" : state === "external-unknown" ? "harness_timeout" : null, harness: null }));
+    const retries: { requestKey: string }[] = [];
+    let failed = false;
+    try {
+      await page.route("**/api/world-snapshot", (route) => route.fulfill({ json: picture }));
+      await page.route("**/api/projects/*/retry", async (route) => {
+        assert.equal(route.request().method(), "POST");
+        const body = route.request().postDataJSON();
+        assert.deepEqual(Object.keys(body), ["requestKey"]);
+        retries.push(body);
+        if (!failed) { failed = true; await route.fulfill({ status: 409, json: { error: "retry_in_progress" } }); return; }
+        const id = decodeURIComponent(new URL(route.request().url()).pathname.split("/")[3]!);
+        const project = picture.projects.find((project) => project.projectId === id)!;
+        project.state = "established";
+        project.reason = null;
+        project.harness = { id: "hermes", externalId: "p_ab12cd34", externalSlug: project.slug, externalArchived: false,
+          provenance: "adopted", observedAt: "2026-01-01T00:00:00.000Z" };
+        await route.fulfill({ json: project });
+      });
+      await page.goto(url);
+      await page.getByRole("button", { name: "Inspect Synthetic 0", exact: true }).focus();
+      await page.keyboard.press("Enter");
+      const projects = page.getByRole("region", { name: "Prosjekter", exact: true });
+      await projects.waitFor();
+      assert.equal(await projects.getByRole("button", { name: "Pr\u00f8v igjen", exact: true }).count(), 4);
+      assert.match(await projects.innerText(), /Harness-registrering ukjent; ikke bevis p\u00e5 at den mislyktes. Mappa finnes./);
+      assert.match(await projects.innerText(), /Opprettelse mislyktes: filesystem_denied./);
+      assert.equal(await projects.getByText("Opprettelse p\u00e5begynt.", { exact: true }).count(), 2);
+      for (const state of states) {
+        const row = projects.locator("li").filter({ has: page.getByRole("heading", { name: state, exact: true }) });
+        const retry = row.getByRole("button", { name: "Pr\u00f8v igjen", exact: true });
+        await retry.click();
+        if (state === "requested") {
+          await projects.getByText("retry_in_progress", { exact: true }).waitFor();
+          await retry.click();
+        }
+        await retry.waitFor({ state: "detached" });
+        assert.match(await row.innerText(), /Observert registrert i hermes/);
+      }
+      assert.equal(retries.length, 5);
+      assert.deepEqual(retries[0], retries[1]);
+      assert.equal(new Set(retries.slice(1).map((body) => body.requestKey)).size, 4);
+      await page.keyboard.press("Escape");
+      await page.getByRole("button", { name: "Inspect Synthetic 1", exact: true }).focus();
+      await page.keyboard.press("Enter");
+      await projects.getByText("Ingen prosjekter", { exact: true }).waitFor();
+      await page.keyboard.press("Escape");
+      await page.getByRole("button", { name: "Inspect Synthetic 3", exact: true }).focus();
+      await page.keyboard.press("Enter");
+      await projects.waitFor();
+      assert.equal(await projects.locator("form").count(), 0, "dissolved civilizations cannot create projects");
+    } finally { await page.close(); }
+  });
   await t.test("visible axis and kind marks retain distinct computed visual grammar", async () => {
     const page = await browser.newPage();
     try {

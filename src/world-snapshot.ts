@@ -4,10 +4,11 @@ import { isRepresentableUtcInstant } from "./time.ts";
 import { validateInstitutionSnapshot } from "./validate-institution-snapshot.ts";
 import type { SourceReportProvenance, SourceReportSnapshot } from "./source-report.ts";
 import { sourceReportInstantOrderingKey } from "./source-report-time.ts";
+import { PROJECT_ERROR_CODES, type WorldProjectSnapshot } from "./project-types.ts";
 
-export const WORLD_SNAPSHOT_SCHEMA_VERSION = 1;
+export const WORLD_SNAPSHOT_SCHEMA_VERSION = 2;
 
-export const WORLD_FACT_SEMANTICS_CAVEAT = "Observations describe the source owner's recorded fields at collection, not completed work, operational success or civilization activity. Runtime prose reports remain claims. Temporal status describes stored collection evidence, not live source truth. collectionAsOf is the latest successful collection interval in the fact's last-seen connection/configuration/activation lifetime; null means unknown. collectedAt is provenance, never a substitute for sourceRecordedAt. Verify does not reconcile this picture; recollect to advance it. Running attempts and truncated results can leave the picture partial.";
+export const WORLD_FACT_SEMANTICS_CAVEAT = "Observations describe the source owner's recorded fields at collection, not completed work, operational success or civilization activity. Runtime prose reports remain claims. Temporal status describes stored collection evidence, not live source truth. collectionAsOf is the latest successful collection interval in the fact's last-seen connection/configuration/activation lifetime; null means unknown. collectedAt is provenance, never a substitute for sourceRecordedAt. Verify does not reconcile this picture; recollect to advance it. Running attempts and truncated results can leave the picture partial. A project is a declared place and its provisioning state. Its harness binding is what was observed at observedAt, never a present-tense claim, and never evidence of work, activity, or an admitted mandate in any runtime.";
 
 export interface WorldSourceSnapshot {
   sourceReport?: SourceReportSnapshot;
@@ -27,6 +28,7 @@ export interface WorldSnapshot {
   schemaVersion: typeof WORLD_SNAPSHOT_SCHEMA_VERSION;
   civilizations: FoundedCivilizationSnapshot[];
   sourcePictures: WorldSourcePicture[];
+  projects: WorldProjectSnapshot[];
   /** Owner-wide limits, not per-civilization completeness assessments. */
   observationsTruncated: boolean;
   claimsTruncated: boolean;
@@ -238,13 +240,46 @@ function fact(value: unknown, epistemicStatus: "observation" | "claim"): StoredF
   };
 }
 
+export function validateWorldProjectSnapshot(value: unknown): WorldProjectSnapshot {
+  const entry = record(value, ["projectId", "civilizationId", "name", "slug", "workspacePath", "state", "attempt", "reason", "harness"]);
+  const state = choice(entry.state, ["requested", "directory-created", "external-unknown", "established", "failed"]);
+  if (typeof entry.attempt !== "number" || !Number.isSafeInteger(entry.attempt) || entry.attempt < 0) {
+    throw new Error("Invalid project attempt");
+  }
+  const reason = entry.reason === null ? null : choice(entry.reason, PROJECT_ERROR_CODES);
+  let harness: WorldProjectSnapshot["harness"] = null;
+  if (entry.harness !== null) {
+    const binding = record(entry.harness, ["id", "externalId", "externalSlug", "externalArchived", "provenance", "observedAt"]);
+    harness = { id: choice(binding.id, ["hermes"]), externalId: boundedText(binding.externalId, 128),
+      externalSlug: boundedText(binding.externalSlug, 128), externalArchived: boolean(binding.externalArchived),
+      provenance: choice(binding.provenance, ["created", "adopted"]), observedAt: timestamp(binding.observedAt) };
+  }
+  if ((state === "established") !== (harness !== null) || (state === "failed" && reason === null)
+    || ((state === "established" || state === "requested" || state === "directory-created") && reason !== null)) {
+    throw new Error("Inconsistent project provisioning state");
+  }
+  const name = text(entry.name);
+  const slug = text(entry.slug);
+  if (name !== name.normalize("NFC").trim() || [...name].length < 1 || [...name].length > 64
+    || /\p{C}/u.test(name) || name.startsWith("-") || !/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(slug)) {
+    throw new Error("Invalid project name or slug");
+  }
+  return { projectId: boundedText(entry.projectId, 128), civilizationId: boundedText(entry.civilizationId, 128),
+    name, slug, workspacePath: boundedText(entry.workspacePath, 4096), state, attempt: entry.attempt, reason, harness };
+}
+
 /** Reject extra fields, accessors and inconsistent links; return recursively detached data. */
 export function validateWorldSnapshot(value: unknown): WorldSnapshot {
-  const snapshot = record(value, ["schemaVersion", "civilizations", "sourcePictures", "observationsTruncated", "claimsTruncated"]);
+  const snapshot = record(value, ["schemaVersion", "civilizations", "sourcePictures", "projects", "observationsTruncated", "claimsTruncated"]);
   if (snapshot.schemaVersion !== WORLD_SNAPSHOT_SCHEMA_VERSION) throw new Error("Invalid world snapshot version");
   const { civilizations } = validateInstitutionSnapshot({ schemaVersion: 1, civilizations: snapshot.civilizations });
   const civilizationsById = new Map(civilizations.map((entry) => [entry.civilizationId, entry]));
   if (civilizationsById.size !== civilizations.length) throw new Error("Duplicate civilization ID");
+  const projects = list(snapshot.projects, validateWorldProjectSnapshot);
+  if (new Set(projects.map((project) => project.projectId)).size !== projects.length
+    || projects.some((project) => !civilizationsById.has(project.civilizationId))) {
+    throw new Error("Invalid project link");
+  }
   const seenCivilizations = new Set<string>();
   const sharedSources = new Map<string, string>();
   const sourcePictures = list(snapshot.sourcePictures, (value): WorldSourcePicture => {
@@ -298,7 +333,7 @@ export function validateWorldSnapshot(value: unknown): WorldSnapshot {
   });
   if (seenCivilizations.size !== civilizations.length) throw new Error("Missing civilization picture");
   return {
-    schemaVersion: WORLD_SNAPSHOT_SCHEMA_VERSION, civilizations, sourcePictures,
+    schemaVersion: WORLD_SNAPSHOT_SCHEMA_VERSION, civilizations, sourcePictures, projects,
     observationsTruncated: boolean(snapshot.observationsTruncated), claimsTruncated: boolean(snapshot.claimsTruncated),
   };
 }

@@ -1,9 +1,11 @@
 import type { FoundedCivilizationSnapshot } from "./institution-snapshot.ts";
 import type { NarrationSnapshot } from "./observation-snapshot.ts";
+import type { WorldProjectSnapshot } from "./project-types.ts";
 import { validateWorldSnapshot, WORLD_SNAPSHOT_SCHEMA_VERSION, type WorldSnapshot } from "./world-snapshot.ts";
 
 export interface WorldSnapshotSource {
   listFoundedCivilizations(): FoundedCivilizationSnapshot[];
+  listProjects(): WorldProjectSnapshot[];
   narrate(limit?: number): NarrationSnapshot;
 }
 
@@ -18,6 +20,7 @@ export function composeWorldSnapshot(source: WorldSnapshotSource, limit?: number
   return validateWorldSnapshot({
     schemaVersion: WORLD_SNAPSHOT_SCHEMA_VERSION,
     civilizations,
+    projects: source.listProjects(),
     sourcePictures: civilizations.map((civilization) => ({
       civilizationId: civilization.civilizationId,
       sources: [...new Set(civilization.sources)].map((connectionId) => ({

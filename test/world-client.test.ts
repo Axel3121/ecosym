@@ -8,7 +8,7 @@ import { inspectSourceFields, worldForm } from "../src/world-form.ts";
 
 const instant = "2026-01-01T00:00:00.000Z";
 function snapshot(): WorldSnapshot {
-  return { schemaVersion: 1, civilizations: [], sourcePictures: [], observationsTruncated: false, claimsTruncated: false };
+  return { schemaVersion: 2, civilizations: [], sourcePictures: [], projects: [], observationsTruncated: false, claimsTruncated: false };
 }
 const respond = (value: unknown): typeof fetch => async () => Response.json(value);
 
@@ -216,7 +216,7 @@ test("pre-cancelled calls do not fetch; completed calls remove timer and caller 
 });
 
 test("client import closure contains only product contracts, form and pure contract validation", () => {
-  const allowed = new Set(["web/world-client.ts", "src/world-form.ts", "src/world-snapshot.ts", "src/institution-snapshot.ts", "src/observation-snapshot.ts", "src/validate-institution-snapshot.ts", "src/time.ts", "src/source-report.ts", "src/source-report-time.ts"]);
+  const allowed = new Set(["web/world-client.ts", "src/world-form.ts", "src/world-snapshot.ts", "src/project-types.ts", "src/institution-snapshot.ts", "src/observation-snapshot.ts", "src/validate-institution-snapshot.ts", "src/time.ts", "src/source-report.ts", "src/source-report-time.ts"]);
   const visited = new Set<string>();
   function visit(path: string): void {
     assert.ok(allowed.has(path), `Unexpected client dependency: ${path}`);

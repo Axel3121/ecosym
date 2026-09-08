@@ -399,6 +399,14 @@ observation slice, not runtime governance. Selected
 Hermes task status is its recorded task-row state, not evidence of completion,
 operational success, population, prosperity, decay, or causal attribution.
 
+Built also: projects under a civilization as declared places, with a workspace
+folder, explicit provisioning state, and a harness binding only when registration
+has been read back. An unverified registration remains unknown; the folder is
+still usable. The binding records what was observed at a stated time, not what
+is true now. Creating a folder and registering it stops there: no agent, session,
+task, admission, or orchestration. A project is never evidence of work, activity,
+or an admitted mandate; work claims do not make it inhabited.
+
 Not built: the authoritative control plane, non-bypassable admission, petition
 execution, durable cases, council, lasting city hall, routing and escalation, or
 general orchestration. Nothing enforces a mandate, and no petition reaches a

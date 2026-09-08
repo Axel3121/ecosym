@@ -814,7 +814,7 @@ test("either branch's schema twelve converges without losing confirmations", asy
           assert.equal(
             (inspected.prepare("PRAGMA user_version").get() as { user_version: number })
               .user_version,
-              16,
+              17,
           );
           for (const table of [
             "civilizations",
@@ -895,7 +895,7 @@ test("schema eleven stores gain forget and export evidence without losing previe
       const version = inspected.prepare("PRAGMA user_version").get() as {
         user_version: number;
       };
-      assert.equal(version.user_version, 16);
+      assert.equal(version.user_version, 17);
       for (const table of ["owned_state_exports", "forget_records"]) {
         const row = inspected
           .prepare(
@@ -955,7 +955,7 @@ test("schema thirteen stores gain civilization evidence without losing previews"
       assert.equal(
         (inspected.prepare("PRAGMA user_version").get() as { user_version: number })
           .user_version,
-        16,
+        17,
       );
       assert.deepEqual(
         (inspected.prepare("SELECT civilization_inventories_json FROM owned_state_exports").get() as {

@@ -159,6 +159,22 @@ A petition has a durable identity that outlives the asking, so that an outcome
 observed later can be attributed to it. Its own lifecycle — asked, admitted,
 refused, executed — is distinct from any depiction of work having happened.
 
+### Harness project boundary
+
+The harness adapter is a narrow outgoing boundary for workspace registration and
+readback, separate from petitions and governed-work admission. Ecosym owns the
+workspace folder, civilization association, provisioning history, and recorded
+binding; the harness owns its registration. A binding preserves the observed
+external identity, profile, version, provenance, and observation time, not a
+claim of current activity or enforcement. Intent is durable before effects;
+unverifiable outcomes remain unknown and user-triggered retries reconcile the
+same workspace rather than inventing another.
+
+For the Hermes adapter, the CLI is the contract. Ecosym does not read or write
+the private `projects.db` directly. Native output is parsed inside the adapter;
+only bounded binding data and stable outcome codes leave it. This boundary does
+not start agents, sessions, or tasks and does not become a runtime control plane.
+
 ## Authority topology
 
 ```text

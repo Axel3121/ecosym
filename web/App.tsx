@@ -1,6 +1,79 @@
 import { useEffect, useRef, useState } from "react";
 import { loadWorld, type WorldLoadResult } from "./world-client.ts";
+import { PROJECT_ERROR_CODES, type WorldProjectSnapshot } from "../src/project-types.ts";
+import { validateWorldProjectSnapshot } from "../src/world-snapshot.ts";
 import "./world.css";
+
+function Projects({ civilizationId, projects, canCreate, reload }: {
+  civilizationId: string; projects: WorldProjectSnapshot[]; canCreate: boolean; reload: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [requestKey, setRequestKey] = useState(() => crypto.randomUUID());
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pending = useRef(false);
+  const retryKeys = useRef(new Map<string, string>());
+  const restoreFocus = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (sending) {
+      if (document.activeElement === document.body || document.activeElement === restoreFocus.current) {
+        restoreFocus.current?.closest("aside")?.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
+      }
+      return;
+    }
+    if (document.activeElement === document.body && restoreFocus.current?.isConnected) restoreFocus.current.focus();
+    restoreFocus.current = null;
+  }, [sending]);
+  const send = async (project?: WorldProjectSnapshot) => {
+    if (pending.current) return;
+    restoreFocus.current = document.activeElement as HTMLElement | null;
+    pending.current = true;
+    setSending(true);
+    setError(null);
+    if (project && !retryKeys.current.has(project.projectId)) retryKeys.current.set(project.projectId, crypto.randomUUID());
+    try {
+      const response = await fetch(project ? `/api/projects/${encodeURIComponent(project.projectId)}/retry`
+        : `/api/civilizations/${encodeURIComponent(civilizationId)}/projects`, {
+        method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(project ? { requestKey: retryKeys.current.get(project.projectId) } : { requestKey, name, harness: "hermes" }),
+        signal: AbortSignal.timeout(30000),
+      });
+      const body: unknown = await response.json();
+      if (!response.ok) {
+        const code = typeof body === "object" && body !== null && "error" in body ? body.error : null;
+        setError(typeof code === "string" && PROJECT_ERROR_CODES.some((known) => known === code) ? code : "invalid_response");
+        return;
+      }
+      const result = validateWorldProjectSnapshot(body);
+      if (result.civilizationId !== civilizationId || (project && result.projectId !== project.projectId)) throw new Error("Invalid project link");
+      if (project) retryKeys.current.delete(project.projectId);
+      else { setRequestKey(crypto.randomUUID()); setName(""); }
+      reload();
+    } catch {
+      setError("Svaret kunne ikke bekreftes. Pr\u00f8v igjen med samme innsending.");
+    } finally { pending.current = false; setSending(false); }
+  };
+  return <section className="projects" aria-label="Prosjekter">
+    <h3>Prosjekter</h3>
+    {projects.length === 0 ? <p>Ingen prosjekter</p> : <ul>{projects.map((project) => {
+      const binding = project.harness;
+      const mark = project.state === "established" && binding
+        ? `Observert registrert i hermes (${binding.externalSlug}, ${binding.externalId}) ${binding.observedAt}. Erkl\u00e6rt sted, ikke bevis p\u00e5 arbeid.${binding.externalArchived ? ` Registreringen var arkivert i hermes ved siste observasjon ${binding.observedAt}.` : ""}`
+        : project.state === "external-unknown" ? "Harness-registrering ukjent; ikke bevis p\u00e5 at den mislyktes. Mappa finnes."
+          : project.state === "failed" ? `Opprettelse mislyktes: ${project.reason}.` : "Opprettelse p\u00e5begynt.";
+      return <li key={project.projectId}><h4>{project.name}</h4><p>{mark}</p><p>{project.workspacePath}</p>
+        {project.state !== "established" && <button disabled={sending} onClick={() => void send(project)}>Pr&oslash;v igjen</button>}
+      </li>;
+    })}</ul>}
+    {canCreate && <form onSubmit={(event) => { event.preventDefault(); void send(); }}>
+      <label>Prosjektnavn<input name="name" required value={name} disabled={sending} onChange={(event) => setName(event.target.value)} /></label>
+      <label htmlFor="project-harness">Harness</label>
+      <select id="project-harness" name="harness" disabled={sending} defaultValue="hermes"><option value="hermes">hermes</option></select>
+      <button disabled={sending} type="submit">Opprett</button>
+    </form>}
+    {error && <p role="alert">{error}</p>}
+  </section>;
+}
 
 export function App() {
   const [load, setLoad] = useState<WorldLoadResult | { kind: "loading" }>({ kind: "loading" });
@@ -113,11 +186,21 @@ export function App() {
         <nav className="map-controls" aria-label="World navigation"><button aria-label="Zoom out" onClick={() => changeZoom(-0.1)} disabled={zoom <= 0.6}>-</button><output aria-label="Zoom level">{Math.round(zoom * 100)}%</output><button aria-label="Zoom in" onClick={() => changeZoom(0.1)} disabled={zoom >= 1.6}>+</button><button onClick={resetView}>Home</button></nav>
         <p id="navigation-help">Drag to explore. Tab to places; Enter to inspect. Arrow keys pan, +/- zoom, Escape closes.</p>
       </section>
-      {inspected && <aside className="inspection" aria-label={`Inspection: ${inspected.name}`}>
+      {inspected && <aside className="inspection" aria-label={`Inspection: ${inspected.name}`} onKeyDown={(event) => {
+        if (event.key !== "Tab") return;
+        const targets = [...event.currentTarget.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), select:not(:disabled)")];
+        const first = targets[0];
+        const last = targets.at(-1);
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+      }}>
         <div className="inspection-heading"><span className="eyebrow">Place / inspection</span><button ref={close} onClick={dismiss}>Close inspection</button></div>
         <h2>{inspected.name}</h2><p className="domain">{inspected.domain}</p>
         <ul className="evidence-key">{inspected.marks.map((mark, index) => <li key={index} data-axis={mark.axis} data-kind={mark.kind}>{mark.label}</li>)}</ul>
         {inspected.inspection.map((field, index) => <section key={index} className="inspection-field"><h3>{field.label}</h3>{field.values.map((value, valueIndex) => <p key={valueIndex}>{value}</p>)}</section>)}
+        <Projects key={inspected.id} civilizationId={inspected.id} canCreate={inspected.institution === "active"}
+          projects={form!.snapshot.projects.filter((project) => project.civilizationId === inspected.id)}
+          reload={() => setRevision((value) => value + 1)} />
       </aside>}
     </div>
     <footer>ECOSYM <span>Founding is a place. Evidence is not a promise.</span><span>Neutral terrain / no inferred activity</span></footer>

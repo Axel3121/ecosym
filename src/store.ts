@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { ArenaAdmissionError, parseArenaBundle, sourceReportProjection, type ArenaBundle } from "./arena-adapter.ts";
 import type { SourceReportSnapshot, SourceReportProvenance } from "./source-report.ts";
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { DatabaseSync, type StatementResultingChanges } from "node:sqlite";
@@ -43,6 +43,8 @@ import {
 import type { JsonlRecordIndexMode } from "./readers.ts";
 import { utcInstantOrderingKey } from "./time.ts";
 import { sourceReportFactTimeKey } from "./source-report-time.ts";
+import { PROJECT_ERROR_CODES, ProjectError, type ProjectErrorCode, type ProjectState, type ProjectRequest, type HarnessBinding, type WorldProjectSnapshot } from "./project-types.ts";
+export { ProjectError } from "./project-types.ts";
 import {
   sameVerificationFactSet,
   verificationFactFromInput,
@@ -58,12 +60,73 @@ export type {
   StoredFact,
 } from "./observation-snapshot.ts";
 
-const STORE_SCHEMA_VERSION = 16;
+const STORE_SCHEMA_VERSION = 17;
 const LEGACY_REBUILD_SCHEMA_VERSION = 9;
 const STORE_FILENAME = "observations.sqlite";
 const BUSY_RETRY_WINDOW_MILLISECONDS = 250;
 const WORK_CLAIM_TTL_MILLISECONDS = 30 * 60 * 1000; // 30 minutes, first guess
 const CONFIRMATION_CONTENTION_BUDGET_MILLISECONDS = 2_000;
+
+const CREATE_PROJECTS = `
+  CREATE TABLE IF NOT EXISTS projects (
+    project_order INTEGER PRIMARY KEY,
+    project_id TEXT NOT NULL UNIQUE,
+    civilization_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    workspace_path TEXT NOT NULL UNIQUE,
+    harness TEXT NOT NULL CHECK (harness IN ('hermes')),
+    request_key TEXT NOT NULL UNIQUE,
+    request_digest TEXT NOT NULL,
+    requested_at TEXT NOT NULL,
+    UNIQUE (civilization_id, slug),
+    FOREIGN KEY (civilization_id) REFERENCES civilizations(civilization_id)
+  ) STRICT;
+  CREATE TABLE IF NOT EXISTS project_provisioning_events (
+    event_order INTEGER PRIMARY KEY,
+    event_id TEXT NOT NULL UNIQUE,
+    project_id TEXT NOT NULL REFERENCES projects(project_id),
+    state TEXT NOT NULL CHECK (state IN ('requested','directory-created','external-unknown','established','failed')),
+    attempt INTEGER NOT NULL,
+    reason TEXT,
+    recorded_at TEXT NOT NULL
+  ) STRICT;
+  CREATE INDEX IF NOT EXISTS project_provisioning_current
+    ON project_provisioning_events(project_id, event_order DESC);
+  CREATE TABLE IF NOT EXISTS project_harness_bindings (
+    project_id TEXT PRIMARY KEY REFERENCES projects(project_id),
+    harness TEXT NOT NULL,
+    harness_home TEXT NOT NULL,
+    harness_version TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    external_slug TEXT NOT NULL,
+    external_archived INTEGER NOT NULL,
+    provenance TEXT NOT NULL CHECK (provenance IN ('created','adopted')),
+    observed_at TEXT NOT NULL
+  ) STRICT;
+`;
+
+// Opaque event identities carry ownership, not state or a public failure reason.
+// Linux start ticks distinguish PID reuse; elsewhere a live PID fails closed.
+function projectProcessIdentity(pid: number): string {
+  if (process.platform !== "linux") return "live";
+  const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+  const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+  if (fields[0] === "Z" || fields[0] === "X") return "dead";
+  return `${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()}.${fields[19]!}`;
+}
+
+function projectOwnerAlive(eventId: string): boolean {
+  const match = /^project-owner:(\d+):([^:]+):/.exec(eventId);
+  if (match === null) return false;
+  try {
+    process.kill(Number(match[1]), 0);
+    return projectProcessIdentity(Number(match[1])) === match[2];
+  } catch (error) {
+    return !(error instanceof Error && "code" in error &&
+      (error.code === "ESRCH" || error.code === "ENOENT"));
+  }
+}
 
 export function createCollectionContentionBudget(): ContentionBudget {
   return { remainingMilliseconds: BUSY_RETRY_WINDOW_MILLISECONDS };
@@ -447,8 +510,14 @@ export interface CivilizationForgetInventory {
   counts: {
     civilizations: 1;
     mandateRevisions: number;
+    projects?: number;
+    projectProvisioningEvents?: number;
+    projectHarnessBindings?: number;
   };
   mandateRevisions: CivilizationRevisionIdentity[];
+  projects?: { projectId: string; workspacePath: string }[];
+  projectProvisioningEventIds?: string[];
+  projectHarnessBindingIds?: string[];
 }
 
 export interface CivilizationForgetPlan extends CivilizationForgetInventory {
@@ -773,6 +842,7 @@ export class ObservationStore {
   readonly path: string;
   readonly #busyTimeoutMilliseconds: number;
   readonly #database: DatabaseSync;
+  readonly #projectAttempts = new Map<string, { attempt: number; owner: string }>();
   #closed = false;
 
   constructor(
@@ -976,6 +1046,150 @@ export class ObservationStore {
       );
       return { civilizationId, mandateId };
     });
+  }
+
+  requestProject(input: ProjectRequest): { project: WorldProjectSnapshot; created: boolean } {
+    return this.#projectTransaction(() => {
+      const existing = this.#database.prepare(
+        "SELECT project_id, request_digest FROM projects WHERE request_key = ?",
+      ).get(input.requestKey) as { project_id: string; request_digest: string } | undefined;
+      if (existing !== undefined) {
+        if (existing.request_digest !== input.requestDigest) throw new ProjectError("request_key_conflict");
+        return { project: this.getProject(existing.project_id)!, created: false };
+      }
+      const civilization = this.#database.prepare(
+        "SELECT status FROM mandate_revisions WHERE civilization_id = ? ORDER BY revision_order DESC LIMIT 1",
+      ).get(input.civilizationId) as { status: string } | undefined;
+      if (civilization === undefined) throw new ProjectError("civilization_unknown");
+      if (civilization.status === "dissolved") throw new ProjectError("civilization_dissolved");
+      if (input.harness !== "hermes" || !input.requestKey || !input.requestDigest ||
+          !input.name || !input.workspacePath || !/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(input.slug)) {
+        throw new ProjectError("invalid_request");
+      }
+      if (this.#database.prepare("SELECT 1 FROM projects WHERE civilization_id = ? AND slug = ?")
+        .get(input.civilizationId, input.slug)) throw new ProjectError("slug_taken");
+      if (this.#database.prepare("SELECT 1 FROM projects WHERE workspace_path = ?")
+        .get(input.workspacePath)) throw new ProjectError("path_taken");
+      const projectId = `project:${randomUUID()}`;
+      this.#database.prepare(`INSERT INTO projects
+        (project_id, civilization_id, name, slug, workspace_path, harness, request_key, request_digest, requested_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(projectId, input.civilizationId, input.name, input.slug, input.workspacePath,
+          input.harness, input.requestKey, input.requestDigest, new Date().toISOString());
+      this.#insertProjectEvent(projectId, "requested", 0, null);
+      return { project: this.getProject(projectId)!, created: true };
+    });
+  }
+
+  listProjects(): WorldProjectSnapshot[] {
+    return this.#projectSnapshots();
+  }
+
+  getProject(projectId: string): WorldProjectSnapshot | undefined {
+    return this.#projectSnapshots(projectId)[0];
+  }
+
+  #projectSnapshots(projectId?: string): WorldProjectSnapshot[] {
+    return this.#database.prepare(`SELECT p.project_id AS projectId, p.civilization_id AS civilizationId,
+      p.name, p.slug, p.workspace_path AS workspacePath, e.state, e.attempt, e.reason,
+      b.external_id AS externalId, b.external_slug AS externalSlug, b.external_archived AS externalArchived,
+      b.provenance, b.observed_at AS observedAt
+      FROM projects p JOIN project_provisioning_events e ON e.event_order = (
+        SELECT event_order FROM project_provisioning_events WHERE project_id = p.project_id ORDER BY event_order DESC LIMIT 1)
+      LEFT JOIN project_harness_bindings b ON b.project_id = p.project_id
+      ${projectId === undefined ? "" : "WHERE p.project_id = ?"} ORDER BY p.project_order`)
+      .all(...(projectId === undefined ? [] : [projectId])).map((value) => {
+        const row = value as unknown as Omit<WorldProjectSnapshot, "harness"> & {
+          externalId: string | null; externalSlug: string; externalArchived: number;
+          provenance: "created" | "adopted"; observedAt: string;
+        };
+        const { externalId, externalSlug, externalArchived, provenance, observedAt, ...project } = row;
+        return { ...project, harness: externalId === null ? null : {
+          id: "hermes", externalId, externalSlug, externalArchived: externalArchived === 1, provenance, observedAt,
+        } };
+      });
+  }
+
+  claimProjectAttempt(projectId: string): number {
+    const owner = `project-owner:${process.pid}:${projectProcessIdentity(process.pid)}:${randomUUID()}:`;
+    const attempt = this.#projectTransaction(() => {
+      const current = this.getProject(projectId);
+      if (current === undefined || current.state === "established") throw new ProjectError("invalid_request");
+      const event = this.#database.prepare(
+        "SELECT event_id FROM project_provisioning_events WHERE project_id = ? ORDER BY event_order DESC LIMIT 1",
+      ).get(projectId) as { event_id: string };
+      if (projectOwnerAlive(event.event_id)) throw new ProjectError("retry_in_progress");
+      const next = current.attempt + 1;
+      this.#insertProjectEvent(projectId, current.state, next, current.reason, owner);
+      return next;
+    });
+    this.#projectAttempts.set(projectId, { attempt, owner });
+    return attempt;
+  }
+
+  appendProjectEvent(projectId: string, state: ProjectState, attempt: number, reason?: ProjectErrorCode): void {
+    this.#projectTransaction(() => {
+      const owner = this.#assertProjectAttempt(projectId, attempt);
+      if (!["requested", "directory-created", "external-unknown", "failed"].includes(state) ||
+          (state === "failed" && reason === undefined) ||
+          (reason !== undefined && !PROJECT_ERROR_CODES.includes(reason))) throw new ProjectError("invalid_request");
+      this.#insertProjectEvent(projectId, state, attempt, reason ?? null, owner);
+    });
+  }
+
+  bindProject(projectId: string, attempt: number, binding: HarnessBinding): void {
+    this.#projectTransaction(() => {
+      const owner = this.#assertProjectAttempt(projectId, attempt);
+      if (!binding.externalId || !binding.externalSlug || !binding.harnessHome || !binding.harnessVersion ||
+          typeof binding.externalArchived !== "boolean" || !["created", "adopted"].includes(binding.provenance)) {
+        throw new ProjectError("invalid_request");
+      }
+      this.#database.prepare(`INSERT INTO project_harness_bindings
+        (project_id, harness, harness_home, harness_version, external_id, external_slug, external_archived, provenance, observed_at)
+        VALUES (?, 'hermes', ?, ?, ?, ?, ?, ?, ?)`)
+        .run(projectId, binding.harnessHome, binding.harnessVersion, binding.externalId,
+          binding.externalSlug, Number(binding.externalArchived), binding.provenance, new Date().toISOString());
+      this.#insertProjectEvent(projectId, "established", attempt, null, owner);
+    });
+  }
+
+  releaseProjectAttempt(projectId: string): void {
+    const owned = this.#projectAttempts.get(projectId);
+    if (owned === undefined) return;
+    this.#projectTransaction(() => {
+      const current = this.getProject(projectId);
+      if (current === undefined) return;
+      this.#assertProjectAttempt(projectId, owned.attempt, true);
+      this.#insertProjectEvent(projectId, current.state, current.attempt, current.reason);
+    });
+    this.#projectAttempts.delete(projectId);
+  }
+
+  #assertProjectAttempt(projectId: string, attempt: number, allowEstablished = false): string {
+    const owned = this.#projectAttempts.get(projectId);
+    const event = this.#database.prepare(
+      "SELECT event_id, attempt, state FROM project_provisioning_events WHERE project_id = ? ORDER BY event_order DESC LIMIT 1",
+    ).get(projectId) as { event_id: string; attempt: number; state: ProjectState } | undefined;
+    if (owned === undefined || owned.attempt !== attempt || event?.attempt !== attempt ||
+        !event.event_id.startsWith(owned.owner) || (!allowEstablished && event.state === "established")) {
+      throw new ProjectError("invalid_request");
+    }
+    return owned.owner;
+  }
+
+  #insertProjectEvent(projectId: string, state: ProjectState, attempt: number, reason: ProjectErrorCode | null, owner = "project-event:"): void {
+    this.#database.prepare(`INSERT INTO project_provisioning_events
+      (event_id, project_id, state, attempt, reason, recorded_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(`${owner}${randomUUID()}`, projectId, state, attempt, reason, new Date().toISOString());
+  }
+
+  #projectTransaction<T>(operation: () => T): T {
+    try {
+      return this.#transaction(operation);
+    } catch (error) {
+      if (error instanceof StoreContentionError) throw new ProjectError("busy");
+      throw error;
+    }
   }
 
   claimResource(
@@ -1358,6 +1572,14 @@ export class ObservationStore {
         omitted,
       };
       const exported = createOwnedStateExport(bundle);
+      const projectState = this.#projectExport();
+      if (projectState.projects!.length > 0) {
+        Object.assign(exported.counts, {
+          projects: projectState.projects!.length,
+          projectProvisioningEvents: projectState.projectProvisioningEvents!.length,
+          projectHarnessBindings: projectState.projectHarnessBindings!.length,
+        });
+      }
       write?.(exported);
       if (existing === undefined) {
         const connectionIds = (
@@ -1561,7 +1783,7 @@ export class ObservationStore {
           now.toISOString(),
         ),
         consequence:
-          "This permanently deletes the named civilization, its entire mandate revision chain, and any recorded work claims for the civilization. The deletion record remains, but Ecosym cannot restore the civilization's identifiers, revision chain, or recorded instants, and later petition attribution can become unverifiable.",
+          "This permanently deletes the named civilization, its entire mandate revision chain, any recorded work claims, and its project intentions, provisioning history, and harness bindings. Project workspace directories and external harness registrations remain untouched. The deletion record remains, but Ecosym cannot restore the civilization's identifiers, revision chain, or recorded instants, and later petition attribution can become unverifiable.",
         forgottenBy,
       };
     });
@@ -1617,6 +1839,10 @@ export class ObservationStore {
       }
 
       const { stateFingerprint: _stateFingerprint, inventoryDigest, ...inventory } = snapshot;
+      for (const table of ["project_harness_bindings", "project_provisioning_events", "projects"]) {
+        this.#database.prepare(`DELETE FROM ${table} WHERE project_id IN
+          (SELECT project_id FROM projects WHERE civilization_id = ?)`).run(civilizationId);
+      }
       const deletedRevisions = this.#database
         .prepare("DELETE FROM mandate_revisions WHERE civilization_id = ?")
         .run(civilizationId);
@@ -2828,7 +3054,15 @@ export class ObservationStore {
     if (version.user_version === 15) {
       this.#transaction(() => {
         this.#database.exec(CREATE_SOURCE_REPORTS);
-        this.#database.exec(`PRAGMA user_version = ${STORE_SCHEMA_VERSION}`);
+        this.#database.exec("PRAGMA user_version = 16");
+      });
+      this.#migrate();
+      return;
+    }
+    if (version.user_version === 16) {
+      this.#transaction(() => {
+        this.#database.exec(CREATE_PROJECTS);
+        this.#database.exec("PRAGMA user_version = 17");
       });
       return;
     }
@@ -2949,6 +3183,7 @@ export class ObservationStore {
 
         ${CREATE_INSTITUTION}
         ${CREATE_WORK_CLAIMS}
+        ${CREATE_PROJECTS}
         ${CREATE_OWNED_STATE_EXPORTS}
         ${CREATE_FORGET_RECORDS}
         ${CREATE_CIVILIZATION_FORGET_RECORDS}
@@ -3297,8 +3532,9 @@ export class ObservationStore {
     this.#transaction(() => {
       this.#database.exec(CREATE_WORK_CLAIMS);
       this.#database.exec(CREATE_SOURCE_REPORTS);
-      this.#database.exec(`PRAGMA user_version = ${STORE_SCHEMA_VERSION}`);
+      this.#database.exec("PRAGMA user_version = 16");
     });
+    this.#migrate();
   }
 
   #assertActive(connection: ActiveConnection): void {
@@ -3334,6 +3570,7 @@ export class ObservationStore {
   #ownedInstitutionState(): OwnedStateBundle["institutionStore"] {
     return {
       schemaVersion: STORE_SCHEMA_VERSION,
+      ...this.#projectExport(),
       civilizations: this.#exportRows(
         `SELECT civilization_id AS civilizationId, name, founded_at AS foundedAt
            FROM civilizations ORDER BY civilization_id`,
@@ -3602,6 +3839,20 @@ export class ObservationStore {
     return this.#database.prepare(sql).all() as Record<string, JsonValue>[];
   }
 
+  #projectExport(civilizationId?: string): Record<string, Record<string, JsonValue>[]> {
+    const result: Record<string, Record<string, JsonValue>[]> = {};
+    for (const [key, table, order] of [
+      ["projects", "projects", "project_order"],
+      ["projectProvisioningEvents", "project_provisioning_events", "event_order"],
+      ["projectHarnessBindings", "project_harness_bindings", "project_id"],
+    ] as const) {
+      result[key] = this.#database.prepare(`SELECT * FROM ${table}
+        ${civilizationId === undefined ? "" : "WHERE project_id IN (SELECT project_id FROM projects WHERE civilization_id = ?)"}
+        ORDER BY ${order}`).all(...(civilizationId === undefined ? [] : [civilizationId])) as Record<string, JsonValue>[];
+    }
+    return result;
+  }
+
   #forgetSnapshot(connectionId: string, requireInactive = true): ForgetSnapshot {
     const active = this.#database
       .prepare("SELECT 1 AS active FROM active_connections WHERE connection_id = ?")
@@ -3709,18 +3960,35 @@ export class ObservationStore {
       mandateId: row.mandate_id,
       revision: row.revision,
     }));
+    const projectState = this.#projectExport(civilizationId);
+    if (requireDissolved && projectState.projects!.some((project) => {
+      const latest = projectState.projectProvisioningEvents!.filter((event) => event.project_id === project.project_id).at(-1);
+      return latest !== undefined && projectOwnerAlive(latest.event_id as string);
+    })) throw new ProjectError("retry_in_progress");
+    const projects = projectState.projects!.map((row) => ({
+      projectId: row.project_id as string, workspacePath: row.workspace_path as string,
+    }));
+    const projectProvisioningEventIds = projectState.projectProvisioningEvents!.map((row) => row.event_id as string);
+    const projectHarnessBindingIds = projectState.projectHarnessBindings!.map((row) => row.project_id as string);
     const inventory: CivilizationForgetInventory = {
       civilizationId,
+      ...(projects.length === 0 ? {} : { projects, projectProvisioningEventIds, projectHarnessBindingIds }),
       counts: {
         civilizations: 1,
         mandateRevisions: mandateRevisions.length,
+        ...(projects.length === 0 ? {} : {
+          projects: projects.length,
+          projectProvisioningEvents: projectProvisioningEventIds.length,
+          projectHarnessBindings: projectHarnessBindingIds.length,
+        }),
       },
       mandateRevisions,
     };
     const inventoryDigest = `sha256:${sha256(
       canonicalJson(inventory as unknown as JsonValue),
     )}`;
-    return { ...inventory, inventoryDigest, stateFingerprint: inventoryDigest };
+    return { ...inventory, inventoryDigest, stateFingerprint: projects.length === 0 ? inventoryDigest :
+      `sha256:${sha256(canonicalJson({ inventoryDigest, projectState } as unknown as JsonValue))}` };
   }
 
   #collectionAttemptRetirementSnapshot(

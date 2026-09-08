@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { ObservationStore } from "./store.ts";
 import { createWorldServer } from "./world-server.ts";
 import { composeWorldSnapshot } from "./world-application.ts";
+import { ProjectService } from "./projects.ts";
 
 const args = process.argv.slice(2);
 if (args.length !== 0 && (args.length !== 2 || args[0] !== "--port"
@@ -12,12 +13,14 @@ if (args.length !== 0 && (args.length !== 2 || args[0] !== "--port"
 } else {
   const store = new ObservationStore();
   const server = createWorldServer(() => composeWorldSnapshot(store), fileURLToPath(new URL("../dist/world/", import.meta.url)));
+  server.projectService = new ProjectService(store);
   let closed = false;
   const closeStore = () => {
     if (!closed) { closed = true; store.close(); }
   };
   const shutdown = () => { server.close(); server.closeAllConnections(); };
-  server.once("close", () => {
+  server.once("close", async () => {
+    await server.drainProjectWrites();
     closeStore();
     process.removeListener("SIGINT", shutdown);
     process.removeListener("SIGTERM", shutdown);

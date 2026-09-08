@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { connect } from "node:net";
 import { once } from "node:events";
 import { promises as fs, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
@@ -10,6 +12,8 @@ import { test, type TestContext } from "node:test";
 import type { FoundedCivilizationSnapshot } from "../src/institution-snapshot.ts";
 import { parseCivilizationConfig, parseMandateConfig } from "../src/institution.ts";
 import { ObservationStore } from "../src/store.ts";
+import { ProjectService } from "../src/projects.ts";
+import { ProjectError } from "../src/project-types.ts";
 import { composeWorldSnapshot } from "../src/world-application.ts";
 import { createWorldServer } from "../src/world-server.ts";
 import { validateWorldSnapshot, type WorldSnapshot } from "../src/world-snapshot.ts";
@@ -25,6 +29,7 @@ const entry: FoundedCivilizationSnapshot = {
 function snapshot(civilizations: FoundedCivilizationSnapshot[] = []): WorldSnapshot {
   return composeWorldSnapshot({
     listFoundedCivilizations: () => civilizations,
+    listProjects: () => [],
     narrate: () => ({ connections: [], attemptsInProgress: [], observations: [], claims: [], observationsTruncated: false, claimsTruncated: false }),
   });
 }
@@ -125,7 +130,7 @@ test("invalid source shapes and thrown failures produce sanitized errors, never 
 });
 
 test("shared validator rejects closed-shape violations and normalizes unknown bodies without aliases", () => {
-  for (const value of [undefined, null, false, 0, "snapshot", [], {}, { ...snapshot(), schemaVersion: 2 },
+  for (const value of [undefined, null, false, 0, "snapshot", [], {}, { ...snapshot(), schemaVersion: 1 },
     { ...snapshot(), extra: true }, { schemaVersion: 1, civilizations: [] },
     { ...snapshot(), observationsTruncated: "false" }, { ...snapshot(), claimsTruncated: "false" },
     ...invalidEntries.map((entry) => ({ ...snapshot(), civilizations: [entry] }))]) {
@@ -233,4 +238,179 @@ test("launcher defaults to an ephemeral loopback port and closes an isolated sto
   assert.deepEqual(await response.json(), snapshot());
   child.kill("SIGTERM");
   assert.deepEqual(await exit, [0, null]);
+});
+
+async function projectServer(t: TestContext) {
+  const directory = temporary(t);
+  const store = new ObservationStore(join(directory, "state"));
+  t.after(() => store.close());
+  const civilization = store.foundCivilization(parseCivilizationConfig({ ...body, name: "Projects" }));
+  let provisions = 0;
+  const server = createWorldServer(() => composeWorldSnapshot(store), directory);
+  server.projectService = new ProjectService(store, { root: join(directory, "projects"), adapter: {
+    id: "hermes",
+    async provision() { provisions++; return { kind: "unknown", reason: "harness_timeout" }; },
+    async reconcile() { return { kind: "unknown", reason: "harness_timeout" }; },
+  } });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const host = `127.0.0.1:${address.port}`;
+  const path = `/api/civilizations/${civilization.civilizationId}/projects`;
+  const payload = { requestKey: randomUUID(), name: "Blåbær", harness: "hermes" };
+  const send = async (options: { headers?: Record<string, string | undefined>; body?: string; path?: string; method?: string } = {}) => {
+    const data = options.body ?? JSON.stringify(payload);
+    const headers: Record<string, string | undefined> = {
+      Host: host, Origin: `http://${host}`, "Sec-Fetch-Site": "same-origin",
+      "Content-Type": "application/json; charset=utf-8", "Content-Length": String(Buffer.byteLength(data)),
+      ...options.headers,
+    };
+    return new Promise<{ status: number; body: string; allow: string | undefined }>((resolve, reject) => {
+      const req = request({ hostname: "127.0.0.1", port: address.port, path: options.path ?? path,
+        method: options.method ?? "POST", headers: Object.fromEntries(Object.entries(headers).filter(([, v]) => v !== undefined)) }, (res) => {
+        let text = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => { text += chunk; });
+        res.on("end", () => resolve({ status: res.statusCode!, body: text, allow: res.headers.allow }));
+        res.on("error", reject);
+      });
+      req.on("error", reject);
+      req.end(data);
+    });
+  };
+  return { server, store, host, port: address.port, path, payload, send, provisions: () => provisions };
+}
+
+test("project HTTP writes refuse each browser boundary before effects", async (t) => {
+  const fixture = await projectServer(t);
+  for (const headers of [
+    { Host: "attacker.example" }, { Origin: undefined }, { Origin: "http://attacker.example" },
+    { Origin: `http://${fixture.host}/` }, { "Sec-Fetch-Site": "cross-site" },
+    { "Content-Type": "text/plain" }, { "Content-Type": "application/jsonp" }, { "Content-Type": undefined },
+  ]) {
+    const result = await fixture.send({ headers });
+    assert.equal(result.status, 403);
+    assert.deepEqual(JSON.parse(result.body), { error: "forbidden_origin", message: "Forespørselen er ikke tillatt" });
+  }
+  assert.deepEqual(fixture.store.listProjects(), []);
+  assert.equal(fixture.provisions(), 0);
+});
+
+test("project HTTP writes refuse oversized, unframed, malformed and open-shape bodies", async (t) => {
+  const fixture = await projectServer(t);
+  for (const options of [
+    { body: " ".repeat(8193) }, { headers: { "Content-Length": undefined, "Transfer-Encoding": "chunked" } }, { body: "{" },
+    { body: JSON.stringify({ ...fixture.payload, workspacePath: "/private/canary" }) },
+    { body: JSON.stringify({ ...fixture.payload, slug: "injected" }) },
+    { body: JSON.stringify({ requestKey: "not-a-uuid", name: "name", harness: "hermes" }) },
+    { body: "null" },
+    { path: "/api/projects/project:missing/retry", body: JSON.stringify({ requestKey: randomUUID(), extra: true }) },
+  ]) {
+    const result = await fixture.send(options);
+    assert.equal(result.status, 400);
+    assert.equal(JSON.parse(result.body).error, "invalid_request");
+    assert.ok(!result.body.includes("/private/canary"));
+  }
+  assert.deepEqual(fixture.store.listProjects(), []);
+  assert.equal(fixture.provisions(), 0);
+});
+
+test("project HTTP framing rejects mismatched Content-Length over a real socket", async (t) => {
+  const fixture = await projectServer(t);
+  const data = JSON.stringify(fixture.payload);
+  const result = await new Promise<string>((resolve, reject) => {
+    const socket = connect(fixture.port, "127.0.0.1");
+    t.after(() => socket.destroy());
+    socket.setTimeout(5000, () => { socket.destroy(); reject(new Error("Framing refusal timed out")); });
+    let response = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => { response += chunk; });
+    socket.on("error", reject);
+    socket.on("end", () => resolve(response));
+    socket.on("connect", () => socket.end(`POST ${fixture.path} HTTP/1.1\r\nHost: ${fixture.host}\r\nOrigin: http://${fixture.host}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(data) + 1}\r\n\r\n${data}`));
+  });
+  assert.match(result, /^HTTP\/1.1 400 /u);
+  assert.match(result, /"error":"invalid_request"/u);
+  assert.deepEqual(fixture.store.listProjects(), []);
+  assert.equal(fixture.provisions(), 0);
+});
+
+test("project HTTP method gate precedes path parsing and non-write POST remains 405", async (t) => {
+  const fixture = await projectServer(t);
+  for (const options of [{ method: "DELETE", path: "/%" }, { method: "PUT" }, { path: "/api/world-snapshot" }, { path: "/" }]) {
+    const response = await fixture.send(options);
+    assert.equal(response.status, 405);
+    assert.equal(response.allow, "GET");
+  }
+  assert.equal((await fixture.send({ path: "/%" })).status, 400);
+  assert.deepEqual(fixture.store.listProjects(), []);
+});
+
+test("project HTTP creation, idempotent replay, conflict, retry and snapshot reload", async (t) => {
+  const fixture = await projectServer(t);
+  const results = await Promise.all(Array.from({ length: 10 }, () => fixture.send()));
+  assert.equal(results.filter((result) => result.status === 201).length, 1);
+  assert.equal(results.filter((result) => result.status === 200).length, 9);
+  const project = JSON.parse(results.find((result) => result.status === 201)!.body);
+  assert.ok(results.every((result) => JSON.parse(result.body).projectId === project.projectId));
+  assert.equal(project.state, "external-unknown");
+  assert.equal(project.harness, null);
+  assert.equal(fixture.provisions(), 1);
+  const conflict = await fixture.send({ body: JSON.stringify({ ...fixture.payload, name: "Changed" }) });
+  assert.equal(conflict.status, 409);
+  assert.equal(JSON.parse(conflict.body).error, "request_key_conflict");
+  const retry = await fixture.send({ path: `/api/projects/${project.projectId}/retry`, body: JSON.stringify({ requestKey: randomUUID() }),
+    headers: { "Sec-Fetch-Site": undefined } });
+  assert.equal(retry.status, 200);
+  assert.equal(JSON.parse(retry.body).attempt, 2);
+  const reload = await fetch(`http://${fixture.host}/api/world-snapshot`);
+  assert.deepEqual((await reload.json() as WorldSnapshot).projects, fixture.store.listProjects());
+});
+
+test("project HTTP errors never return native output or filesystem paths", async (t) => {
+  const fixture = await projectServer(t);
+  for (const error of [new Error("native stdout stderr /private/canary"), new ProjectError("containment_violation")]) {
+    fixture.server.projectService = { async create() { throw error; }, async retry() { throw error; } };
+    for (const options of [{}, { path: "/api/projects/project:missing/retry", body: JSON.stringify({ requestKey: randomUUID() }) }]) {
+      const result = await fixture.send(options);
+      assert.equal(result.status, 400);
+      assert.deepEqual(JSON.parse(result.body), { error: error instanceof ProjectError ? error.code : "invalid_request",
+        message: "Prosjektforespørselen kunne ikke fullføres" });
+    }
+  }
+});
+
+test("disconnected HTTP writes drain before shutdown closes their store", async (t) => {
+  const fixture = await projectServer(t);
+  let finish!: () => void;
+  let started!: () => void;
+  const running = new Promise<void>((resolve) => { started = resolve; });
+  const release = new Promise<void>((resolve) => { finish = resolve; });
+  fixture.server.projectService = new ProjectService(fixture.store, { root: temporary(t), adapter: {
+    id: "hermes",
+    async provision() { started(); await release; return { kind: "unknown", reason: "harness_timeout" }; },
+    async reconcile() { throw new Error("not a retry"); },
+  } });
+  const request = fixture.send().catch(() => null);
+  await running;
+  let drained = false;
+  const closing = new Promise<void>((resolve) => fixture.server.once("close", async () => {
+    await fixture.server.drainProjectWrites();
+    drained = true;
+    resolve();
+  }));
+  fixture.server.close();
+  fixture.server.closeAllConnections();
+  await request;
+  assert.equal(drained, false);
+  finish();
+  await closing;
+  assert.equal(drained, true);
+  assert.equal(fixture.store.listProjects()[0]!.reason, "harness_timeout");
+  assert.match(await fs.readFile("src/world-main.ts", "utf8"), /await server\.drainProjectWrites\(\);\s+closeStore\(\)/u);
 });
