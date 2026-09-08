@@ -124,7 +124,7 @@ test("declaration inspection preserves metadata and distinguishes unreadable bod
         mandate: status === "unreadable" ? { status } : { status, mandateId: "mandate:trace", revision: "v2", recordedAt: instant } };
       input.civilizations.push(declaration);
       input.sourcePictures.push({ civilizationId: declaration.civilizationId, sources: [] });
-      const place = worldForm(input).places[0]!;
+      const place = worldForm(input).places.find((place) => place.id === declaration.civilizationId)!;
       const fields = Object.fromEntries(place.inspection.map((field) => [field.label, field.values]));
       assert.equal(place.institution, status);
       assert.deepEqual(place.marks.map(({ axis, kind }) => ({ axis, kind })), [
@@ -145,7 +145,7 @@ test("declaration inspection preserves metadata and distinguishes unreadable bod
       assert.deepEqual(fields.mustEscalate, [bodyReadable ? "Change policy" : "unknown"]);
       for (const axis of ["observations", "claims"] as const) {
         input[`${axis}Truncated`] = true;
-        assert.deepEqual(worldForm(input).places[0]!.marks.filter((mark) => mark.axis === "limits").map((mark) => mark.kind), [`${axis}-truncated`]);
+        assert.deepEqual(worldForm(input).places.find((place) => place.id === declaration.civilizationId)!.marks.filter((mark) => mark.axis === "limits").map((mark) => mark.kind), [`${axis}-truncated`]);
         input[`${axis}Truncated`] = false;
       }
     }
