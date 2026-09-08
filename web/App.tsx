@@ -39,6 +39,7 @@ export function App() {
   }, []);
   const inspected = form?.places.find((place) => place.id === selected);
   const changeZoom = (delta: number) => setZoom((value) => Math.max(0.6, Math.min(1.6, Math.round((value + delta) * 10) / 10)));
+  const resetView = () => { setZoom(1); scene.current?.scrollTo(0, 0); };
   const dismiss = () => {
     if (selected !== null) places.current.get(selected)?.focus();
     setSelected(null);
@@ -80,7 +81,7 @@ export function App() {
             const delta = movement[event.key];
             if (delta) { event.preventDefault(); scene.current?.scrollBy({ left: delta[0], top: delta[1] }); }
             if (event.key === "+" || event.key === "=" || event.key === "-") { event.preventDefault(); changeZoom(event.key === "-" ? -0.1 : 0.1); }
-            if (event.key === "Home") { event.preventDefault(); scene.current?.scrollTo(0, 0); }
+            if (event.key === "Home") { event.preventDefault(); resetView(); }
           }}>
           <div className="world-size" style={{ width: 1600 * zoom, height: height * zoom }}>
             <div className="painted-world" ref={painting} style={{ transform: `scale(${zoom})` }}>
@@ -109,7 +110,7 @@ export function App() {
           </div>
         </div>
         {(!form || form.places.length === 0) && <div className={`world-message ${load.kind}`} role="status"><span className="eyebrow">{load.kind === "loaded" ? "Unwritten terrain" : "World read"}</span><h2>{message}</h2><p>{load.kind === "loaded" ? "A place begins with a declaration. Nothing has been placed here." : load.kind === "loading" ? "Waiting for the validated picture. No places are assumed." : "No world picture is displayed. This is not an empty or quiet world. Try reading again."}</p></div>}
-        <nav className="map-controls" aria-label="World navigation"><button aria-label="Zoom out" onClick={() => changeZoom(-0.1)} disabled={zoom <= 0.6}>-</button><output aria-label="Zoom level">{Math.round(zoom * 100)}%</output><button aria-label="Zoom in" onClick={() => changeZoom(0.1)} disabled={zoom >= 1.6}>+</button><button onClick={() => { setZoom(1); scene.current?.scrollTo(0, 0); }}>Home</button></nav>
+        <nav className="map-controls" aria-label="World navigation"><button aria-label="Zoom out" onClick={() => changeZoom(-0.1)} disabled={zoom <= 0.6}>-</button><output aria-label="Zoom level">{Math.round(zoom * 100)}%</output><button aria-label="Zoom in" onClick={() => changeZoom(0.1)} disabled={zoom >= 1.6}>+</button><button onClick={resetView}>Home</button></nav>
         <p id="navigation-help">Drag to explore. Tab to places; Enter to inspect. Arrow keys pan, +/- zoom, Escape closes.</p>
       </section>
       {inspected && <aside className="inspection" aria-label={`Inspection: ${inspected.name}`}>

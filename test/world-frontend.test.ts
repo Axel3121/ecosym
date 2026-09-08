@@ -290,7 +290,12 @@ test("the production world surface uses the actual build and launcher with isola
       assert.equal(await page.getByLabel("Zoom level").textContent(), "110%");
       await page.keyboard.press("-");
       assert.equal(await page.getByLabel("Zoom level").textContent(), "100%");
+      await page.keyboard.press("+");
+      assert.equal(await page.getByLabel("Zoom level").textContent(), "110%");
+      assert.equal(await scene.evaluate((node) => node.scrollLeft > 0 && node.scrollTop > 0), true);
       await page.keyboard.press("Home");
+      assert.equal(await page.getByLabel("Zoom level").textContent(), "100%");
+      assert.equal(await page.locator(".painted-world").evaluate((node) => getComputedStyle(node).transform), "matrix(1, 0, 0, 1, 0, 0)");
       assert.deepEqual(await scene.evaluate((node) => [node.scrollLeft, node.scrollTop]), [0, 0]);
       await page.keyboard.press("Tab");
       assert.equal(await button.evaluate((node) => node === document.activeElement), true);
