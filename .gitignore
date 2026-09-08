@@ -43,3 +43,5 @@ opencode.json
 .coderabbit.yaml
 skills-lock.json
 docs/tasks/
+
+.worktrees/
