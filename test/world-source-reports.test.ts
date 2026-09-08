@@ -157,7 +157,7 @@ test("closed world and form refuse extra fields at every nested object and malfo
   }, "report-backed observation");
   let accessorCalls = 0;
   refuse((changed) => {
-    Object.defineProperty(at(changed, report), "owner", { get() { accessorCalls++; return "owner"; } });
+    Object.defineProperty(at(changed, report), "owner", { enumerable: true, get() { accessorCalls++; return "owner"; } });
   }, "accessor");
   assert.equal(accessorCalls, 0);
 });

@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
+import { Ajv2020 } from "ajv/dist/2020.js";
+import addFormats from "ajv-formats";
+import schema from "../src/arena-observation-bundle-v1.schema.json" with { type: "json" };
 import { ObservationStore } from "../src/store.ts";
 import { arenaBundle } from "./arena-fixture.ts";
 import type { ArenaBundle } from "../src/arena-adapter.ts";
@@ -14,11 +17,28 @@ import { verifyConnection } from "../src/verify.ts";
 import { parseCivilizationConfig } from "../src/institution.ts";
 import { composeWorldSnapshot } from "../src/world-application.ts";
 import { worldForm } from "../src/world-form.ts";
+import { sourceReportInstantOrderingKey } from "../src/source-report-time.ts";
 
 test("Arena schema dependency retains its exact byte hash and upstream identifier", () => {
   const bytes = readFileSync(new URL("../src/arena-observation-bundle-v1.schema.json", import.meta.url), "utf8");
   assert.equal(sha256(bytes), ARENA_SCHEMA_SHA256);
   assert.equal(JSON.parse(bytes).$id, ARENA_SCHEMA_ID);
+});
+
+test("Arena rejects leap-second syntax accepted by the pinned schema because semantic ordering is undefined", async (t) => {
+  const ajv = new Ajv2020({ strict: true, strictTypes: false, strictRequired: false, allErrors: false });
+  addFormats.default(ajv);
+  const validate = ajv.compile(schema);
+  const bundle = arenaBundle();
+  bundle.facts[0]!.sourceRecordedAt = "2016-12-31T23:59:60Z";
+  assert.equal(validate(bundle), true);
+  assert.equal(sourceReportInstantOrderingKey(bundle.facts[0]!.sourceRecordedAt), null);
+  const store = new ObservationStore(mkdtempSync(join(tmpdir(), "ecosym-arena-")));
+  t.after(() => store.close());
+  store.registerArenaSource("arena", "source", "Synthetic Owner");
+  await assert.rejects(store.admitArenaBundle("arena", JSON.stringify(bundle)), { code: "arena_invalid" });
+  assert.equal(store.countFacts(), 0);
+  assert.equal(store.narrate().sourceReports!.length, 0);
 });
 
 test("Arena registration persists expected identity and refuses active replacement", () => {
