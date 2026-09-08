@@ -1,0 +1,241 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ecosym:arena:observation-bundle:v1",
+  "title": "EcoSym Arena Observation Bundle v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "bundleId", "source", "observation", "provenance", "processing", "verification", "freshness", "uncertainty", "facts", "producedAt"],
+  "properties": {
+    "schemaVersion": {"type": "integer", "const": 1},
+    "bundleId": {"$ref": "#/$defs/id"},
+    "source": {"$ref": "#/$defs/source"},
+    "observation": {
+      "oneOf": [
+        {"$ref": "#/$defs/observed"},
+        {"$ref": "#/$defs/cannotObserve"}
+      ]
+    },
+    "provenance": {"$ref": "#/$defs/provenance"},
+    "processing": {"$ref": "#/$defs/processing"},
+    "verification": {"$ref": "#/$defs/verification"},
+    "freshness": {"$ref": "#/$defs/freshness"},
+    "uncertainty": {"$ref": "#/$defs/uncertainty"},
+    "facts": {
+      "type": "array", "maxItems": 1000,
+      "items": {"$ref": "#/$defs/fact"}
+    },
+    "producedAt": {"$ref": "#/$defs/timestamp"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"observation": {"properties": {"state": {"const": "observed"}}, "required": ["state"]}}, "required": ["observation"]},
+      "then": {
+        "properties": {
+          "provenance": {"properties": {"inputs": {"items": {"properties": {"retrievalStatus": {"const": "retrieved"}}}}}},
+          "processing": {"properties": {
+            "rules": {"contains": {"properties": {"status": {"const": "completed"}}, "required": ["status"]}, "minContains": 1},
+            "models": {"items": {"properties": {"status": {"const": "completed"}, "outputDigest": {"$ref": "#/$defs/digest"}}}}
+          }},
+          "freshness": {"properties": {"basis": {"enum": ["source_validity", "source_timestamp", "retrieval_time"]}, "sourceAsOf": {"$ref": "#/$defs/timestamp"}}}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"observation": {"properties": {"state": {"const": "cannot_observe"}}, "required": ["state"]}}, "required": ["observation"]},
+      "then": {
+        "properties": {
+          "facts": {"maxItems": 0},
+          "processing": {"properties": {"models": {"items": {"properties": {"status": {"const": "not_run"}, "outputDigest": {"type": "null"}}}}}},
+          "freshness": {"properties": {"status": {"const": "unknown"}, "basis": {"const": "unavailable"}, "sourceAsOf": {"type": "null"}, "validUntil": {"type": "null"}}},
+          "uncertainty": {"properties": {"dimensions": {"contains": {"properties": {"kind": {"const": "coverage"}, "level": {"enum": ["unknown", "high"]}}, "required": ["kind", "level"]}, "minContains": 1}}}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"observation": {"properties": {"activity": {"const": "present"}}, "required": ["activity"]}}, "required": ["observation"]},
+      "then": {"properties": {"facts": {"minItems": 1}}}
+    },
+    {
+      "if": {"properties": {"observation": {"properties": {"activity": {"const": "none"}}, "required": ["activity"]}}, "required": ["observation"]},
+      "then": {"properties": {"facts": {"maxItems": 0}}}
+    }
+  ],
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "text": {"type": "string", "minLength": 1, "maxLength": 512},
+    "version": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/+-]*$"},
+    "uri": {"type": "string", "minLength": 3, "maxLength": 2048, "format": "uri", "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s]+$"},
+    "timestamp": {
+      "type": "string", "minLength": 20, "maxLength": 64,
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]+)?Z$"
+    },
+    "nullableTimestamp": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+    "digest": {"type": "string", "minLength": 71, "maxLength": 71, "pattern": "^sha256:[0-9a-f]{64}$"},
+    "nullableDigest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+    "failureCode": {"enum": ["timeout", "dns_error", "http_error", "malformed_source", "incomplete_source", "authorization_error", "rate_limited", "other"]},
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sourceId", "owner", "system", "endpoint", "selectedScope", "license"],
+      "properties": {
+        "sourceId": {"$ref": "#/$defs/id"},
+        "owner": {"$ref": "#/$defs/text"},
+        "system": {"$ref": "#/$defs/text"},
+        "endpoint": {"$ref": "#/$defs/uri"},
+        "selectedScope": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "license": {"$ref": "#/$defs/text"}
+      }
+    },
+    "observed": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "attemptedAt", "completedAt", "activity", "scopeComplete"],
+      "properties": {
+        "state": {"const": "observed"},
+        "attemptedAt": {"$ref": "#/$defs/timestamp"},
+        "completedAt": {"$ref": "#/$defs/timestamp"},
+        "activity": {"enum": ["present", "none"]},
+        "scopeComplete": {"const": true}
+      }
+    },
+    "cannotObserve": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "attemptedAt", "failedAt", "activity", "failure", "retryable", "lastSuccessfulBundleId"],
+      "properties": {
+        "state": {"const": "cannot_observe"},
+        "attemptedAt": {"$ref": "#/$defs/timestamp"},
+        "failedAt": {"$ref": "#/$defs/timestamp"},
+        "activity": {"const": "unknown"},
+        "failure": {"$ref": "#/$defs/failureCode"},
+        "retryable": {"type": "boolean"},
+        "lastSuccessfulBundleId": {"anyOf": [{"$ref": "#/$defs/id"}, {"type": "null"}]}
+      }
+    },
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["inputs"],
+      "properties": {"inputs": {"type": "array", "minItems": 1, "maxItems": 1024, "items": {"$ref": "#/$defs/input"}}}
+    },
+    "input": {
+      "type": "object", "additionalProperties": false,
+      "required": ["inputId", "role", "uri", "retrievalStatus", "retrievedAt", "mediaType", "digest", "failureCode"],
+      "properties": {
+        "inputId": {"$ref": "#/$defs/id"},
+        "role": {"enum": ["feed", "source_record", "previous_bundle", "other"]},
+        "uri": {"$ref": "#/$defs/uri"},
+        "retrievalStatus": {"enum": ["retrieved", "unavailable"]},
+        "retrievedAt": {"$ref": "#/$defs/nullableTimestamp"},
+        "mediaType": {"anyOf": [{"type": "string", "minLength": 3, "maxLength": 127, "pattern": "^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$"}, {"type": "null"}]},
+        "digest": {"$ref": "#/$defs/nullableDigest"},
+        "failureCode": {"anyOf": [{"$ref": "#/$defs/failureCode"}, {"type": "null"}]}
+      },
+      "if": {"properties": {"retrievalStatus": {"const": "retrieved"}}, "required": ["retrievalStatus"]},
+      "then": {"properties": {"retrievedAt": {"$ref": "#/$defs/timestamp"}, "mediaType": {"type": "string"}, "digest": {"$ref": "#/$defs/digest"}, "failureCode": {"type": "null"}}},
+      "else": {"properties": {"retrievedAt": {"type": "null"}, "mediaType": {"type": "null"}, "digest": {"type": "null"}, "failureCode": {"$ref": "#/$defs/failureCode"}}}
+    },
+    "processing": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pipeline", "rules", "models"],
+      "properties": {
+        "pipeline": {
+          "type": "object", "additionalProperties": false,
+          "required": ["name", "version"],
+          "properties": {"name": {"$ref": "#/$defs/text"}, "version": {"$ref": "#/$defs/version"}}
+        },
+        "rules": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"$ref": "#/$defs/rule"}},
+        "models": {
+          "type": "array", "minItems": 2, "maxItems": 2,
+          "items": {"$ref": "#/$defs/model"},
+          "allOf": [
+            {"contains": {"properties": {"role": {"const": "extraction"}}, "required": ["role"]}, "minContains": 1, "maxContains": 1},
+            {"contains": {"properties": {"role": {"const": "critique"}}, "required": ["role"]}, "minContains": 1, "maxContains": 1}
+          ]
+        }
+      }
+    },
+    "rule": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ruleId", "name", "version", "status"],
+      "properties": {
+        "ruleId": {"$ref": "#/$defs/id"}, "name": {"$ref": "#/$defs/text"},
+        "version": {"$ref": "#/$defs/version"}, "status": {"enum": ["completed", "not_run"]}
+      }
+    },
+    "model": {
+      "type": "object", "additionalProperties": false,
+      "required": ["modelRunId", "role", "provider", "modelId", "configurationVersion", "status", "outputDigest"],
+      "properties": {
+        "modelRunId": {"$ref": "#/$defs/id"},
+        "role": {"enum": ["extraction", "critique"]},
+        "provider": {"$ref": "#/$defs/id"},
+        "modelId": {"$ref": "#/$defs/version"},
+        "configurationVersion": {"$ref": "#/$defs/version"},
+        "status": {"enum": ["completed", "not_run"]},
+        "outputDigest": {"$ref": "#/$defs/nullableDigest"}
+      },
+      "if": {"properties": {"status": {"const": "completed"}}, "required": ["status"]},
+      "then": {"properties": {"outputDigest": {"$ref": "#/$defs/digest"}}},
+      "else": {"properties": {"outputDigest": {"type": "null"}}}
+    },
+    "verification": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "scope", "checkedAt", "methods", "notes"],
+      "properties": {
+        "status": {"enum": ["verified", "partially_verified", "unverified", "contradicted"]},
+        "scope": {"enum": ["availability_only", "provenance_and_representation", "content"]},
+        "checkedAt": {"$ref": "#/$defs/timestamp"},
+        "methods": {"type": "array", "minItems": 1, "maxItems": 32, "items": {
+          "type": "object", "additionalProperties": false,
+          "required": ["methodId", "name", "version"],
+          "properties": {"methodId": {"$ref": "#/$defs/id"}, "name": {"$ref": "#/$defs/text"}, "version": {"$ref": "#/$defs/version"}}
+        }},
+        "notes": {"type": "string", "maxLength": 4096}
+      }
+    },
+    "freshness": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "basis", "evaluatedAt", "sourceAsOf", "validUntil"],
+      "properties": {
+        "status": {"enum": ["current", "stale", "unknown"]},
+        "basis": {"enum": ["source_validity", "source_timestamp", "retrieval_time", "unavailable"]},
+        "evaluatedAt": {"$ref": "#/$defs/timestamp"},
+        "sourceAsOf": {"$ref": "#/$defs/nullableTimestamp"},
+        "validUntil": {"$ref": "#/$defs/nullableTimestamp"}
+      },
+      "if": {"properties": {"status": {"enum": ["current", "stale"]}}, "required": ["status"]},
+      "then": {"properties": {"validUntil": {"$ref": "#/$defs/timestamp"}}}
+    },
+    "uncertainty": {
+      "type": "object", "additionalProperties": false,
+      "required": ["classification", "dimensions"],
+      "properties": {
+        "classification": {"enum": ["none", "bounded", "unknown"]},
+        "dimensions": {"type": "array", "minItems": 1, "maxItems": 32, "items": {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "level", "description"],
+          "properties": {
+            "kind": {"enum": ["source_declared", "extraction", "coverage", "temporal", "other"]},
+            "level": {"enum": ["none", "low", "medium", "high", "unknown"]},
+            "description": {"type": "string", "minLength": 1, "maxLength": 2048}
+          }
+        }}
+      }
+    },
+    "fact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["factId", "epistemicType", "factOwner", "kind", "subject", "sourceRecordedAt", "validFrom", "validUntil", "inputRefs", "processingRefs", "payload"],
+      "properties": {
+        "factId": {"$ref": "#/$defs/id"},
+        "epistemicType": {"enum": ["observation", "claim", "derived"]},
+        "factOwner": {"$ref": "#/$defs/text"},
+        "kind": {"$ref": "#/$defs/id"},
+        "subject": {"$ref": "#/$defs/text"},
+        "sourceRecordedAt": {"$ref": "#/$defs/nullableTimestamp"},
+        "validFrom": {"$ref": "#/$defs/nullableTimestamp"},
+        "validUntil": {"$ref": "#/$defs/nullableTimestamp"},
+        "inputRefs": {"type": "array", "minItems": 1, "maxItems": 1024, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "processingRefs": {"type": "array", "minItems": 1, "maxItems": 130, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "payload": {"type": "object", "additionalProperties": true}
+      }
+    }
+  }
+}

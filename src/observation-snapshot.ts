@@ -1,3 +1,5 @@
+import type { SourceReportProvenance, SourceReportSnapshot } from "./source-report.ts";
+
 export type EpistemicStatus = "claim" | "observation";
 
 export interface FactInput {
@@ -11,6 +13,7 @@ export interface FactInput {
 }
 
 export interface StoredFact extends FactInput {
+  sourceReport?: SourceReportProvenance;
   id: number;
   collectedAt: string;
   connectionId: string;
@@ -32,6 +35,7 @@ export interface NarrationAttempt {
 }
 
 export interface NarrationSnapshot {
+  sourceReports?: SourceReportSnapshot[];
   connections: ConnectionStatus[];
   attemptsInProgress: NarrationAttempt[];
   observations: StoredFact[];

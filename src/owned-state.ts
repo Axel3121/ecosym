@@ -3,6 +3,9 @@ import { canonicalJson, type JsonValue, sha256 } from "./json.ts";
 export const OWNED_STATE_BUNDLE_SCHEMA_VERSION = 1;
 
 export interface OwnedStateCounts {
+  sourceReports?: number;
+  sourceReportFacts?: number;
+  sourceReportAdmissions?: number;
   activeConnections: number;
   civilizations: number;
   civilizationForgetRecords: number;
@@ -25,6 +28,9 @@ export interface OwnedStateBundle {
     mandateRevisions: Record<string, JsonValue>[];
   };
   observationStore: {
+    sourceReports?: Record<string, JsonValue>[];
+    sourceReportFacts?: Record<string, JsonValue>[];
+    sourceReportAdmissions?: Record<string, JsonValue>[];
     schemaVersion: number;
     activeConnections: Record<string, JsonValue>[];
     collectionAttemptRetirements: Record<string, JsonValue>[];
@@ -54,6 +60,11 @@ export function createOwnedStateExport(bundle: OwnedStateBundle): OwnedStateExpo
     bundle,
     bytes,
     counts: {
+      ...(observationStore.sourceReports === undefined ? {} : {
+        sourceReports: observationStore.sourceReports.length,
+        sourceReportFacts: observationStore.sourceReportFacts!.length,
+        sourceReportAdmissions: observationStore.sourceReportAdmissions!.length,
+      }),
       activeConnections: observationStore.activeConnections.length,
       civilizations: institutionStore.civilizations.length,
       civilizationForgetRecords: institutionStore.civilizationForgetRecords.length,

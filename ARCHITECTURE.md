@@ -116,6 +116,12 @@ currently read it. This metadata describes Ecosym's collection process, not an
 external observation or the outcome of work. Successful empty or unchanged
 collection establishes quiet only in the collected picture, not domain inactivity.
 
+The observation owner owns admitted external-source reports and their provenance,
+timing, and source-reported status. Upstream verification, freshness, uncertainty,
+and observation state remain distinct from Ecosym confirmation and collection
+health. Public projections expose bounded report metadata and epistemically
+labeled facts, not owner-private payloads or external schema objects.
+
 ### Form boundary
 
 Depiction of observed activity is derived from observed state, never authored.
@@ -181,9 +187,9 @@ would depict government over a runtime that does as it pleases.
 
 - Ecosym's institution store owns civilizations, mandates, jurisdiction, and
   authority rules.
-- Ecosym's observation store owns observation records and their provenance,
-  timing, and status, and separately owns collection-attempt and connection-health
-  metadata.
+- Ecosym's observation store owns observation records, admitted external-source
+  reports, and their provenance, timing, and status, and separately owns
+  collection-attempt and connection-health metadata.
 - External systems own their current external facts and effect outcomes.
 - A connected runtime owns its own state: agents, lineage, delegation, and tool
   access. Which runtimes are connected, and what each can enforce, is observed —

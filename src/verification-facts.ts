@@ -1,6 +1,7 @@
 import { canonicalJson, sha256 } from "./json.ts";
 import type { FactInput, VerificationFact } from "./store.ts";
 import { utcInstantOrderingKey } from "./time.ts";
+import { sourceReportFactTimeKey } from "./source-report-time.ts";
 
 export function verificationFactFromInput(fact: FactInput): VerificationFact {
   return {
@@ -27,7 +28,9 @@ export function verificationFactKey(fact: VerificationFact): string {
   const sourceTimeKey =
     fact.sourceRecordedAt === null
       ? null
-      : utcInstantOrderingKey(fact.sourceRecordedAt);
+      : utcInstantOrderingKey(fact.sourceRecordedAt) ?? sourceReportFactTimeKey(fact.sourceRecordedAt)
+        // Malformed persisted times must not alias null or a valid TEXT time key.
+        ?? ["invalid", fact.sourceRecordedAt];
   return canonicalJson([
     fact.epistemicStatus,
     fact.factOwner,

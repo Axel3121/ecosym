@@ -2,12 +2,15 @@ import type { FoundedCivilizationSnapshot } from "./institution-snapshot.ts";
 import type { ConnectionStatus, NarrationAttempt, StoredFact } from "./observation-snapshot.ts";
 import { isRepresentableUtcInstant } from "./time.ts";
 import { validateInstitutionSnapshot } from "./validate-institution-snapshot.ts";
+import type { SourceReportProvenance, SourceReportSnapshot } from "./source-report.ts";
+import { sourceReportInstantOrderingKey } from "./source-report-time.ts";
 
 export const WORLD_SNAPSHOT_SCHEMA_VERSION = 1;
 
 export const WORLD_FACT_SEMANTICS_CAVEAT = "Observations describe the source owner's recorded fields at collection, not completed work, operational success or civilization activity. Runtime prose reports remain claims. Temporal status describes stored collection evidence, not live source truth. collectionAsOf is the latest successful collection interval in the fact's last-seen connection/configuration/activation lifetime; null means unknown. collectedAt is provenance, never a substitute for sourceRecordedAt. Verify does not reconcile this picture; recollect to advance it. Running attempts and truncated results can leave the picture partial.";
 
 export interface WorldSourceSnapshot {
+  sourceReport?: SourceReportSnapshot;
   connectionId: string;
   collection: ConnectionStatus | null;
   attemptsInProgress: NarrationAttempt[];
@@ -29,13 +32,14 @@ export interface WorldSnapshot {
   claimsTruncated: boolean;
 }
 
-function record(value: unknown, keys?: string[]): Record<string, unknown> {
+function record(value: unknown, keys?: string[], optional: string[] = []): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)
     || (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)) {
     throw new Error("Invalid world snapshot object");
   }
   const ownKeys = Reflect.ownKeys(value);
-  if ((keys && (ownKeys.length !== keys.length || keys.some((key) => !Object.hasOwn(value, key))))
+  if ((keys && (ownKeys.some((key) => !keys.includes(String(key)) && !optional.includes(String(key)))
+    || keys.some((key) => !Object.hasOwn(value, key))))
     || ownKeys.some((key) => typeof key !== "string"
       || !Object.hasOwn(Object.getOwnPropertyDescriptor(value, key)!, "value"))) {
     throw new Error("Invalid world snapshot fields");
@@ -57,6 +61,105 @@ function timestamp(value: unknown): string {
 function boolean(value: unknown): boolean {
   if (typeof value !== "boolean") throw new Error("Invalid world snapshot boolean");
   return value;
+}
+
+function boundedText(value: unknown, maximum: number): string {
+  const result = text(value);
+  if (result.length === 0 || result.length > maximum) throw new Error("Invalid source report string bounds");
+  return result;
+}
+
+function choice<T extends string>(value: unknown, choices: readonly T[]): T {
+  if (!choices.includes(value as T)) throw new Error("Invalid source report enum");
+  return value as T;
+}
+
+function reportTime(value: unknown, local = false): string {
+  const result = text(value);
+  if (sourceReportInstantOrderingKey(result) === null
+    || (local && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(result))) {
+    throw new Error("Invalid source report timestamp");
+  }
+  return result;
+}
+
+function report(value: unknown): SourceReportSnapshot {
+  const entry = record(value, ["reportId", "bundleId", "connectionId", "connectionVersion", "admittedFrom", "admittedAt",
+    "sourceId", "owner", "selectedScope", "producedAt", "factCount", "observation", "verification", "freshness", "uncertainty"]);
+  const connectionVersion = text(entry.connectionVersion);
+  if (!/^[a-f0-9]{64}$/.test(connectionVersion)) throw new Error("Invalid source report connection version");
+  if (typeof entry.factCount !== "number" || !Number.isInteger(entry.factCount) || entry.factCount < 0 || entry.factCount > 1000) {
+    throw new Error("Invalid source report fact count");
+  }
+  const rawObservation = record(entry.observation);
+  let observation: SourceReportSnapshot["observation"];
+  if (rawObservation.state === "observed") {
+    const observed = record(rawObservation, ["state", "attemptedAt", "completedAt", "activity", "scopeComplete"]);
+    if (observed.scopeComplete !== true) throw new Error("Invalid source report scope completeness");
+    observation = { state: "observed", attemptedAt: reportTime(observed.attemptedAt), completedAt: reportTime(observed.completedAt),
+      activity: choice(observed.activity, ["present", "none"]), scopeComplete: true };
+    if ((observation.activity === "none") !== (entry.factCount === 0)) throw new Error("Inconsistent source report activity");
+  } else {
+    const failed = record(rawObservation, ["state", "attemptedAt", "failedAt", "activity", "failure", "retryable", "lastSuccessfulBundleId"]);
+    if (failed.state !== "cannot_observe" || failed.activity !== "unknown" || entry.factCount !== 0) throw new Error("Invalid upstream failure");
+    observation = { state: "cannot_observe", attemptedAt: reportTime(failed.attemptedAt), failedAt: reportTime(failed.failedAt),
+      activity: "unknown", failure: choice(failed.failure, ["timeout", "dns_error", "http_error", "malformed_source", "incomplete_source", "authorization_error", "rate_limited", "other"]),
+      retryable: boolean(failed.retryable), lastSuccessfulBundleId: failed.lastSuccessfulBundleId === null ? null : boundedText(failed.lastSuccessfulBundleId, 128) };
+    if (observation.lastSuccessfulBundleId === entry.bundleId) throw new Error("Self-referential source report");
+  }
+  const verification = record(entry.verification, ["status", "scope", "checkedAt"]);
+  const freshness = record(entry.freshness, ["status", "basis", "evaluatedAt", "sourceAsOf", "validUntil"]);
+  const uncertainty = record(entry.uncertainty, ["classification", "dimensions"]);
+  if (!Array.isArray(uncertainty.dimensions) || uncertainty.dimensions.length < 1 || uncertainty.dimensions.length > 32) {
+    throw new Error("Invalid source report dimensions bounds");
+  }
+  const normalized: SourceReportSnapshot = {
+    reportId: boundedText(entry.reportId, 128), bundleId: boundedText(entry.bundleId, 128), connectionId: boundedText(entry.connectionId, 128),
+    connectionVersion, admittedFrom: reportTime(entry.admittedFrom, true), admittedAt: reportTime(entry.admittedAt, true),
+    sourceId: boundedText(entry.sourceId, 128), owner: boundedText(entry.owner, 512), selectedScope: boundedText(entry.selectedScope, 2048),
+    producedAt: reportTime(entry.producedAt), factCount: entry.factCount, observation,
+    verification: { status: choice(verification.status, ["verified", "partially_verified", "unverified", "contradicted"]),
+      scope: choice(verification.scope, ["availability_only", "provenance_and_representation", "content"]), checkedAt: reportTime(verification.checkedAt) },
+    freshness: { status: choice(freshness.status, ["current", "stale", "unknown"]),
+      basis: choice(freshness.basis, ["source_validity", "source_timestamp", "retrieval_time", "unavailable"]), evaluatedAt: reportTime(freshness.evaluatedAt),
+      sourceAsOf: freshness.sourceAsOf === null ? null : reportTime(freshness.sourceAsOf), validUntil: freshness.validUntil === null ? null : reportTime(freshness.validUntil) },
+    uncertainty: { classification: choice(uncertainty.classification, ["none", "bounded", "unknown"]),
+      dimensions: list(uncertainty.dimensions, (value) => {
+        const dimension = record(value, ["kind", "level"]);
+        return { kind: choice(dimension.kind, ["source_declared", "extraction", "coverage", "temporal", "other"]),
+          level: choice(dimension.level, ["none", "low", "medium", "high", "unknown"]) };
+      }) },
+  };
+  const before = (start: string | null, end: string | null) => {
+    if (start !== null && end !== null && sourceReportInstantOrderingKey(start)! > sourceReportInstantOrderingKey(end)!) {
+      throw new Error("Inconsistent source report chronology");
+    }
+  };
+  const fresh = normalized.freshness;
+  before(normalized.admittedFrom, normalized.admittedAt);
+  const ended = observation.state === "observed" ? observation.completedAt : observation.failedAt;
+  before(observation.attemptedAt, ended);
+  before(ended, normalized.producedAt);
+  before(observation.attemptedAt, normalized.verification.checkedAt);
+  before(normalized.verification.checkedAt, normalized.producedAt);
+  before(observation.attemptedAt, fresh.evaluatedAt);
+  before(fresh.evaluatedAt, normalized.producedAt);
+  before(fresh.sourceAsOf, fresh.evaluatedAt);
+  before(fresh.sourceAsOf, fresh.validUntil);
+  if (fresh.status !== "unknown" && fresh.validUntil === null) {
+    throw new Error("Missing source report freshness validity bound");
+  }
+  if (fresh.status === "current") before(fresh.evaluatedAt, fresh.validUntil);
+  if (fresh.status === "stale" && fresh.validUntil !== null
+    && sourceReportInstantOrderingKey(fresh.validUntil)! >= sourceReportInstantOrderingKey(fresh.evaluatedAt)!) {
+    throw new Error("Inconsistent source report staleness");
+  }
+  if (observation.state === "observed" ? fresh.basis === "unavailable" || fresh.sourceAsOf === null
+    : fresh.status !== "unknown" || fresh.basis !== "unavailable" || fresh.sourceAsOf !== null || fresh.validUntil !== null
+      || !normalized.uncertainty.dimensions.some((dimension) => dimension.kind === "coverage" && ["unknown", "high"].includes(dimension.level))) {
+    throw new Error("Inconsistent source report coverage");
+  }
+  return normalized;
 }
 
 function list<T>(value: unknown, parse: (entry: unknown) => T): T[] {
@@ -92,7 +195,7 @@ function collection(value: unknown): ConnectionStatus | null {
 
 function fact(value: unknown, epistemicStatus: "observation" | "claim"): StoredFact {
   const entry = record(value, ["id", "collectedAt", "connectionId", "connectionVersion", "collectionAsOf",
-    "epistemicStatus", "factOwner", "kind", "payload", "sourceRecordedAt", "sourceRecordId", "subject", "temporalStatus"]);
+    "epistemicStatus", "factOwner", "kind", "payload", "sourceRecordedAt", "sourceRecordId", "subject", "temporalStatus"], ["sourceReport"]);
   if (entry.epistemicStatus !== epistemicStatus) throw new Error("Miscategorized world fact");
   if (typeof entry.id !== "number" || !Number.isSafeInteger(entry.id) || entry.id < 1) {
     throw new Error("Invalid fact ID");
@@ -103,6 +206,13 @@ function fact(value: unknown, epistemicStatus: "observation" | "claim"): StoredF
   }
   if (temporalStatus === "current" && entry.sourceRecordedAt === null) throw new Error("Undated current fact");
   const payload = record(entry.payload);
+  let sourceReport: SourceReportProvenance | undefined;
+  if (Object.hasOwn(entry, "sourceReport")) {
+    const provenance = record(entry.sourceReport, ["reportId", "epistemicType"]);
+    sourceReport = { reportId: boundedText(provenance.reportId, 128),
+      epistemicType: choice(provenance.epistemicType, ["observation", "claim", "derived"]) };
+    if (epistemicStatus !== "claim" || Reflect.ownKeys(payload).length !== 0) throw new Error("Invalid source-report claim");
+  }
   const normalizedPayload: StoredFact["payload"] = {};
   for (const key of Object.getOwnPropertyNames(payload).sort()) {
     const scalar = payload[key];
@@ -122,8 +232,9 @@ function fact(value: unknown, epistemicStatus: "observation" | "claim"): StoredF
     id: entry.id, collectedAt: timestamp(entry.collectedAt), connectionId: text(entry.connectionId),
     connectionVersion: text(entry.connectionVersion), collectionAsOf, epistemicStatus,
     factOwner: text(entry.factOwner), kind: text(entry.kind), payload: normalizedPayload,
-    sourceRecordedAt: entry.sourceRecordedAt === null ? null : timestamp(entry.sourceRecordedAt),
+    sourceRecordedAt: entry.sourceRecordedAt === null ? null : sourceReport ? reportTime(entry.sourceRecordedAt) : timestamp(entry.sourceRecordedAt),
     sourceRecordId: text(entry.sourceRecordId), subject: text(entry.subject), temporalStatus,
+    ...(sourceReport ? { sourceReport } : {}),
   };
 }
 
@@ -145,7 +256,7 @@ export function validateWorldSnapshot(value: unknown): WorldSnapshot {
     const expectedSources = new Set(civilization.sources);
     const seenSources = new Set<string>();
     const sources = list(picture.sources, (value): WorldSourceSnapshot => {
-      const source = record(value, ["connectionId", "collection", "attemptsInProgress", "observations", "claims"]);
+      const source = record(value, ["connectionId", "collection", "attemptsInProgress", "observations", "claims"], ["sourceReport"]);
       const connectionId = text(source.connectionId);
       if (!expectedSources.has(connectionId) || seenSources.has(connectionId)) throw new Error("Invalid source link");
       seenSources.add(connectionId);
@@ -160,9 +271,12 @@ export function validateWorldSnapshot(value: unknown): WorldSnapshot {
         }),
         observations: list(source.observations, (value) => fact(value, "observation")),
         claims: list(source.claims, (value) => fact(value, "claim")),
+        ...(Object.hasOwn(source, "sourceReport") ? { sourceReport: report(source.sourceReport) } : {}),
       };
-      const linked = [...normalized.attemptsInProgress, ...normalized.observations, ...normalized.claims];
+      const linked = [...normalized.attemptsInProgress, ...normalized.observations, ...normalized.claims,
+        ...(normalized.sourceReport ? [normalized.sourceReport] : [])];
       if ((normalized.collection !== null && normalized.collection.connectionId !== connectionId)
+        || (normalized.sourceReport && (normalized.observations.length !== 0 || normalized.claims.some((claim) => !claim.sourceReport)))
         || (normalized.collection?.reason === "incomplete" && normalized.attemptsInProgress.length === 0)
         || (normalized.collection?.reason === "never-run" && normalized.attemptsInProgress.length !== 0)
         || linked.some((entry) => entry.connectionId !== connectionId || normalized.collection === null

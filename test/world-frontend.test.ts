@@ -13,7 +13,7 @@ import ts from "typescript";
 import { validateWorldSnapshot, type WorldSnapshot } from "../src/world-snapshot.ts";
 import { worldForm } from "../src/world-form.ts";
 
-const pureSources = ["world-form.ts", "world-snapshot.ts", "institution-snapshot.ts", "observation-snapshot.ts", "validate-institution-snapshot.ts", "time.ts"];
+const pureSources = ["world-form.ts", "world-snapshot.ts", "institution-snapshot.ts", "observation-snapshot.ts", "validate-institution-snapshot.ts", "time.ts", "source-report.ts", "source-report-time.ts"];
 const empty: WorldSnapshot = { schemaVersion: 1, civilizations: [], sourcePictures: [], observationsTruncated: false, claimsTruncated: false };
 
 function foundedSnapshot(): WorldSnapshot {
