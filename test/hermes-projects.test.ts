@@ -109,12 +109,21 @@ for (const scenario of ["unrecognized-list", "too-many", "ambiguous", "overflow-
   });
 }
 
-test("timeout sends TERM at 10 seconds then kills a TERM-ignoring process after 2 seconds", { timeout: 16_000 }, async (t) => {
+test("slow native startup beyond 10 seconds still establishes a binding", { timeout: 20_000 }, async (t) => {
+  const s = fake(t, `if(args[1]==='list') setTimeout(()=>console.log(${JSON.stringify(empty)}),10_500);
+    else if(args[1]==='create') console.log('Created project fjordkart (p_ab12)');`);
+  assert.deepEqual(await s.adapter.provision(s.request), { kind: "bound", binding: {
+    externalId: "p_ab12", externalSlug: "fjordkart", externalArchived: false,
+    harnessVersion: "0.21.0", harnessHome: s.profile, provenance: "created",
+  } });
+});
+
+test("timeout sends TERM at 30 seconds then kills a TERM-ignoring process after 2 seconds", { timeout: 36_000 }, async (t) => {
   const s = fake(t, `process.on('SIGTERM',()=>writeFileSync(root+'/term','received')); setInterval(()=>{},1000);`);
   const started = Date.now();
   assert.deepEqual(await s.adapter.provision(s.request), { kind: "unknown", reason: "harness_timeout" });
   assert.equal(readFileSync(join(s.root, "term"), "utf8"), "received");
-  assert.ok(Date.now() - started >= 11_900);
+  assert.ok(Date.now() - started >= 31_900);
 });
 
 test("binary is resolved once and invalid positional inputs cannot invoke native", async (t) => {

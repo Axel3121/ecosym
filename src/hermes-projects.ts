@@ -61,7 +61,8 @@ export class HermesProjectAdapter implements HarnessAdapter {
         child.kill("SIGTERM");
         kill = setTimeout(() => child.kill("SIGKILL"), 2000);
       };
-      const timeout = setTimeout(() => stop("harness_timeout"), 10_000);
+      // Native startup can exceed 10 seconds under concurrent load; retain a hard deadline.
+      const timeout = setTimeout(() => stop("harness_timeout"), 30_000);
       for (const stream of [child.stdout, child.stderr]) {
         let bytes = 0;
         stream?.on("data", (data: string | Buffer) => {
