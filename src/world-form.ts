@@ -1,11 +1,22 @@
 import type { ConnectionStatus } from "./observation-snapshot.ts";
 import { WORLD_FACT_SEMANTICS_CAVEAT, type WorldSnapshot, type WorldSourcePicture } from "./world-snapshot.ts";
 
+export interface WorldPlaceForm {
+  declaration: WorldSnapshot["civilizations"][number];
+  sourcePicture: WorldSourcePicture;
+  id: string;
+  name: string;
+  domain: string;
+  institution: WorldSnapshot["civilizations"][number]["mandate"]["status"];
+  marks: { axis: "institution" | "collection" | "epistemic" | "temporal" | "attempt" | "limits"; kind: string; label: string }[];
+  inspection: { label: string; values: string[] }[];
+}
+
 export interface WorldForm {
   snapshot: WorldSnapshot;
   /** No semantic terrain is supported by the contract. Neutral scene topology is a surface concern. */
   terrain: null;
-  places: { declaration: WorldSnapshot["civilizations"][number]; sourcePicture: WorldSourcePicture }[];
+  places: WorldPlaceForm[];
 }
 
 /** Retain validated contract objects; a founding is a place, never evidence of activity. */
@@ -13,7 +24,53 @@ export function worldForm(snapshot: WorldSnapshot): WorldForm {
   const pictures = new Map(snapshot.sourcePictures.map((picture) => [picture.civilizationId, picture]));
   return {
     snapshot, terrain: null,
-    places: snapshot.civilizations.map((declaration) => ({ declaration, sourcePicture: pictures.get(declaration.civilizationId)! })),
+    places: snapshot.civilizations.map((declaration): WorldPlaceForm => {
+      const sourcePicture = pictures.get(declaration.civilizationId)!;
+      const institution = declaration.mandate.status;
+      const institutionLabel = `Institution: ${institution}; declared state, not evidence of activity.`;
+      const marks: WorldPlaceForm["marks"] = [{ axis: "institution", kind: institution, label: institutionLabel }];
+      if (!declaration.bodyReadable || sourcePicture.sources.length === 0) {
+        marks.push({ axis: "collection", kind: "unknown", label: declaration.bodyReadable
+          ? "Collection unknown: no declared sources; not evidence of inactivity."
+          : "Collection unknown: declaration body unreadable." });
+      }
+      for (const source of sourcePicture.sources) {
+        const kind = source.collection?.status ?? "missing";
+        marks.push({ axis: "collection", kind, label: `${source.connectionId}: ${kind}. ${source.collection === null
+          ? "No active registered connection with this exact ID." : collectionMeaning[source.collection.reason]}` });
+        for (const [epistemic, facts] of [["observation", source.observations], ["claim", source.claims]] as const) {
+          if (facts.length === 0) continue;
+          marks.push({ axis: "epistemic", kind: epistemic, label: `${source.connectionId}: ${epistemic} recorded.` });
+          for (const temporal of new Set(facts.map((fact) => fact.temporalStatus))) {
+            marks.push({ axis: "temporal", kind: temporal, label: `${source.connectionId}: ${epistemic}, ${temporal}; stored evidence, not live source truth.` });
+          }
+        }
+        for (const attempt of source.attemptsInProgress) {
+          marks.push({ axis: "attempt", kind: "in-progress", label: `${source.connectionId}: recorded in-progress attempt ${attempt.attemptId}; not proof of a live collector.` });
+        }
+      }
+      if (snapshot.observationsTruncated) marks.push({ axis: "limits", kind: "observations-truncated", label: "Owner-wide observations truncated; per-source emptiness is unknown." });
+      if (snapshot.claimsTruncated) marks.push({ axis: "limits", kind: "claims-truncated", label: "Owner-wide claims truncated; per-source emptiness is unknown." });
+      const inspection: WorldPlaceForm["inspection"] = [
+        { label: "Institution", values: [institutionLabel] },
+        { label: "Civilization ID", values: [declaration.civilizationId] },
+        { label: "Name", values: [declaration.name] },
+        { label: "Founded at", values: [declaration.foundedAt] },
+        { label: "Declaration body readable", values: [String(declaration.bodyReadable)] },
+        { label: "Mandate status", values: [institution] },
+        { label: "Mandate ID", values: [declaration.mandate.status === "unreadable" ? "unknown" : declaration.mandate.mandateId] },
+        { label: "Mandate revision", values: [declaration.mandate.status === "unreadable" ? "unknown" : declaration.mandate.revision] },
+        { label: "Mandate recorded at", values: [declaration.mandate.status === "unreadable" ? "unknown" : declaration.mandate.recordedAt] },
+        { label: "Domain", values: [declaration.bodyReadable ? declaration.domain : "unknown"] },
+      ];
+      for (const key of ["sources", "mayActAlone", "mustEscalate"] as const) {
+        inspection.push({ label: key, values: !declaration.bodyReadable ? ["unknown"]
+          : declaration[key].length === 0 ? ["[]"] : [...declaration[key]] });
+      }
+      inspection.push(...inspectSourceFields(sourcePicture, snapshot));
+      return { declaration, sourcePicture, id: declaration.civilizationId, name: declaration.name,
+        domain: declaration.bodyReadable ? declaration.domain : "unknown", institution, marks, inspection };
+    }),
   };
 }
 
