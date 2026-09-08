@@ -142,10 +142,21 @@ test("the production world surface uses the actual build and launcher with isola
   }
   await t.test("loading, HTTP, request, invalid and loaded empty are distinct", async () => {
     const page = await browser.newPage();
+    const errors: string[] = [];
+    let mode = "loading";
+    const expectedNetworkErrors = new Set(["http", "request"]);
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() !== "error") return;
+      const expected = mode === "http" ? "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+        : mode === "request" ? "Failed to load resource: net::ERR_FAILED" : null;
+      // Permit at most one exact resource error per deliberately failed API request.
+      if (message.text() === expected && message.location().url === `${url}/api/world-snapshot` && expectedNetworkErrors.delete(mode)) return;
+      errors.push(message.text());
+    });
     try {
       let release!: () => void;
       const pending = new Promise<void>((resolve) => { release = resolve; });
-      let mode = "loading";
       await page.route("**/api/world-snapshot", async (route) => {
         assert.equal(route.request().method(), "GET");
         if (mode === "loading") { await pending; await route.fulfill({ json: empty }); }
@@ -166,11 +177,56 @@ test("the production world surface uses the actual build and launcher with isola
         assert.match(await page.locator('.world-message[role="status"]').innerText(), /This is not an empty or quiet world/u);
         assert.equal(await page.locator(".place, .inspection").count(), 0);
         assert.equal(await page.getByRole("heading", { name: "No civilizations founded" }).count(), 0);
+        await page.waitForLoadState("networkidle");
+        assert.deepEqual(errors, []);
       }
     } finally { await page.close(); }
   });
   const snapshot = foundedSnapshot();
   const form = worldForm(snapshot);
+  await t.test("visible axis and kind marks retain distinct computed visual grammar", async () => {
+    const page = await browser.newPage();
+    try {
+      await page.route("**/api/world-snapshot", (route) => route.fulfill({ json: snapshot }));
+      await page.goto(url);
+      await page.locator(".place").first().waitFor();
+      const treatments = new Map<string, string[]>();
+      for (const [axis, kind, border, color, background] of [
+        ["institution", "active", "solid", "rgb(124, 103, 76)", "rgb(220, 202, 158)"],
+        ["institution", "dissolved", "double", "rgb(124, 103, 76)", "rgb(220, 202, 158)"],
+        ["institution", "unreadable", "dashed", "rgb(124, 103, 76)", "rgb(181, 175, 149)"],
+        ["collection", "unknown", "dotted", "rgb(79, 100, 91)", "rgb(200, 195, 174)"],
+        ["collection", "unread", "dashed", "rgb(79, 100, 91)", "rgb(200, 195, 174)"],
+        ["collection", "missing", "double", "rgb(119, 92, 71)", "rgb(200, 195, 174)"],
+        ["collection", "quiet", "double", "rgb(79, 100, 91)", "rgb(200, 195, 174)"],
+        ["collection", "changed", "solid", "rgb(79, 100, 91)", "rgb(200, 195, 174)"],
+        ["temporal", "unknown", "dotted", "rgb(57, 94, 96)", "rgb(213, 220, 226)"],
+        ["temporal", "current", "solid", "rgb(57, 94, 96)", "rgb(208, 222, 208)"],
+        ["temporal", "historical", "double", "rgb(134, 99, 63)", "rgb(222, 208, 171)"],
+        ["epistemic", "observation", "solid", "rgb(121, 97, 129)", "rgb(227, 215, 229)"],
+        ["epistemic", "claim", "dashed", "rgb(121, 97, 129)", "rgb(227, 215, 229)"],
+        ["attempt", "in-progress", "solid", "rgb(166, 83, 45)", "rgb(228, 216, 183)"],
+        ["limits", "observations-truncated", "solid", "rgb(166, 83, 45)", "rgb(228, 216, 183)"],
+        ["limits", "claims-truncated", "solid", "rgb(166, 83, 45)", "rgb(228, 216, 183)"],
+      ] as const) {
+        const mark = page.locator(`.mark[data-axis="${axis}"][data-kind="${kind}"]`).first();
+        await mark.scrollIntoViewIfNeeded();
+        assert.equal(await mark.isVisible(), true);
+        assert.equal(await mark.innerText(), `${axis}: ${kind}`);
+        const treatment = await mark.evaluate((node) => {
+          const style = getComputedStyle(node);
+          return [style.borderLeftStyle, style.borderLeftColor, style.backgroundColor, style.borderTopStyle];
+        });
+        assert.deepEqual(treatment, [border, color, background, axis === "collection" ? border : axis === "limits" ? "solid" : kind === "claim" ? "dashed" : "none"], `${axis}: ${kind}`);
+        treatments.set(`${axis}: ${kind}`, treatment);
+      }
+      for (const other of ["collection: unknown", "collection: unread", "collection: missing", "institution: unreadable", "temporal: current", "temporal: historical"]) {
+        assert.notDeepEqual(treatments.get("temporal: unknown"), treatments.get(other), `temporal uncertainty must differ from ${other}`);
+      }
+      assert.notDeepEqual(treatments.get("epistemic: observation"), treatments.get("epistemic: claim"));
+      assert.notDeepEqual(treatments.get("attempt: in-progress"), treatments.get("limits: observations-truncated"));
+    } finally { await page.close(); }
+  });
   await t.test("validated founding, every core mark and every inspection value reach React one-for-one", async () => {
     const page = await browser.newPage();
     const errors: string[] = [];
@@ -328,6 +384,12 @@ test("the production world surface uses the actual build and launcher with isola
       await page.keyboard.press("Enter");
       await page.getByRole("complementary").waitFor();
       const scene = (await page.getByLabel("Explore world", { exact: true }).boundingBox())!;
+      const disclaimer = page.getByText("Neutral terrain / no inferred activity", { exact: true });
+      assert.equal(await disclaimer.isVisible(), true);
+      const disclaimerBounds = (await disclaimer.boundingBox())!;
+      assert.ok(disclaimerBounds.x >= 0 && disclaimerBounds.y >= 0
+        && disclaimerBounds.x + disclaimerBounds.width <= viewport.width
+        && disclaimerBounds.y + disclaimerBounds.height <= viewport.height, "neutral terrain disclaimer must stay inside the narrow viewport");
       const inspector = (await page.getByRole("complementary").boundingBox())!;
       t.diagnostic(`Actual scene: ${scene.width} x ${scene.height}px; viewport: ${viewport.width} x ${viewport.height}px`);
       assert.ok(scene.height >= viewport.height * 0.3, `Actual scene height ${scene.height}px < ${viewport.height * 0.3}px`);

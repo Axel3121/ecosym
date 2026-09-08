@@ -32,10 +32,18 @@ h1 { margin: 5px 0 0; font-size: 34px; font-weight: normal; letter-spacing: -1px
 .place-domain { display: block; margin: 6px 0; font-size: 13px; overflow-wrap: anywhere; }
 .marks { display: flex; flex-wrap: wrap; justify-content: center; gap: 3px; }
 .mark { background: #e4d8b7; border-left: 3px solid #756e53; padding: 3px 5px; font-size: 10px; overflow-wrap: anywhere; }
-.mark[data-kind="unread"], .mark[data-kind="missing"], .mark[data-kind="unknown"], .mark[data-kind="unreadable"] { border: 1px dashed #775c47; background: #c8c3ae; }
-.mark[data-kind="quiet"] { border-left: 4px double #4f645b; }
-.mark[data-kind="current"] { border-left-color: #395e60; background: #d0ded0; }
-.mark[data-kind="historical"] { border-left: 4px double #86633f; background: #ded0ab; }
+.mark[data-axis="institution"] { border-left-color: #7c674c; background: #dcca9e; }
+.mark[data-axis="institution"][data-kind="dissolved"] { border-left: 4px double #7c674c; }
+.mark[data-axis="institution"][data-kind="unreadable"] { border-left-style: dashed; background: #b5af95; }
+.mark[data-axis="collection"] { border: 1px solid #4f645b; background: #c8c3ae; }
+.mark[data-axis="collection"][data-kind="unknown"] { border-style: dotted; }
+.mark[data-axis="collection"][data-kind="unread"] { border-style: dashed; }
+.mark[data-axis="collection"][data-kind="missing"] { border: 3px double #775c47; }
+.mark[data-axis="collection"][data-kind="quiet"] { border: 3px double #4f645b; }
+.mark[data-axis="temporal"][data-kind="unknown"] { border-left: 3px dotted #395e60; background: #d5dce2; }
+.mark[data-axis="temporal"][data-kind="current"] { border-left-color: #395e60; background: #d0ded0; }
+.mark[data-axis="temporal"][data-kind="historical"] { border-left: 4px double #86633f; background: #ded0ab; }
+.mark[data-axis="epistemic"] { border-left-color: #796181; background: #e3d7e5; }
 .mark[data-axis="epistemic"][data-kind="claim"] { border: 1px dashed #796181; }
 .mark[data-axis="attempt"] { border-left-color: #a6532d; }
 .mark[data-axis="limits"] { border: 1px solid #a6532d; }
@@ -73,6 +81,6 @@ footer { display: flex; justify-content: space-between; gap: 14px; padding: 12px
   .world-message { top: 18%; padding: 18px; }
   .world-message h2 { font-size: 25px; }
   footer { padding: 8px 12px; font-size: 8px; }
-  footer span:last-child { display: none; }
+  footer span:first-child { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; } }
