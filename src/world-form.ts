@@ -1,5 +1,5 @@
 import type { ConnectionStatus } from "./observation-snapshot.ts";
-import { WORLD_FACT_SEMANTICS_CAVEAT, type WorldSnapshot, type WorldSourcePicture } from "./world-snapshot.ts";
+import { validateWorldSnapshot, WORLD_FACT_SEMANTICS_CAVEAT, type WorldSnapshot, type WorldSourcePicture } from "./world-snapshot.ts";
 
 export interface WorldPlaceForm {
   declaration: WorldSnapshot["civilizations"][number];
@@ -8,7 +8,7 @@ export interface WorldPlaceForm {
   name: string;
   domain: string;
   institution: WorldSnapshot["civilizations"][number]["mandate"]["status"];
-  marks: { axis: "institution" | "collection" | "epistemic" | "temporal" | "attempt" | "limits"; kind: string; label: string }[];
+  marks: { axis: "institution" | "collection" | "epistemic" | "temporal" | "attempt" | "limits" | "report"; kind: string; label: string }[];
   inspection: { label: string; values: string[] }[];
 }
 
@@ -19,8 +19,9 @@ export interface WorldForm {
   places: WorldPlaceForm[];
 }
 
-/** Retain validated contract objects; a founding is a place, never evidence of activity. */
-export function worldForm(snapshot: WorldSnapshot): WorldForm {
+/** Validate and detach at the form boundary; a founding is never evidence of activity. */
+export function worldForm(value: unknown): WorldForm {
+  const snapshot = validateWorldSnapshot(value);
   const pictures = new Map(snapshot.sourcePictures.map((picture) => [picture.civilizationId, picture]));
   return {
     snapshot, terrain: null,
@@ -35,6 +36,14 @@ export function worldForm(snapshot: WorldSnapshot): WorldForm {
           : "Collection unknown: declaration body unreadable." });
       }
       for (const source of sourcePicture.sources) {
+        if (source.sourceReport) {
+          const report = source.sourceReport;
+          marks.push({ axis: "report", kind: report.observation.state,
+            label: `${source.connectionId}: Source-reported ${report.observation.state}; activity ${report.observation.activity} only in selected scope: ${report.selectedScope}. Not Ecosym collection health or domain inactivity.` });
+          marks.push({ axis: "report", kind: "verification", label: `Source-reported verification: ${report.verification.status}; not Ecosym confirmation.` },
+            { axis: "report", kind: "freshness", label: `Source-reported freshness: ${report.freshness.status}; not live source truth.` },
+            { axis: "report", kind: "uncertainty", label: `Source-reported uncertainty: ${report.uncertainty.classification}.` });
+        }
         const kind = source.collection?.status ?? "missing";
         marks.push({ axis: "collection", kind, label: `${source.connectionId}: ${kind}. ${source.collection === null
           ? "No active registered connection with this exact ID." : collectionMeaning[source.collection.reason]}` });
@@ -113,12 +122,19 @@ export function inspectSourceFields(picture: WorldSourcePicture, snapshot: World
       JSON.stringify(collection),
       `attemptsInProgress: ${JSON.stringify(source.attemptsInProgress)}`,
     ] });
+    if (source.sourceReport) {
+      fields.push({ label: `Source-reported metadata: ${source.connectionId}`, values: [
+        "Latest locally admitted report, not newest external truth. Source-reported status is distinct from Ecosym collection health.",
+        `Bundle fact count: ${source.sourceReport.factCount}; normal claims may include history or be truncated.`,
+        JSON.stringify(source.sourceReport),
+      ] });
+    }
     for (const [label, facts, truncated] of [["Recorded source fields", source.observations, snapshot.observationsTruncated],
       ["Claims", source.claims, snapshot.claimsTruncated]] as const) {
       fields.push({ label: `${label}: ${source.connectionId}`, values: facts.length === 0
         ? [truncated ? "No entries returned; owner-wide truncation leaves this source's emptiness unknown."
           : "No collected entries in this returned picture; not evidence of no activity."]
-        : facts.map((fact) => `${fact.epistemicStatus}: ${fact.factOwner} recorded ${fact.kind} for ${fact.subject}. Source recorded time: ${fact.sourceRecordedAt ?? "unavailable"}. Temporal status: ${fact.temporalStatus}. ${JSON.stringify(fact)}${fact.sourceRecordedAt === null ? " Temporal status is not inferred from collection time." : ""}`) });
+        : facts.map((fact) => `${fact.epistemicStatus}: ${fact.factOwner} recorded ${fact.kind} for ${fact.subject}. ${fact.sourceReport ? `Source-reported epistemic type: ${fact.sourceReport.epistemicType}; Ecosym status remains claim. ` : ""}Source recorded time: ${fact.sourceRecordedAt ?? "unavailable"}. Temporal status: ${fact.temporalStatus}. ${JSON.stringify(fact)}${fact.sourceRecordedAt === null ? " Temporal status is not inferred from collection time." : ""}`) });
     }
   }
   return fields;

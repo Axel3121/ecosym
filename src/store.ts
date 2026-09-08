@@ -1,4 +1,6 @@
 import { Buffer } from "node:buffer";
+import { ArenaAdmissionError, parseArenaBundle, sourceReportProjection, type ArenaBundle } from "./arena-adapter.ts";
+import type { SourceReportSnapshot, SourceReportProvenance } from "./source-report.ts";
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -40,6 +42,7 @@ import {
 } from "./record-index-evidence.ts";
 import type { JsonlRecordIndexMode } from "./readers.ts";
 import { utcInstantOrderingKey } from "./time.ts";
+import { sourceReportFactTimeKey } from "./source-report-time.ts";
 import {
   sameVerificationFactSet,
   verificationFactFromInput,
@@ -55,7 +58,7 @@ export type {
   StoredFact,
 } from "./observation-snapshot.ts";
 
-const STORE_SCHEMA_VERSION = 15;
+const STORE_SCHEMA_VERSION = 16;
 const LEGACY_REBUILD_SCHEMA_VERSION = 9;
 const STORE_FILENAME = "observations.sqlite";
 const BUSY_RETRY_WINDOW_MILLISECONDS = 250;
@@ -241,6 +244,33 @@ const CREATE_WORK_CLAIMS = `
     WHERE status = 'open';
 `;
 
+const CREATE_SOURCE_REPORTS = `
+  CREATE TABLE IF NOT EXISTS source_reports (
+    report_order INTEGER PRIMARY KEY,
+    report_id TEXT NOT NULL UNIQUE,
+    connection_id TEXT NOT NULL,
+    config_hash TEXT NOT NULL,
+    bundle_id TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    bundle_json TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    UNIQUE(connection_id, config_hash, bundle_id),
+    FOREIGN KEY(connection_id, config_hash) REFERENCES connection_versions(connection_id, config_hash)
+  ) STRICT;
+  CREATE TABLE IF NOT EXISTS source_report_facts (
+    report_id TEXT NOT NULL REFERENCES source_reports(report_id) ON DELETE CASCADE,
+    fact_id INTEGER NOT NULL REFERENCES facts(fact_id),
+    source_fact_id TEXT NOT NULL,
+    epistemic_type TEXT NOT NULL CHECK(epistemic_type IN ('observation','claim','derived')),
+    PRIMARY KEY(report_id, source_fact_id)
+  ) STRICT;
+  CREATE TABLE IF NOT EXISTS source_report_admissions (
+    admission_order INTEGER PRIMARY KEY,
+    report_id TEXT NOT NULL REFERENCES source_reports(report_id) ON DELETE CASCADE,
+    attempt_id TEXT NOT NULL UNIQUE REFERENCES collection_attempts(attempt_id)
+  ) STRICT;
+`;
+
 export interface ActiveConnection {
   activationId: string;
   config: ConnectionConfig;
@@ -370,11 +400,17 @@ export interface RecordIndexModeResolutionPlan {
 }
 
 export interface ForgetInventory {
+  sourceReportIds?: string[];
+  sourceReportFacts?: { reportId: string; factId: number; sourceFactId: string }[];
+  sourceReportAdmissions?: { reportId: string; attemptId: string }[];
   collectionAttemptIds: string[];
   collectionAttemptRetirementIds: string[];
   connectionId: string;
   connectionVersions: string[];
   counts: {
+    sourceReports?: number;
+    sourceReportFacts?: number;
+    sourceReportAdmissions?: number;
     collectionAttemptRetirements: number;
     collectionAttempts: number;
     connectionVersions: number;
@@ -812,6 +848,107 @@ export class ObservationStore {
         .run(connectionId);
       return numberOfChanges(result) === 1;
     });
+  }
+
+  registerArenaSource(connectionId: string, sourceId: string, owner: string): "connected" | "unchanged" {
+    return this.register(parseConnectionConfig({
+      schemaVersion: 1, id: connectionId, factOwner: owner,
+      reader: { type: "arena", sourceId, owner },
+      sourceRecord: { identity: [{ scope: "record", path: "factId" }], retention: "history", recordedAt: { unavailable: true } },
+      facts: [],
+    }));
+  }
+
+  async admitArenaBundle(connectionId: string, input: string | Uint8Array): Promise<CollectionResult & { reportId: string }> {
+    const connection = this.getConnection(connectionId);
+    // Snapshot bounded caller-owned bytes before the first asynchronous yield.
+    if (input instanceof Uint8Array && input.byteLength <= 2 * 1024 * 1024) input = Buffer.from(input);
+    const attemptId = randomUUID();
+    const budget = createCollectionContentionBudget();
+    let admitted: { attemptOrder: number; startedAt: string };
+    try {
+      admitted = await this.#recordRunningAttempt(connection, attemptId, () => new Date(), budget);
+    } catch (error) {
+      throw new CollectionFailedError(attemptId, safeFailureCode(error));
+    }
+    const { attemptOrder, startedAt } = admitted;
+    try {
+      const reader = this.#registeredConfig(connection).reader;
+      if (reader.type !== "arena") throw new ArenaAdmissionError();
+      const { bundle, canonical, digest } = parseArenaBundle(input, reader);
+      const completedAt = new Date().toISOString();
+      return await this.#retryTransactionWithinContentionBudget(budget, () => {
+        this.#assertActive(connection);
+        const existing = this.#database.prepare(`SELECT report_id, digest FROM source_reports WHERE connection_id = ? AND config_hash = ? AND bundle_id = ?`)
+          .get(connectionId, connection.configHash, bundle.bundleId) as { report_id: string; digest: string } | undefined;
+        if (existing !== undefined && existing.digest !== digest) throw new ArenaAdmissionError("arena_conflict");
+        const reportId = existing?.report_id ?? randomUUID();
+        if (existing === undefined) {
+          const snapshot = sourceReportProjection(bundle, { reportId, connectionId, connectionVersion: connection.configHash, admittedFrom: startedAt, admittedAt: completedAt });
+          this.#database.prepare(`INSERT INTO source_reports (report_id, connection_id, config_hash, bundle_id, digest, bundle_json, snapshot_json) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+            .run(reportId, connectionId, connection.configHash, bundle.bundleId, digest, canonical, canonicalJson(snapshot as unknown as JsonValue));
+        }
+        let factsAdded = 0;
+        for (const fact of bundle.facts) {
+          const key = fact.sourceRecordedAt === null ? "" : sourceReportFactTimeKey(fact.sourceRecordedAt);
+          if (key === null) throw new ArenaAdmissionError();
+          const identity = [connectionId, connection.configHash, fact.factOwner, fact.kind, fact.subject, fact.factId, key, sha256("{}")];
+          const inserted = this.#database.prepare(`INSERT INTO facts
+            (connection_id, config_hash, fact_owner, kind, subject, source_record_id, source_time_key, payload_hash,
+             epistemic_status, payload_json, attempt_id, source_recorded_at, collected_at, last_seen_attempt_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'claim', '{}', ?, ?, ?, ?)
+            ON CONFLICT DO NOTHING`).run(...identity, attemptId, fact.sourceRecordedAt, startedAt, attemptOrder);
+          factsAdded += numberOfChanges(inserted);
+          const stored = this.#database.prepare(`SELECT fact_id FROM facts WHERE connection_id = ? AND config_hash = ? AND fact_owner = ? AND kind = ? AND subject = ? AND source_record_id = ? AND source_time_key = ? AND payload_hash = ? AND epistemic_status = 'claim'`).get(...identity) as { fact_id: number };
+          // Retain the admission supplying the stored spelling; identical sightings only advance last-seen.
+          this.#database.prepare(`UPDATE facts SET
+            attempt_id = CASE WHEN last_seen_attempt_order <= ? AND source_recorded_at IS NOT ? THEN ? ELSE attempt_id END,
+            collected_at = CASE WHEN last_seen_attempt_order <= ? AND source_recorded_at IS NOT ? THEN ? ELSE collected_at END,
+            source_recorded_at = CASE WHEN last_seen_attempt_order <= ? THEN ? ELSE source_recorded_at END,
+            last_seen_attempt_order = MAX(last_seen_attempt_order, ?) WHERE fact_id = ?`)
+            .run(attemptOrder, fact.sourceRecordedAt, attemptId, attemptOrder, fact.sourceRecordedAt, startedAt, attemptOrder, fact.sourceRecordedAt, attemptOrder, stored.fact_id);
+          if (existing === undefined) this.#database.prepare(`INSERT INTO source_report_facts (report_id, fact_id, source_fact_id, epistemic_type) VALUES (?, ?, ?, ?)`).run(reportId, stored.fact_id, fact.factId, fact.epistemicType);
+        }
+        this.#database.prepare(`INSERT INTO source_report_admissions(report_id, attempt_id) VALUES (?, ?)`).run(reportId, attemptId);
+        const updated = this.#database.prepare(`UPDATE collection_attempts SET completed_at = ?, outcome = 'success', source_records_seen = ?, facts_seen = ?, facts_added = ?, facts_changed = 0 WHERE attempt_id = ? AND outcome = 'running'`).run(completedAt, bundle.facts.length, bundle.facts.length, factsAdded, attemptId);
+        if (numberOfChanges(updated) !== 1) throw new CollectionAttemptNotRunningError(attemptId);
+        return { reportId, attemptId, startedAt, completedAt, factsAdded, factsChanged: 0, factsSeen: bundle.facts.length, sourceRecordsSeen: bundle.facts.length, outcome: "success" as const };
+      });
+    } catch (error) {
+      let code = error instanceof ArenaAdmissionError ? error.code : safeFailureCode(error);
+      try {
+        await this.#retryTransactionWithinContentionBudget(budget, () => {
+          this.#database.prepare(`UPDATE collection_attempts SET completed_at = ?, outcome = 'failed', failure_code = ? WHERE attempt_id = ? AND outcome = 'running'`).run(new Date().toISOString(), code, attemptId);
+        });
+      } catch (recordingError) {
+        // As with ordinary collection, a durable running marker remains unread
+        // if a writer prevents even the bounded failure record from committing.
+        if (safeFailureCode(recordingError) === "store_contention") code = "store_contention";
+      }
+      throw new CollectionFailedError(attemptId, code);
+    }
+  }
+
+  querySourceReport(reportId: string): { reportId: string; digest: string; bundle: ArenaBundle } | undefined {
+    const row = this.#database.prepare(`SELECT r.digest, r.bundle_json, c.config_json, c.config_hash FROM source_reports r JOIN connection_versions c ON c.connection_id = r.connection_id AND c.config_hash = r.config_hash WHERE r.report_id = ?`).get(reportId) as { digest: string; bundle_json: string; config_json: string; config_hash: string } | undefined;
+    if (row === undefined) return undefined;
+    const reader = parseStoredConfig(row.config_json, row.config_hash).reader;
+    if (reader.type !== "arena") throw new ArenaAdmissionError();
+    const parsed = parseArenaBundle(row.bundle_json, reader);
+    if (parsed.digest !== row.digest) throw new ArenaAdmissionError();
+    return { reportId, digest: row.digest, bundle: parsed.bundle };
+  }
+
+  #sourceReports(): SourceReportSnapshot[] {
+    return (this.#database.prepare(`SELECT r.snapshot_json, a.started_at, a.completed_at FROM active_connections c
+      JOIN collection_attempts a ON a.attempt_id = (
+        SELECT ca.attempt_id FROM source_report_admissions s
+        JOIN collection_attempts ca ON ca.attempt_id = s.attempt_id
+        WHERE ca.connection_id = c.connection_id AND ca.config_hash = c.config_hash
+        ORDER BY s.admission_order DESC LIMIT 1)
+      JOIN source_report_admissions s ON s.attempt_id = a.attempt_id
+      JOIN source_reports r ON r.report_id = s.report_id ORDER BY c.connection_id`).all() as { snapshot_json: string; started_at: string; completed_at: string }[])
+      .map((row) => ({ ...JSON.parse(row.snapshot_json) as SourceReportSnapshot, admittedFrom: row.started_at, admittedAt: row.completed_at }));
   }
 
   foundCivilization(
@@ -1294,7 +1431,7 @@ export class ObservationStore {
           now.toISOString(),
         ),
         consequence:
-          "This permanently deletes every connection version, fact, collection attempt, attempt retirement, and record-index resolution in the listed inventory. The deletion record remains, but the deleted payloads cannot be restored by Ecosym. To recover an externally owned fact, reconnect and re-collect from the source that owns it. Record-index-mode resolutions, attempt retirements, and retention-history fact versions whose source has moved on are not recoverable.",
+          "This permanently deletes every connection version, fact, source report and its fact/admission links, collection attempt, attempt retirement, and record-index resolution in the listed inventory. The deletion record remains, but the deleted payloads cannot be restored by Ecosym. To recover an externally owned fact, reconnect and re-collect from the source that owns it. Source reports no longer available upstream, record-index-mode resolutions, attempt retirements, and retention-history fact versions whose source has moved on are not recoverable.",
         forgottenBy,
       };
     });
@@ -1351,6 +1488,7 @@ export class ObservationStore {
 
       const { stateFingerprint: _stateFingerprint, inventoryDigest, ...inventory } = snapshot;
 
+      this.#database.prepare("DELETE FROM source_reports WHERE connection_id = ?").run(connectionId);
       this.#database.prepare("DELETE FROM facts WHERE connection_id = ?").run(connectionId);
       this.#database
         .prepare("DELETE FROM collection_attempt_retirements WHERE connection_id = ?")
@@ -1883,6 +2021,7 @@ export class ObservationStore {
 
     try {
       const declaredConfig = this.#registeredConfig(connection);
+      if (declaredConfig.reader.type === "arena") throw new FactNotDeclaredError();
       const sink: CollectionSink = {
         recordSourceRecord: (recordFacts) => {
           sourceRecordsSeen += 1;
@@ -2331,6 +2470,7 @@ export class ObservationStore {
 
       return {
         connections,
+        sourceReports: this.#sourceReports(),
         attemptsInProgress: attemptsInProgress.map((row) => ({
           attemptId: row.attempt_id,
           connectionId: row.connection_id,
@@ -2473,8 +2613,9 @@ export class ObservationStore {
       .get(connection.config.id, connection.configHash) as { known: number };
     const integrityRows = this.#database
       .prepare(
-        `SELECT source_recorded_at, source_time_key, payload_json, payload_hash
-           FROM facts
+        `SELECT source_recorded_at, source_time_key, payload_json, payload_hash,
+                EXISTS (SELECT 1 FROM source_report_facts r WHERE r.fact_id = f.fact_id) AS source_reported
+           FROM facts f
           WHERE connection_id = ?`,
       )
       .all(connection.config.id) as Record<string, unknown>[];
@@ -2484,7 +2625,9 @@ export class ObservationStore {
       const expectedSourceTimeKey =
         record.source_recorded_at === null
           ? ""
-          : utcInstantOrderingKey(record.source_recorded_at);
+          : record.source_reported === 1
+            ? sourceReportFactTimeKey(record.source_recorded_at)
+            : utcInstantOrderingKey(record.source_recorded_at);
       if (
         expectedSourceTimeKey === null ||
         expectedSourceTimeKey !== record.source_time_key
@@ -2652,7 +2795,27 @@ export class ObservationStore {
       )
       .all(...parameters) as unknown as StoredFactRow[];
 
-    return rows.map(storedFactFromRow);
+    if (rows.length === 0) return [];
+    const provenanceRows = this.#database.prepare(`
+      SELECT fact_id, report_id, epistemic_type FROM (
+        SELECT f.fact_id, f.report_id, f.epistemic_type,
+               ROW_NUMBER() OVER (PARTITION BY f.fact_id ORDER BY a.admission_order DESC) AS rank
+          FROM source_report_facts f
+          JOIN source_report_admissions a ON a.report_id = f.report_id
+         WHERE f.fact_id IN (${rows.map(() => "?").join(", ")})
+      ) WHERE rank = 1`).all(...rows.map((row) => row.fact_id)) as {
+        fact_id: number;
+        report_id: string;
+        epistemic_type: SourceReportProvenance["epistemicType"];
+      }[];
+    const provenanceByFact = new Map(provenanceRows.map((row) => [row.fact_id, {
+      reportId: row.report_id, epistemicType: row.epistemic_type,
+    }]));
+    return rows.map((row) => {
+      const fact = storedFactFromRow(row);
+      const sourceReport = provenanceByFact.get(fact.id);
+      return sourceReport === undefined ? fact : { ...fact, sourceReport };
+    });
   }
 
   #migrate(): void {
@@ -2660,6 +2823,13 @@ export class ObservationStore {
       user_version: number;
     };
     if (version.user_version === STORE_SCHEMA_VERSION) {
+      return;
+    }
+    if (version.user_version === 15) {
+      this.#transaction(() => {
+        this.#database.exec(CREATE_SOURCE_REPORTS);
+        this.#database.exec(`PRAGMA user_version = ${STORE_SCHEMA_VERSION}`);
+      });
       return;
     }
     if (version.user_version === 13) {
@@ -2784,6 +2954,7 @@ export class ObservationStore {
         ${CREATE_CIVILIZATION_FORGET_RECORDS}
 
         ${CREATE_COLLECTION_ATTEMPTS}
+        ${CREATE_SOURCE_REPORTS}
         ${CREATE_COLLECTION_ATTEMPTS_LATEST_INDEX}
         ${CREATE_COLLECTION_ATTEMPT_RETIREMENTS}
 
@@ -3125,6 +3296,7 @@ export class ObservationStore {
   #migrateSchemaFourteen(): void {
     this.#transaction(() => {
       this.#database.exec(CREATE_WORK_CLAIMS);
+      this.#database.exec(CREATE_SOURCE_REPORTS);
       this.#database.exec(`PRAGMA user_version = ${STORE_SCHEMA_VERSION}`);
     });
   }
@@ -3220,6 +3392,7 @@ export class ObservationStore {
   }
 
   #ownedObservationState(): OwnedStateBundle["observationStore"] {
+    const sourceReports = this.#exportRows("SELECT * FROM source_reports ORDER BY report_order");
     const connectionVersions = this.#database
       .prepare(
         `SELECT connection_id, config_hash, config_json, registered_at,
@@ -3345,6 +3518,11 @@ export class ObservationStore {
     return {
       schemaVersion: STORE_SCHEMA_VERSION,
       activeConnections,
+      ...(sourceReports.length === 0 ? {} : {
+        sourceReports,
+        sourceReportFacts: this.#exportRows("SELECT * FROM source_report_facts ORDER BY report_id, source_fact_id"),
+        sourceReportAdmissions: this.#exportRows("SELECT * FROM source_report_admissions ORDER BY admission_order"),
+      }),
       collectionAttemptRetirements: this.#exportRows(
         `SELECT retirement_order AS retirementOrder, retirement_id AS retirementId,
                 attempt_id AS attemptId, connection_id AS connectionId,
@@ -3471,12 +3649,17 @@ export class ObservationStore {
         )
         .all(connectionId) as { resolution_id: string }[]
     ).map((row) => row.resolution_id);
+    const sourceReportIds = (this.#database.prepare("SELECT report_id FROM source_reports WHERE connection_id = ? ORDER BY report_order").all(connectionId) as { report_id: string }[]).map((row) => row.report_id);
+    const sourceReportFacts = this.#database.prepare(`SELECT f.report_id AS reportId, f.fact_id AS factId, f.source_fact_id AS sourceFactId FROM source_report_facts f JOIN source_reports r ON r.report_id = f.report_id WHERE r.connection_id = ? ORDER BY r.report_order, f.source_fact_id`).all(connectionId) as { reportId: string; factId: number; sourceFactId: string }[];
+    const sourceReportAdmissions = this.#database.prepare(`SELECT a.report_id AS reportId, a.attempt_id AS attemptId FROM source_report_admissions a JOIN source_reports r ON r.report_id = a.report_id WHERE r.connection_id = ? ORDER BY a.admission_order`).all(connectionId) as { reportId: string; attemptId: string }[];
     const inventory: ForgetInventory = {
+      ...(sourceReportIds.length === 0 ? {} : { sourceReportIds, sourceReportFacts, sourceReportAdmissions }),
       collectionAttemptIds,
       collectionAttemptRetirementIds,
       connectionId,
       connectionVersions,
       counts: {
+        ...(sourceReportIds.length === 0 ? {} : { sourceReports: sourceReportIds.length, sourceReportFacts: sourceReportFacts.length, sourceReportAdmissions: sourceReportAdmissions.length }),
         collectionAttemptRetirements: collectionAttemptRetirementIds.length,
         collectionAttempts: collectionAttemptIds.length,
         connectionVersions: connectionVersions.length,
