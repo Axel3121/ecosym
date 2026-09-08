@@ -900,6 +900,7 @@ export class ObservationStore {
             ON CONFLICT DO NOTHING`).run(...identity, attemptId, fact.sourceRecordedAt, startedAt, attemptOrder);
           factsAdded += numberOfChanges(inserted);
           const stored = this.#database.prepare(`SELECT fact_id FROM facts WHERE connection_id = ? AND config_hash = ? AND fact_owner = ? AND kind = ? AND subject = ? AND source_record_id = ? AND source_time_key = ? AND payload_hash = ? AND epistemic_status = 'claim'`).get(...identity) as { fact_id: number };
+          // Retain the admission supplying the stored spelling; identical sightings only advance last-seen.
           this.#database.prepare(`UPDATE facts SET
             attempt_id = CASE WHEN last_seen_attempt_order <= ? AND source_recorded_at IS NOT ? THEN ? ELSE attempt_id END,
             collected_at = CASE WHEN last_seen_attempt_order <= ? AND source_recorded_at IS NOT ? THEN ? ELSE collected_at END,
@@ -2794,12 +2795,26 @@ export class ObservationStore {
       )
       .all(...parameters) as unknown as StoredFactRow[];
 
+    if (rows.length === 0) return [];
+    const provenanceRows = this.#database.prepare(`
+      SELECT fact_id, report_id, epistemic_type FROM (
+        SELECT f.fact_id, f.report_id, f.epistemic_type,
+               ROW_NUMBER() OVER (PARTITION BY f.fact_id ORDER BY a.admission_order DESC) AS rank
+          FROM source_report_facts f
+          JOIN source_report_admissions a ON a.report_id = f.report_id
+         WHERE f.fact_id IN (${rows.map(() => "?").join(", ")})
+      ) WHERE rank = 1`).all(...rows.map((row) => row.fact_id)) as {
+        fact_id: number;
+        report_id: string;
+        epistemic_type: SourceReportProvenance["epistemicType"];
+      }[];
+    const provenanceByFact = new Map(provenanceRows.map((row) => [row.fact_id, {
+      reportId: row.report_id, epistemicType: row.epistemic_type,
+    }]));
     return rows.map((row) => {
       const fact = storedFactFromRow(row);
-      const provenance = this.#database.prepare(`SELECT f.report_id, f.epistemic_type FROM source_report_facts f
-        JOIN source_report_admissions a ON a.report_id = f.report_id
-        WHERE f.fact_id = ? ORDER BY a.admission_order DESC LIMIT 1`).get(fact.id) as { report_id: string; epistemic_type: SourceReportProvenance["epistemicType"] } | undefined;
-      return provenance === undefined ? fact : { ...fact, sourceReport: { reportId: provenance.report_id, epistemicType: provenance.epistemic_type } };
+      const sourceReport = provenanceByFact.get(fact.id);
+      return sourceReport === undefined ? fact : { ...fact, sourceReport };
     });
   }
 

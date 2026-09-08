@@ -224,6 +224,37 @@ test("Arena replay is canonical and idempotent, repeated facts retain last-seen 
   store.close();
 });
 
+test("fact queries batch provenance while preserving latest admission, ordering and limits", async (t) => {
+  const store = new ObservationStore(mkdtempSync(join(tmpdir(), "ecosym-arena-")));
+  t.after(() => store.close());
+  store.registerArenaSource("arena", "source", "Synthetic Owner");
+  const first = arenaBundle();
+  first.facts = Array.from({ length: 2 }, (_, index) => ({ ...first.facts[0]!, factId: `fact-${index}` }));
+  const original = await store.admitArenaBundle("arena", JSON.stringify(first));
+  const second = arenaBundle();
+  second.bundleId = "bundle-two";
+  second.facts = Array.from({ length: 4 }, (_, index) => ({ ...second.facts[0]!, factId: `fact-${index}`, epistemicType: "derived" }));
+  const latest = await store.admitArenaBundle("arena", JSON.stringify(second));
+  await store.admitArenaBundle("arena", JSON.stringify(first));
+
+  const prepare = t.mock.method(DatabaseSync.prototype, "prepare");
+  const claims = store.queryClaims();
+  const queryCount = prepare.mock.callCount();
+  assert.deepEqual(claims.map((fact) => fact.sourceRecordId), ["fact-0", "fact-1", "fact-2", "fact-3"]);
+  assert.deepEqual(claims.map((fact) => fact.sourceReport), [
+    { reportId: original.reportId, epistemicType: "observation" },
+    { reportId: original.reportId, epistemicType: "observation" },
+    { reportId: latest.reportId, epistemicType: "derived" },
+    { reportId: latest.reportId, epistemicType: "derived" },
+  ]);
+  assert.deepEqual(store.queryClaims({ limit: 2 }), claims.slice(0, 2));
+  assert.deepEqual(store.queryClaims({ order: "desc", limit: 2 }), claims.slice(2).reverse());
+  assert.deepEqual(store.queryClaims({ afterId: claims[0]!.id, limit: 2 }), claims.slice(1, 3));
+  assert.deepEqual(store.queryClaims({ subject: "missing" }), []);
+  assert.deepEqual(store.queryObservations(), []);
+  assert.ok(queryCount <= 2, `expected at most two prepared queries, got ${queryCount}`);
+});
+
 test("Arena admits nanosecond fact times with exact spelling, ordering and deduplication across reopen", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-arena-"));
   let store = new ObservationStore(directory);
