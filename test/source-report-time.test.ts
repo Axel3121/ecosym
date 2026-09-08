@@ -2,6 +2,34 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { sourceReportFactTimeKey, sourceReportInstantOrderingKey } from "../src/source-report-time.ts";
 import { utcInstantOrderingKey } from "../src/time.ts";
+import { sameVerificationFactSet, verificationFactKey } from "../src/verification-facts.ts";
+import type { VerificationFact } from "../src/store.ts";
+
+const fact: VerificationFact = {
+  epistemicStatus: "claim", factOwner: "owner", kind: "alert",
+  subject: "subject", sourceRecordId: "fact", sourceRecordedAt: null, payloadHash: "hash",
+};
+
+test("verification identities equate millisecond spellings and preserve legacy UTC offsets", () => {
+  const canonical = "2026-09-01T11:59:59.123Z";
+  for (const time of [canonical, "2026-09-01T11:59:59.123000Z", "2026-09-01T11:59:59.123+00:00"]) {
+    assert.equal(verificationFactKey({ ...fact, sourceRecordedAt: time }), verificationFactKey({ ...fact, sourceRecordedAt: canonical }));
+    assert.equal(sameVerificationFactSet([{ ...fact, sourceRecordedAt: time }], [{ ...fact, sourceRecordedAt: canonical }]), true);
+  }
+  assert.equal(sourceReportFactTimeKey("2026-09-01T11:59:59.123000Z"), sourceReportFactTimeKey(canonical));
+  assert.equal(sourceReportInstantOrderingKey("2026-09-01T11:59:59.123+00:00"), null);
+});
+
+test("malformed verification timestamps cannot share null or valid exact-time identities", () => {
+  const valid = { ...fact, sourceRecordedAt: "2026-09-01T11:59:59.123456Z" };
+  for (const time of ["", "invalid", "2026-02-30T11:59:59Z", "2026-09-01T11:59:59.123Z456"]) {
+    const malformed = { ...fact, sourceRecordedAt: time };
+    assert.equal(sourceReportFactTimeKey(time), null);
+    assert.notEqual(verificationFactKey(malformed), verificationFactKey(fact));
+    assert.notEqual(verificationFactKey(malformed), verificationFactKey(valid));
+    assert.equal(sameVerificationFactSet([malformed], [fact]), false);
+  }
+});
 
 test("source report chronology preserves arbitrary schema-bounded precision without permissive calendar parsing", () => {
   const before = sourceReportInstantOrderingKey("2026-09-08T03:45:23.913979Z");

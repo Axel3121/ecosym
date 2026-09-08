@@ -28,7 +28,9 @@ export function verificationFactKey(fact: VerificationFact): string {
   const sourceTimeKey =
     fact.sourceRecordedAt === null
       ? null
-      : utcInstantOrderingKey(fact.sourceRecordedAt) ?? sourceReportFactTimeKey(fact.sourceRecordedAt);
+      : utcInstantOrderingKey(fact.sourceRecordedAt) ?? sourceReportFactTimeKey(fact.sourceRecordedAt)
+        // Malformed persisted times must not alias null or a valid TEXT time key.
+        ?? ["invalid", fact.sourceRecordedAt];
   return canonicalJson([
     fact.epistemicStatus,
     fact.factOwner,

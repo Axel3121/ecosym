@@ -55,6 +55,28 @@ test("Arena registration persists expected identity and refuses active replaceme
   store.close();
 });
 
+test("Arena schema and admission require timestamp validity bounds for current and stale freshness", async (t) => {
+  const ajv = new Ajv2020({ strict: true, strictTypes: false, strictRequired: false });
+  addFormats.default(ajv);
+  const validate = ajv.compile(schema);
+  const store = new ObservationStore(mkdtempSync(join(tmpdir(), "ecosym-arena-")));
+  t.after(() => store.close());
+  store.registerArenaSource("arena", "source", "Synthetic Owner");
+  for (const status of ["current", "stale"]) {
+    for (const validUntil of [null, undefined, "invalid"]) {
+      const bundle = arenaBundle();
+      Object.assign(bundle.freshness, { status, validUntil });
+      assert.equal(validate(bundle), false);
+      await assert.rejects(store.admitArenaBundle("arena", JSON.stringify(bundle)), { code: "arena_invalid" });
+    }
+  }
+  const bundle = arenaBundle();
+  bundle.facts[0]!.sourceRecordedAt = "2026-09-01T12:00:00+00:00";
+  await assert.rejects(store.admitArenaBundle("arena", JSON.stringify(bundle)), { code: "arena_invalid" });
+  assert.equal(store.countFacts(), 0);
+  assert.equal(store.narrate().sourceReports!.length, 0);
+});
+
 test("Arena reconnect retains the latest report by configuration while collection health resets", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-arena-"));
   let store = new ObservationStore(directory);
@@ -153,6 +175,9 @@ test("Arena only admits through registered text/bytes boundary, never generic ra
   await assert.rejects(store.collect(store.getConnection("arena"), () => { called = true; }), { code: "fact_not_declared" });
   assert.equal(called, false);
   const json = JSON.stringify(arenaBundle());
+  const decoded = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(new TextEncoder().encode("\ufeff" + json));
+  assert.equal(decoded.charCodeAt(0), 0xfeff);
+  assert.throws(() => JSON.parse(decoded), SyntaxError);
   await assert.rejects(store.admitArenaBundle("arena", "\ufeff" + json), { code: "arena_invalid" });
   await assert.rejects(store.admitArenaBundle("arena", new TextEncoder().encode("\ufeff" + json)), { code: "arena_invalid" });
   assert.equal(store.countFacts(), 0);
