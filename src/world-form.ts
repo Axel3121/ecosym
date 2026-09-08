@@ -1,6 +1,22 @@
 import type { ConnectionStatus } from "./observation-snapshot.ts";
 import { WORLD_FACT_SEMANTICS_CAVEAT, type WorldSnapshot, type WorldSourcePicture } from "./world-snapshot.ts";
 
+export interface WorldForm {
+  snapshot: WorldSnapshot;
+  /** No semantic terrain is supported by the contract. Neutral scene topology is a surface concern. */
+  terrain: null;
+  places: { declaration: WorldSnapshot["civilizations"][number]; sourcePicture: WorldSourcePicture }[];
+}
+
+/** Retain validated contract objects; a founding is a place, never evidence of activity. */
+export function worldForm(snapshot: WorldSnapshot): WorldForm {
+  const pictures = new Map(snapshot.sourcePictures.map((picture) => [picture.civilizationId, picture]));
+  return {
+    snapshot, terrain: null,
+    places: snapshot.civilizations.map((declaration) => ({ declaration, sourcePicture: pictures.get(declaration.civilizationId)! })),
+  };
+}
+
 const collectionMeaning = {
   collected: "Successfully saw new or changed stored facts; not operational success.",
   "nothing-new": "Successfully read with no new or changed facts: quiet only in the collection picture.",
