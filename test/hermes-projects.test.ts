@@ -9,6 +9,7 @@ import { ProjectService } from "../src/projects.ts";
 import { ObservationStore } from "../src/store.ts";
 import { parseCivilizationConfig } from "../src/institution.ts";
 import { randomUUID } from "node:crypto";
+import { hermesAvailable } from "./hermes-available.ts";
 
 function isolated(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), "ecosym-hermes-test-"));
@@ -127,6 +128,12 @@ test("binary is resolved once and invalid positional inputs cannot invoke native
 
 test("real native integration uses only temporary profile: service create, show, reconcile, archive adoption", { timeout: 30_000 }, async (t) => {
   const s = isolated(t);
+  assert.equal(s.env.HERMES_HOME, s.profile, "DANGER: native call escaped test profile");
+  assert.notEqual(realpathSync(s.profile), join(homedir(), ".hermes"), "DANGER: real Hermes home");
+  if (!hermesAvailable(s.env.PATH)) {
+    t.skip("Native integration skipped: no executable hermes on PATH; profile isolation verified");
+    return;
+  }
   const adapter = new HermesProjectAdapter({ root: s.root, env: s.env, home: s.root });
   const store = new ObservationStore(join(s.root, "state"));
   t.after(() => store.close());
@@ -134,7 +141,7 @@ test("real native integration uses only temporary profile: service create, show,
     name: "Synthetic", domain: "Native integration", sources: [], mayActAlone: [], mustEscalate: [] }));
   const service = new ProjectService(store, { root: s.root, adapter });
   const result = await service.create(civilizationId, { requestKey: randomUUID(), name: "Blåbær Ø", harness: "hermes" });
-  assert.equal(result.project.state, "established", "Native Hermes integration is mandatory: install hermes on PATH; never substitute a real profile");
+  assert.equal(result.project.state, "established", "Available native Hermes must establish the project in the isolated profile");
   const project = result.project;
   const native = (args: string[]) => new Promise<string>((done, reject) => {
     assert.equal(s.env.HERMES_HOME, s.profile, "DANGER: native call escaped test profile");

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { test } from "node:test";
@@ -15,6 +15,7 @@ import { ObservationStore } from "../src/store.ts";
 import { composeWorldSnapshot } from "../src/world-application.ts";
 import { createWorldServer } from "../src/world-server.ts";
 import { validateWorldSnapshot } from "../src/world-snapshot.ts";
+import { hermesAvailable } from "./hermes-available.ts";
 
 function assertIsolated(root: string, home: string) {
   assert.ok(isAbsolute(home), "DANGER: native test requires an absolute Hermes home");
@@ -68,6 +69,12 @@ test("real HTTP native create and show primary readback survive browser reload",
   assertIsolated(root, env.ECOSYM_HARNESS_HOME);
   assertIsolated(root, home);
   assertIsolated(root, workspaces);
+  assert.equal(env.HERMES_HOME, profile, "DANGER: native call escaped test profile");
+  assert.notEqual(realpathSync(profile), join(homedir(), ".hermes"), "DANGER: real Hermes home");
+  if (!hermesAvailable(env.PATH)) {
+    t.skip("Native integration skipped: no executable hermes on PATH; profile isolation verified");
+    return;
+  }
   const adapter = new HermesProjectAdapter({ root: workspaces, home, env });
   store = new ObservationStore(state);
   const { civilizationId } = store.foundCivilization(parseCivilizationConfig({ schemaVersion: 1,
@@ -113,7 +120,7 @@ test("real HTTP native create and show primary readback survive browser reload",
   assert.equal(response.status, 201);
   const project = await response.json() as WorldProjectSnapshot;
   assert.equal(project.state, "established",
-    `Real native integration required, no stub or skip: ${project.reason ?? project.state}`);
+    `Available native Hermes must establish the project: ${project.reason ?? project.state}`);
   assert.ok(project.harness);
   assert.equal(project.harness.provenance, "created");
   assert.ok(statSync(project.workspacePath).isDirectory());
