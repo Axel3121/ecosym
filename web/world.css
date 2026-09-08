@@ -14,7 +14,7 @@ h1 { margin: 5px 0 0; font-size: 34px; font-weight: normal; letter-spacing: -1px
 .world-layout { flex: 1; min-height: 0; display: flex; }
 .map-region { flex: 1; min-width: 0; position: relative; display: flex; flex-direction: column; background: #b6ad7f; }
 .map-heading { display: flex; justify-content: space-between; gap: 16px; padding: 12px 22px; background: #ded4b4; font-size: 10px; letter-spacing: 1px; border-bottom: 1px solid #a89b74; }
-.scene { flex: 1; min-height: 0; overflow: auto; touch-action: none; cursor: grab; scrollbar-color: #776f51 #b6ad7f; scroll-padding: 12px 12px 65px; }
+.scene { flex: 1; min-height: 0; overflow: auto; touch-action: none; cursor: grab; scrollbar-color: #776f51 #b6ad7f; scroll-padding: 12px; }
 .scene:active { cursor: grabbing; }
 .world-size { position: relative; }
 .painted-world { position: absolute; transform-origin: top left; width: 1600px; min-height: 1000px; display: grid; grid-template-columns: repeat(4, 258px); gap: 90px 72px; align-content: start; align-items: start; padding: 130px 80px 260px; }
@@ -44,7 +44,7 @@ h1 { margin: 5px 0 0; font-size: 34px; font-weight: normal; letter-spacing: -1px
 .world-message p { line-height: 1.6; margin-bottom: 0; }
 .world-message.loading { border-left-style: dashed; }
 .world-message.failure { border-left-color: #a04f36; background: #ead3b7; }
-.map-controls { position: absolute; bottom: 57px; left: 20px; display: flex; align-items: center; background: #eee1bd; box-shadow: 3px 3px #827552; font-size: 12px; }
+.map-controls { flex-shrink: 0; align-self: flex-start; margin: 0 20px 3px; display: flex; align-items: center; background: #eee1bd; box-shadow: 3px 3px #827552; font-size: 12px; }
 .map-controls button { min-width: 42px; min-height: 42px; background: none; border: 0; border-right: 1px solid #b6a77e; }
 .map-controls output { padding: 0 9px; }
 #navigation-help { margin: 0; padding: 10px 20px; background: #ded4b4; font-size: 10px; line-height: 1.6; }
@@ -69,7 +69,7 @@ footer { display: flex; justify-content: space-between; gap: 14px; padding: 12px
   .inspection { width: 100%; max-width: none; max-height: 48%; padding: 16px 20px; border-left: 0; border-top: 2px solid #847659; }
   .inspection h2 { margin-top: 15px; }
   #navigation-help { font-size: 9px; padding: 6px 12px; }
-  .map-controls { position: static; flex-shrink: 0; align-self: flex-start; margin: 0 12px 3px; }
+  .map-controls { margin: 0 12px 3px; }
   .world-message { top: 18%; padding: 18px; }
   .world-message h2 { font-size: 25px; }
   footer { padding: 8px 12px; font-size: 8px; }

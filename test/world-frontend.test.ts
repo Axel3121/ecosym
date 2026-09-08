@@ -275,6 +275,46 @@ test("the production world surface uses the actual build and launcher with isola
       assert.equal(await button.getAttribute("aria-expanded"), "false");
     } finally { await page.close(); }
   });
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    await t.test(`${viewport.width}px navigation never covers founded places or evidence`, async () => {
+      const page = await browser.newPage({ viewport });
+      try {
+        await page.route("**/api/world-snapshot", (route) => route.fulfill({ json: snapshot }));
+        await page.goto(url);
+        await page.locator(".place").first().waitFor();
+        assert.equal(await page.locator(".place").count(), form.places.length);
+        assert.equal(await page.locator(".mark").count(), form.places.reduce((count, place) => count + place.marks.length, 0));
+        for (const inspecting of [false, true]) {
+          if (inspecting) {
+            await page.getByRole("button", { name: "Inspect Synthetic 8", exact: true }).focus();
+            await page.keyboard.press("Enter");
+            await page.getByRole("complementary").waitFor();
+          }
+          for (const zoom of ["100%", "60%", "160%"] as const) {
+            while (await page.getByLabel("Zoom level").textContent() !== zoom) {
+              await page.getByRole("button", { name: zoom === "60%" ? "Zoom out" : "Zoom in", exact: true }).click();
+            }
+            const scene = (await page.getByLabel("Explore world", { exact: true }).boundingBox())!;
+            const controls = (await page.getByRole("navigation", { name: "World navigation" }).boundingBox())!;
+            assert.ok(scene.y + scene.height <= controls.y, "navigation must be outside the entire scrollable scene at every scroll position");
+            for (const target of await page.locator(".place-ground, .place-name, .place-domain, .mark").all()) {
+              assert.equal(await target.evaluate((node) => {
+                node.scrollIntoView({ block: "center", inline: "center" });
+                const bounds = node.getBoundingClientRect();
+                const scene = node.closest(".scene")!.getBoundingClientRect();
+                const hit = document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+                // Scrolling rounds to CSS pixels while zoomed bounds can be fractional.
+                return bounds.top >= scene.top - 1 && bounds.bottom <= scene.bottom + 1
+                  && bounds.left >= scene.left - 1 && bounds.right <= scene.right + 1
+                  && hit !== null && node.contains(hit);
+              }), true, `${await target.getAttribute("class")} must remain reachable and unobstructed at ${zoom}, inspection ${inspecting}`);
+            }
+          }
+          await page.getByRole("button", { name: "Home", exact: true }).click();
+        }
+      } finally { await page.close(); }
+    });
+  }
   await t.test("390px viewport retains at least 30% actual scene with inspection open and no page overflow", async (t) => {
     const viewport = { width: 390, height: 844 };
     const page = await browser.newPage({ viewport });
