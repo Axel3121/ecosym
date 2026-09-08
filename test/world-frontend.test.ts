@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
-test("the production React boundary reads the world contract through the actual world launcher", { timeout: 60000 }, async (t) => {
+test("the committed production build renders the blank React root through the actual world launcher", { timeout: 60000 }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "ecosym-frontend-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const output = resolve("dist/world");
@@ -51,9 +51,8 @@ test("the production React boundary reads the world contract through the actual 
   assert.ok(script);
   assert.match(script, /^\/assets\/.+\.js$/u);
   const bundle = await readFile(join(output, script), "utf8");
-  assert.match(bundle, /\/api\/world-snapshot/u);
-  assert.doesNotMatch(bundle, /node:sqlite|@vite\/client|react-refresh/u);
-  assert.ok((await readdir(join(output, "assets"))).every((file) => /\.(js|css)$/u.test(file)));
+  assert.doesNotMatch(bundle, /\/api\/world-snapshot|node:sqlite|@vite\/client|react-refresh/u);
+  assert.ok((await readdir(join(output, "assets"))).every((file) => file.endsWith(".js")));
   const asset = await fetch(`${url}${script}`);
   assert.equal(asset.status, 200);
   assert.equal(asset.headers.get("content-type"), "text/javascript; charset=utf-8");
@@ -71,12 +70,12 @@ test("the production React boundary reads the world contract through the actual 
     await page.goto(url);
     await page.locator('#root > main[aria-label="EcoSym"]').waitFor({ state: "attached" });
     assert.equal(await page.title(), "EcoSym");
-    await page.getByRole("status").filter({ hasText: "No civilizations have been founded." }).waitFor();
+    assert.equal(await page.locator("body").innerText(), "");
+    assert.equal(await page.locator("main").innerHTML(), "");
     await page.waitForLoadState("networkidle");
-    assert.deepEqual(requests.filter((request) => request.type !== "stylesheet"), [
+    assert.deepEqual(requests, [
       { url: `${url}/`, method: "GET", type: "document" },
       { url: `${url}${script}`, method: "GET", type: "script" },
-      { url: `${url}/api/world-snapshot`, method: "GET", type: "fetch" },
     ]);
     assert.deepEqual(errors, []);
     await page.close();
@@ -85,7 +84,7 @@ test("the production React boundary reads the world contract through the actual 
   assert.deepEqual(await exit, [0, null]);
 });
 
-test("the Vite React boundary preserves loading, failures and orthogonal world evidence", { timeout: 60000 }, async (t) => {
+test("the committed Vite dev config renders the blank root without errors or API requests", { timeout: 60000 }, async (t) => {
   const server = await createServer({ configFile: resolve("vite.config.ts") });
   t.after(() => server.close());
   await server.listen();
@@ -96,14 +95,6 @@ test("the Vite React boundary preserves loading, failures and orthogonal world e
   const browser = await chromium.launch();
   t.after(() => browser.close());
   const page = await browser.newPage();
-  let respond!: () => void;
-  let gate = new Promise<void>((resolve) => { respond = resolve; });
-  let body: unknown = { schemaVersion: 1, civilizations: [], sourcePictures: [], observationsTruncated: false, claimsTruncated: false };
-  let status = 200;
-  await page.route("**/api/world-snapshot", async (route) => {
-    await gate;
-    await route.fulfill({ status, json: body });
-  });
   const errors: string[] = [];
   const dataRequests: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -113,44 +104,14 @@ test("the Vite React boundary preserves loading, failures and orthogonal world e
       dataRequests.push(request.url());
     }
   });
-  await Promise.all([page.waitForRequest("**/api/world-snapshot"), page.goto(`http://127.0.0.1:${address.port}`)]);
+  await page.goto(`http://127.0.0.1:${address.port}`);
   await page.locator('#root > main[aria-label="EcoSym"]').waitFor({ state: "attached" });
   assert.equal(await page.title(), "EcoSym");
-  await page.getByRole("status").filter({ hasText: "Loading stored world snapshot." }).waitFor();
-  respond();
-  await page.getByRole("status").filter({ hasText: "No civilizations have been founded." }).waitFor();
-  for (const failure of [{ status: 503, body: {}, text: "http (503)" }, { status: 200, body: {}, text: "invalid-response" }]) {
-    status = failure.status;
-    body = failure.body;
-    gate = new Promise<void>((resolve) => { respond = resolve; });
-    await Promise.all([page.waitForRequest("**/api/world-snapshot"), page.reload()]);
-    respond();
-    await page.getByRole("alert").filter({ hasText: failure.text }).waitFor();
-    assert.equal(await page.locator("section").count(), 0);
-  }
-  status = 200;
-  const instant = "2026-01-01T00:00:00.000Z";
-  body = { schemaVersion: 1, civilizations: [{ civilizationId: "civilization:test", name: "Synthetic declaration", foundedAt: instant,
-    bodyReadable: false, domain: "", sources: [], mayActAlone: [], mustEscalate: [],
-    mandate: { status: "dissolved", mandateId: "mandate:test", revision: "v1", recordedAt: instant } }],
-    sourcePictures: [{ civilizationId: "civilization:test", sources: [] }], observationsTruncated: true, claimsTruncated: false };
-  gate = new Promise<void>((resolve) => { respond = resolve; });
-  await Promise.all([page.waitForRequest("**/api/world-snapshot"), page.reload()]);
-  respond();
-  await page.getByRole("heading", { name: "Synthetic declaration" }).waitFor();
-  await page.getByText("Inspect stored declaration and source evidence").click();
-  const text = await page.locator("main").innerText();
-  assert.match(text, /"bodyReadable":false/u);
-  assert.match(text, /"status":"dissolved"/u);
-  assert.match(text, /Sources unknown/u);
-  assert.match(text, /observationsTruncated: true; claimsTruncated: false/u);
-  assert.equal(await page.locator("canvas").count(), 0);
-  await page.setViewportSize({ width: 375, height: 667 });
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+  assert.equal(await page.locator("body").innerText(), "");
+  assert.equal(await page.locator("main").innerHTML(), "");
   await page.waitForLoadState("networkidle");
-  assert.deepEqual(errors, ["Failed to load resource: the server responded with a status of 503 (Service Unavailable)"]);
-  assert.ok(dataRequests.length >= 4);
-  assert.ok(dataRequests.every((url) => new URL(url).pathname === "/api/world-snapshot"));
+  assert.deepEqual(errors, []);
+  assert.deepEqual(dataRequests, []);
 });
 
 test("Vite hot-refreshes an isolated frontend copy without navigation", { timeout: 60000 }, async (t) => {
@@ -158,7 +119,6 @@ test("Vite hot-refreshes an isolated frontend copy without navigation", { timeou
   t.after(() => rm(directory, { recursive: true, force: true }));
   const root = join(directory, "web");
   await cp("web", root, { recursive: true });
-  await cp("src", join(directory, "src"), { recursive: true });
   await symlink(resolve("node_modules"), join(directory, "node_modules"), "dir");
   const server = await createServer({ configFile: resolve("vite.config.ts"), root, logLevel: "silent", server: { port: 0, fs: { allow: [root] } } });
   t.after(() => server.close());
@@ -182,14 +142,13 @@ test("Vite hot-refreshes an isolated frontend copy without navigation", { timeou
   const browser = await chromium.launch();
   t.after(() => browser.close());
   const page = await browser.newPage();
-  await page.route("**/api/world-snapshot", (route) => route.fulfill({ json: { schemaVersion: 1, civilizations: [], sourcePictures: [], observationsTruncated: false, claimsTruncated: false } }));
   const errors: string[] = [];
   const apiRequests: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("request", (request) => { if (new URL(request.url()).pathname.startsWith("/api/")) apiRequests.push(request.url()); });
   await page.goto(url);
   await page.locator('#root > main[aria-label="EcoSym"]').waitFor({ state: "attached" });
-  await page.getByRole("status").filter({ hasText: "No civilizations have been founded." }).waitFor();
+  assert.equal(await page.locator("body").innerText(), "");
   // A full reload would remove this marker; only the isolated copy is edited.
   await page.evaluate("window.__hmrMarker = true");
   const component = join(root, "App.tsx");
@@ -197,8 +156,7 @@ test("Vite hot-refreshes an isolated frontend copy without navigation", { timeou
   await page.locator('main[aria-label="EcoSym HMR test"]').waitFor({ state: "attached" });
   assert.equal(await page.evaluate("window.__hmrMarker"), true);
   assert.deepEqual(errors, []);
-  assert.ok(apiRequests.length > 0);
-  assert.ok(apiRequests.every((url) => new URL(url).pathname === "/api/world-snapshot"));
+  assert.deepEqual(apiRequests, []);
 });
 
 test("manifest wiring guard keeps check connected to both typechecks, tests, and the production build", async () => {

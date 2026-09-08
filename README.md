@@ -17,12 +17,12 @@ in [`docs/observation-layer.md`](docs/observation-layer.md). The institution
 layer founds, redraws, dissolves, and deterministically resolves the mandate of
 a civilization. Both support export and irreversible forgetting.
 
-A design-neutral React + TypeScript browser reads stored world declarations and evidence.
+A design-neutral React + TypeScript browser skeleton now renders a blank root.
 A read-only SQLite
 runtime bridge collects selected external fields, and an application-composed,
 runtime-validated world contract links them to declared sources. The local world
-server retains that contract at `/api/world-snapshot`; a typed, React-independent
-client validates it and uses the core-owned `worldForm` projection. See [`DEVELOPMENT.md`](DEVELOPMENT.md) for frontend dev, build, and
+server retains that contract at `/api/world-snapshot`; the skeleton does not fetch
+or depict it. See [`DEVELOPMENT.md`](DEVELOPMENT.md) for frontend dev, build, and
 serve commands, and
 [`docs/runtime-bridge.md`](docs/runtime-bridge.md#local-procedure) for explicit
 local setup, collection, verification, and world startup.

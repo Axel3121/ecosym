@@ -220,13 +220,13 @@ auto-discover sources, found civilizations, or start work in Hermes. Restarting
 it is repeatable and reads the same persisted Ecosym state.
 
 The server exposes `/api/world-snapshot` through a callback supplied by the
-launcher that calls `composeWorldSnapshot`. The React view reads that contract once
-and displays stored declarations and separately labeled source evidence. Inspect the endpoint directly
+launcher that calls `composeWorldSnapshot`. The React skeleton is intentionally
+blank and does not fetch or depict that contract. Inspect the endpoint directly
 or use `status` and `query` above, keeping the collection boundary distinct from
 the later `verify` audit. See [DEVELOPMENT.md](../DEVELOPMENT.md) for frontend
 dev/build/serve commands.
 
-After collecting again, reload the browser for a new GET of the updated stored picture.
+After collecting again, a new GET to the endpoint reads the updated stored picture.
 The browser does not poll or collect sources. Startup alone does not establish that
 a source was read successfully or that its recorded fields prove an outcome.
 This is an operator procedure, not a claim that real data has been connected or
