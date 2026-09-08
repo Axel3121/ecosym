@@ -27,6 +27,7 @@ export interface FactConfig {
 }
 
 export type ReaderConfig =
+  | { type: "arena"; sourceId: string; owner: string }
   | { type: "sqlite"; path: string; table: string }
   | { type: "jsonl"; path: string }
   | { type: "json"; pathPattern: string; recordsPath: string }
@@ -62,6 +63,24 @@ export class ConfigError extends Error {
 
 export function parseConnectionConfig(input: unknown): ParsedConnectionConfig {
   const root = objectAt(input, "connection");
+  if (objectAt(root.reader, "connection.reader").type === "arena") {
+    exactKeys(root, ["schemaVersion", "id", "factOwner", "reader", "sourceRecord", "facts"], "connection");
+    const reader = objectAt(root.reader, "connection.reader");
+    exactKeys(reader, ["type", "sourceId", "owner"], "connection.reader");
+    const owner = nonemptyStringAt(reader.owner, "connection.reader.owner");
+    if (owner.length > 512 || root.schemaVersion !== 1) throw new ConfigError("Invalid Arena registration");
+    const config: ConnectionConfig = {
+      schemaVersion: 1,
+      id: nameAt(root.id, "connection.id"),
+      factOwner: owner,
+      reader: { type: "arena", sourceId: nameAt(reader.sourceId, "connection.reader.sourceId"), owner },
+      sourceRecord: { identity: [{ scope: "record", path: "factId" }], retention: "history", recordedAt: { unavailable: true } },
+      facts: [],
+    };
+    const canonical = canonicalJson(config as unknown as JsonValue);
+    if (canonicalJson(root as JsonValue) !== canonical) throw new ConfigError("Invalid Arena registration");
+    return { config, canonical, hash: sha256(canonical) };
+  }
   exactKeys(
     root,
     ["schemaVersion", "id", "factOwner", "reader", "sourceRecord", "facts"],

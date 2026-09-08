@@ -48,6 +48,9 @@ export async function* readSource(
   jsonlRecordIndexMode: JsonlRecordIndexMode = "record-ordinal",
 ): AsyncGenerator<SourceRecord> {
   switch (config.reader.type) {
+    case "arena":
+      // Arena is admitted from supplied reports; no upstream reread is configured.
+      throw new SourceReadError("source_unreadable");
     case "sqlite":
       yield* readSqlite(config);
       return;

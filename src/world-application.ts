@@ -13,6 +13,8 @@ export function composeWorldSnapshot(source: WorldSnapshotSource, limit?: number
   const narration = source.narrate(limit);
   const connections = new Map(narration.connections.map((entry) => [entry.connectionId, entry]));
   if (connections.size !== narration.connections.length) throw new Error("Duplicate narration connection ID");
+  const reports = new Map((narration.sourceReports ?? []).map((entry) => [entry.connectionId, entry]));
+  if (reports.size !== (narration.sourceReports ?? []).length) throw new Error("Duplicate narration source report");
   return validateWorldSnapshot({
     schemaVersion: WORLD_SNAPSHOT_SCHEMA_VERSION,
     civilizations,
@@ -24,6 +26,7 @@ export function composeWorldSnapshot(source: WorldSnapshotSource, limit?: number
         attemptsInProgress: narration.attemptsInProgress.filter((entry) => entry.connectionId === connectionId),
         observations: narration.observations.filter((entry) => entry.connectionId === connectionId),
         claims: narration.claims.filter((entry) => entry.connectionId === connectionId),
+        ...(reports.has(connectionId) ? { sourceReport: reports.get(connectionId) } : {}),
       })),
     })),
     observationsTruncated: narration.observationsTruncated,
