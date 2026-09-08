@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { cp, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { get } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -9,8 +9,50 @@ import { test } from "node:test";
 import { promisify } from "node:util";
 import { chromium } from "playwright";
 import { createServer } from "vite";
+import ts from "typescript";
+import { validateWorldSnapshot, type WorldSnapshot } from "../src/world-snapshot.ts";
+import { worldForm } from "../src/world-form.ts";
 
-test("the committed production build renders the blank React root through the actual world launcher", { timeout: 60000 }, async (t) => {
+const pureSources = ["world-form.ts", "world-snapshot.ts", "institution-snapshot.ts", "observation-snapshot.ts", "validate-institution-snapshot.ts", "time.ts"];
+const empty: WorldSnapshot = { schemaVersion: 1, civilizations: [], sourcePictures: [], observationsTruncated: false, claimsTruncated: false };
+
+function foundedSnapshot(): WorldSnapshot {
+  const snapshot = structuredClone(empty);
+  const instant = "2026-01-01T00:00:00.000Z";
+  for (const [index, reason] of ([null, "never-run", "nothing-new", "failed", "incomplete", "retired", "skipped", "record-index-unknown", "collected"] as const).entries()) {
+    const connectionId = `synthetic-source:${index}`;
+    const civilizationId = `synthetic-civilization:${index}`;
+    snapshot.civilizations.push({ civilizationId, name: `Synthetic ${index}`, foundedAt: instant, bodyReadable: true,
+      domain: `Declared domain ${index}`, sources: [connectionId], mayActAlone: ["Read synthetic records"], mustEscalate: ["Change synthetic policy"],
+      mandate: { status: index === 3 ? "dissolved" : "active", mandateId: `mandate:${index}`, revision: "v1", recordedAt: instant } });
+    snapshot.sourcePictures.push({ civilizationId, sources: [{ connectionId,
+      collection: reason === null ? null : { connectionId, connectionVersion: "v1", reason,
+        status: reason === "nothing-new" ? "quiet" : reason === "collected" ? "changed" : "unread", lastAttemptAt: reason === "never-run" ? null : instant },
+      attemptsInProgress: reason === "incomplete" ? [{ attemptId: "synthetic-running", connectionId, connectionVersion: "v1", startedAt: instant }] : [],
+      observations: [], claims: [] }] });
+  }
+  const source = snapshot.sourcePictures.at(-1)!.sources[0]!;
+  for (const [index, temporalStatus] of (["unknown", "current", "historical"] as const).entries()) {
+    for (const epistemicStatus of ["observation", "claim"] as const) {
+      source[epistemicStatus === "claim" ? "claims" : "observations"].push({ id: index * 2 + (epistemicStatus === "claim" ? 2 : 1),
+        collectedAt: instant, connectionId: source.connectionId, connectionVersion: "v1", collectionAsOf: null, epistemicStatus,
+        factOwner: "synthetic-owner", kind: "record", payload: { text: "<b>synthetic, not markup</b>" },
+        sourceRecordedAt: temporalStatus === "unknown" ? null : instant, sourceRecordId: `record:${index}`, subject: "synthetic-subject", temporalStatus });
+    }
+  }
+  for (const bodyReadable of [true, false]) {
+    const civilizationId = `synthetic-body:${bodyReadable}`;
+    snapshot.civilizations.push({ civilizationId, name: `Synthetic body ${bodyReadable}`, foundedAt: instant, bodyReadable,
+      domain: bodyReadable ? "No sources declared" : "", sources: [], mayActAlone: [], mustEscalate: [],
+      mandate: bodyReadable ? { status: "active", mandateId: "mandate:empty", revision: "v1", recordedAt: instant } : { status: "unreadable" } });
+    snapshot.sourcePictures.push({ civilizationId, sources: [] });
+  }
+  snapshot.observationsTruncated = snapshot.claimsTruncated = true;
+  snapshot.sourcePictures.reverse();
+  return validateWorldSnapshot(snapshot);
+}
+
+test("the production world surface uses the actual build and launcher with isolated synthetic browser fixtures", { timeout: 120000 }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "ecosym-frontend-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const output = resolve("dist/world");
@@ -51,8 +93,19 @@ test("the committed production build renders the blank React root through the ac
   assert.ok(script);
   assert.match(script, /^\/assets\/.+\.js$/u);
   const bundle = await readFile(join(output, script), "utf8");
-  assert.doesNotMatch(bundle, /\/api\/world-snapshot|node:sqlite|@vite\/client|react-refresh/u);
-  assert.ok((await readdir(join(output, "assets"))).every((file) => file.endsWith(".js")));
+  assert.match(bundle, /\/api\/world-snapshot/u);
+  assert.doesNotMatch(bundle, /node:sqlite|@vite\/client|react-refresh/u);
+  assert.ok((await readdir(join(output, "assets"))).every((file) => /\.(js|css)$/u.test(file)));
+  const styles = [...html.matchAll(/<link[^>]+href="([^"]+\.css)"/gu)].map((match) => match[1]!);
+  assert.ok(styles.length > 0);
+  for (const style of styles) {
+    assert.match(style, /^\/assets\/.+\.css$/u);
+    const css = await fetch(`${url}${style}`);
+    assert.equal(css.status, 200);
+    assert.equal(css.headers.get("content-type"), "text/css; charset=utf-8");
+    assert.equal(css.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(await css.text(), await readFile(join(output, style), "utf8"));
+  }
   const asset = await fetch(`${url}${script}`);
   assert.equal(asset.status, 200);
   assert.equal(asset.headers.get("content-type"), "text/javascript; charset=utf-8");
@@ -60,31 +113,209 @@ test("the committed production build renders the blank React root through the ac
   assert.equal(await asset.text(), bundle);
   const browser = await chromium.launch();
   t.after(() => browser.close());
-  for (const viewport of [{ width: 1280, height: 800 }, { width: 375, height: 667 }]) {
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
     const page = await browser.newPage({ viewport });
     const errors: string[] = [];
     const requests: { url: string; method: string; type: string }[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
     page.on("request", (request) => requests.push({ url: request.url(), method: request.method(), type: request.resourceType() }));
+    const snapshotResponse = page.waitForResponse(`${url}/api/world-snapshot`);
     await page.goto(url);
     await page.locator('#root > main[aria-label="EcoSym"]').waitFor({ state: "attached" });
     assert.equal(await page.title(), "EcoSym");
-    assert.equal(await page.locator("body").innerText(), "");
-    assert.equal(await page.locator("main").innerHTML(), "");
+    const loaded = await snapshotResponse;
+    assert.equal(loaded.status(), 200);
+    assert.deepEqual(validateWorldSnapshot(await loaded.json()), empty);
+    await page.getByRole("heading", { name: "No civilizations founded" }).waitFor();
+    assert.equal(await page.locator(".place, .inspection").count(), 0);
+    assert.match(await page.locator('.world-message[role="status"]').innerText(), /Nothing has been placed here/u);
     await page.waitForLoadState("networkidle");
-    assert.deepEqual(requests, [
+    assert.deepEqual(requests.sort((a, b) => a.url.localeCompare(b.url)), [
       { url: `${url}/`, method: "GET", type: "document" },
       { url: `${url}${script}`, method: "GET", type: "script" },
-    ]);
+      ...styles.map((style) => ({ url: `${url}${style}`, method: "GET", type: "stylesheet" })),
+      { url: `${url}/api/world-snapshot`, method: "GET", type: "fetch" },
+    ].sort((a, b) => a.url.localeCompare(b.url)));
     assert.deepEqual(errors, []);
     await page.close();
   }
+  await t.test("loading, HTTP, request, invalid and loaded empty are distinct", async () => {
+    const page = await browser.newPage();
+    try {
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => { release = resolve; });
+      let mode = "loading";
+      await page.route("**/api/world-snapshot", async (route) => {
+        assert.equal(route.request().method(), "GET");
+        if (mode === "loading") { await pending; await route.fulfill({ json: empty }); }
+        else if (mode === "http") await route.fulfill({ status: 503, body: "synthetic unavailable" });
+        else if (mode === "request") await route.abort("failed");
+        else await route.fulfill({ json: { ...empty, extra: "invalid contract" } });
+      });
+      await page.goto(url);
+      await page.getByRole("heading", { name: "Reading the world", exact: true }).waitFor();
+      assert.equal(await page.getByRole("button", { name: "Read again" }).isDisabled(), true);
+      assert.equal(await page.locator(".place, .inspection").count(), 0);
+      release();
+      await page.getByRole("heading", { name: "No civilizations founded" }).waitFor();
+      for (const [kind, heading] of [["http", "World unavailable / HTTP 503"], ["request", "World connection failed"], ["invalid", "Unrecognized world picture"]] as const) {
+        mode = kind;
+        await page.getByRole("button", { name: "Read again" }).click();
+        await page.getByRole("heading", { name: heading, exact: true }).waitFor();
+        assert.match(await page.locator('.world-message[role="status"]').innerText(), /This is not an empty or quiet world/u);
+        assert.equal(await page.locator(".place, .inspection").count(), 0);
+        assert.equal(await page.getByRole("heading", { name: "No civilizations founded" }).count(), 0);
+      }
+    } finally { await page.close(); }
+  });
+  const snapshot = foundedSnapshot();
+  const form = worldForm(snapshot);
+  await t.test("validated founding, every core mark and every inspection value reach React one-for-one", async () => {
+    const page = await browser.newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+    try {
+      await page.route("**/api/world-snapshot", (route) => route.fulfill({ json: snapshot }));
+      await page.goto(url);
+      await page.locator(".place").first().waitFor();
+      assert.equal(await page.locator(".place").count(), form.places.length);
+      assert.equal(await page.locator('.world-message[role="status"]').count(), 0);
+      await page.getByRole("button", { name: "Read again" }).focus();
+      await page.keyboard.press("Tab");
+      for (const [index, place] of form.places.entries()) {
+        const button = page.getByRole("button", { name: `Inspect ${place.name}`, exact: true });
+        assert.equal(await button.getAttribute("data-institution"), place.institution);
+        assert.equal(await button.locator(".place-name").textContent(), place.name);
+        assert.equal(await button.locator(".place-domain").textContent(), place.domain);
+        assert.deepEqual(await button.locator(".mark").evaluateAll((marks) => marks.map((mark) => ({
+          axis: mark.getAttribute("data-axis"), kind: mark.getAttribute("data-kind"), label: mark.getAttribute("aria-label"),
+        }))), place.marks);
+        assert.equal(await page.locator(".place").nth(index).getAttribute("aria-label"), `Inspect ${place.name}`);
+        // Keyboard activation also works for evidence-rich places taller than the viewport.
+        await page.keyboard.press("Tab");
+        assert.equal(await button.evaluate((node) => node === document.activeElement), true);
+        await page.keyboard.press("Enter");
+        const inspector = page.getByRole("complementary", { name: `Inspection: ${place.name}`, exact: true });
+        await inspector.waitFor();
+        assert.deepEqual(await inspector.locator(".inspection-field").evaluateAll((fields) => fields.map((field) => ({
+          label: field.querySelector("h3")!.textContent, values: [...field.querySelectorAll("p")].map((p) => p.textContent),
+        }))), place.inspection);
+        assert.equal(await inspector.locator("b, script").count(), 0);
+        assert.equal(await page.getByRole("button", { name: "Close inspection" }).evaluate((node) => node === document.activeElement), true);
+        await page.keyboard.press("Escape");
+        await inspector.waitFor({ state: "detached" });
+        assert.equal(await button.evaluate((node) => node === document.activeElement), true);
+        assert.equal(await button.getAttribute("aria-expanded"), "false");
+      }
+      assert.doesNotMatch(await page.locator("body").innerText(), /\b(council|petition|decision|chat|persona)\b/iu);
+      assert.equal(await page.locator("input, textarea, [contenteditable=true], [role=dialog], [role=log]").count(), 0);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+  await t.test("native placement, keyboard navigation, mouse selection and drag, zoom and reload", async () => {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    try {
+      const small = { ...empty, civilizations: snapshot.civilizations.slice(-2, -1), sourcePictures: snapshot.sourcePictures.filter((picture) => picture.civilizationId === snapshot.civilizations.at(-2)!.civilizationId) };
+      let reads = 0;
+      await page.route("**/api/world-snapshot", (route) => { reads++; return route.fulfill({ json: small }); });
+      await page.goto(url);
+      const button = page.getByRole("button", { name: `Inspect ${small.civilizations[0]!.name}`, exact: true });
+      await button.waitFor();
+      const scene = page.getByLabel("Explore world", { exact: true });
+      await page.getByRole("button", { name: "Read again" }).focus();
+      await page.keyboard.press("Tab");
+      assert.equal(await scene.evaluate((node) => node === document.activeElement), true);
+      await page.keyboard.press("ArrowRight");
+      await page.keyboard.press("ArrowDown");
+      assert.deepEqual(await scene.evaluate((node) => [node.scrollLeft, node.scrollTop]), [100, 100]);
+      await page.keyboard.press("+");
+      assert.equal(await page.getByLabel("Zoom level").textContent(), "110%");
+      await page.keyboard.press("-");
+      assert.equal(await page.getByLabel("Zoom level").textContent(), "100%");
+      await page.keyboard.press("Home");
+      assert.deepEqual(await scene.evaluate((node) => [node.scrollLeft, node.scrollTop]), [0, 0]);
+      await page.keyboard.press("Tab");
+      assert.equal(await button.evaluate((node) => node === document.activeElement), true);
+      assert.equal(await button.evaluate((node) => node.tagName), "BUTTON");
+      assert.notEqual(await button.evaluate((node) => getComputedStyle(node).outlineStyle), "none");
+      assert.equal(await button.locator(".place-ground").evaluate((node) => {
+        const rect = node.getBoundingClientRect();
+        return document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)?.closest("button") === node.closest("button");
+      }), true, "the visible location is the native button hit target, not a second coordinate overlay");
+      await page.keyboard.press("Enter");
+      await page.getByRole("complementary").waitFor();
+      assert.equal(await button.getAttribute("aria-expanded"), "true");
+      await page.keyboard.press("Escape");
+      assert.equal(await button.evaluate((node) => node === document.activeElement), true);
+      await button.locator(".place-ground").click();
+      await page.getByRole("complementary").waitFor();
+      await page.getByRole("button", { name: "Close inspection" }).click();
+      assert.equal(await button.evaluate((node) => node === document.activeElement), true);
+      const bounds = (await scene.boundingBox())!;
+      await page.mouse.move(bounds.x + bounds.width - 100, bounds.y + 100);
+      await page.mouse.down();
+      await page.mouse.move(bounds.x + bounds.width - 200, bounds.y + 50, { steps: 5 });
+      await page.mouse.up();
+      assert.deepEqual(await scene.evaluate((node) => [node.scrollLeft, node.scrollTop]), [100, 50]);
+      assert.equal(await page.getByRole("complementary").count(), 0);
+      await page.getByRole("button", { name: "Zoom in", exact: true }).click();
+      assert.equal(await page.getByLabel("Zoom level").textContent(), "110%");
+      assert.equal(await page.locator(".painted-world").evaluate((node) => getComputedStyle(node).transform), "matrix(1.1, 0, 0, 1.1, 0, 0)");
+      await page.getByRole("button", { name: "Zoom out", exact: true }).click();
+      await page.getByRole("button", { name: "Home", exact: true }).click();
+      assert.deepEqual(await scene.evaluate((node) => [node.scrollLeft, node.scrollTop]), [0, 0]);
+      await button.locator(".place-ground").click();
+      await page.getByRole("complementary").waitFor();
+      await page.getByRole("button", { name: "Read again" }).click();
+      await button.waitFor();
+      assert.equal(reads, 2);
+      assert.equal(await page.getByRole("complementary").count(), 0);
+      assert.equal(await button.getAttribute("aria-expanded"), "false");
+    } finally { await page.close(); }
+  });
+  await t.test("390px viewport retains at least 30% actual scene with inspection open and no page overflow", async (t) => {
+    const viewport = { width: 390, height: 844 };
+    const page = await browser.newPage({ viewport });
+    try {
+      await page.route("**/api/world-snapshot", (route) => route.fulfill({ json: snapshot }));
+      await page.goto(url);
+      const button = page.locator(".place").first();
+      await button.waitFor();
+      await button.focus();
+      await page.keyboard.press("Enter");
+      await page.getByRole("complementary").waitFor();
+      const scene = (await page.getByLabel("Explore world", { exact: true }).boundingBox())!;
+      const inspector = (await page.getByRole("complementary").boundingBox())!;
+      t.diagnostic(`Actual scene: ${scene.width} x ${scene.height}px; viewport: ${viewport.width} x ${viewport.height}px`);
+      assert.ok(scene.height >= viewport.height * 0.3, `Actual scene height ${scene.height}px < ${viewport.height * 0.3}px`);
+      assert.ok(scene.y + scene.height <= inspector.y, "inspector must not cover the scene");
+      assert.equal(await page.getByRole("complementary").evaluate((node) => node.scrollWidth <= node.clientWidth), true, "inspection must wrap without horizontal overflow");
+      assert.deepEqual(await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.scrollHeight]), [viewport.width, viewport.height]);
+    } finally { await page.close(); }
+  });
+  await t.test("long evidence marks do not overlap another native place hit target", async () => {
+    const page = await browser.newPage();
+    try {
+      await page.route("**/api/world-snapshot", (route) => route.fulfill({ json: snapshot }));
+      await page.goto(url);
+      await page.locator(".place").first().waitFor();
+      const overlaps = await page.locator(".place").evaluateAll((nodes) => nodes.flatMap((node, index) => {
+        const a = node.getBoundingClientRect();
+        return nodes.slice(index + 1).filter((other) => {
+          const b = other.getBoundingClientRect();
+          return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+        }).map((other) => [node.getAttribute("aria-label"), other.getAttribute("aria-label")]);
+      }));
+      assert.deepEqual(overlaps, [], "Evidence-rich place buttons must not overlap");
+    } finally { await page.close(); }
+  });
   child.kill("SIGTERM");
   assert.deepEqual(await exit, [0, null]);
 });
 
-test("the committed Vite dev config renders the blank root without errors or API requests", { timeout: 60000 }, async (t) => {
+test("the committed Vite dev config shows invalid-response without an API proxy", { timeout: 60000 }, async (t) => {
   const server = await createServer({ configFile: resolve("vite.config.ts") });
   t.after(() => server.close());
   await server.listen();
@@ -107,20 +338,25 @@ test("the committed Vite dev config renders the blank root without errors or API
   await page.goto(`http://127.0.0.1:${address.port}`);
   await page.locator('#root > main[aria-label="EcoSym"]').waitFor({ state: "attached" });
   assert.equal(await page.title(), "EcoSym");
-  assert.equal(await page.locator("body").innerText(), "");
-  assert.equal(await page.locator("main").innerHTML(), "");
+  await page.getByRole("heading", { name: "Unrecognized world picture" }).waitFor();
+  assert.equal(await page.locator(".place, .inspection").count(), 0);
+  assert.equal(server.config.server.proxy, undefined);
   await page.waitForLoadState("networkidle");
   assert.deepEqual(errors, []);
-  assert.deepEqual(dataRequests, []);
+  assert.ok(dataRequests.length >= 1);
+  assert.ok(dataRequests.every((request) => request === `http://127.0.0.1:${address.port}/api/world-snapshot`));
 });
 
 test("Vite hot-refreshes an isolated frontend copy without navigation", { timeout: 60000 }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "ecosym-hmr-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const root = join(directory, "web");
+  const project = join(directory, "project");
+  const root = join(project, "web");
   await cp("web", root, { recursive: true });
+  await mkdir(join(project, "src"));
+  for (const file of pureSources) await cp(join("src", file), join(project, "src", file));
   await symlink(resolve("node_modules"), join(directory, "node_modules"), "dir");
-  const server = await createServer({ configFile: resolve("vite.config.ts"), root, logLevel: "silent", server: { port: 0, fs: { allow: [root] } } });
+  const server = await createServer({ configFile: resolve("vite.config.ts"), root, logLevel: "silent", server: { port: 0, fs: { allow: [project] } } });
   t.after(() => server.close());
   await server.listen();
   const address = server.httpServer!.address();
@@ -148,7 +384,7 @@ test("Vite hot-refreshes an isolated frontend copy without navigation", { timeou
   page.on("request", (request) => { if (new URL(request.url()).pathname.startsWith("/api/")) apiRequests.push(request.url()); });
   await page.goto(url);
   await page.locator('#root > main[aria-label="EcoSym"]').waitFor({ state: "attached" });
-  assert.equal(await page.locator("body").innerText(), "");
+  await page.getByRole("heading", { name: "Unrecognized world picture" }).waitFor();
   // A full reload would remove this marker; only the isolated copy is edited.
   await page.evaluate("window.__hmrMarker = true");
   const component = join(root, "App.tsx");
@@ -156,7 +392,39 @@ test("Vite hot-refreshes an isolated frontend copy without navigation", { timeou
   await page.locator('main[aria-label="EcoSym HMR test"]').waitFor({ state: "attached" });
   assert.equal(await page.evaluate("window.__hmrMarker"), true);
   assert.deepEqual(errors, []);
-  assert.deepEqual(apiRequests, []);
+  assert.ok(apiRequests.length >= 1);
+  assert.ok(apiRequests.every((request) => request === `${url}/api/world-snapshot`));
+});
+
+test("React entry import closure stays within React, CSS and pure world contracts", async () => {
+  const allowed = new Set(["web/main.tsx", "web/App.tsx", "web/world-client.ts", "web/world.css", ...pureSources.map((file) => `src/${file}`)]);
+  const visited = new Set<string>();
+  async function visit(path: string): Promise<void> {
+    assert.ok(allowed.has(path), `Unexpected browser dependency: ${path}`);
+    if (visited.has(path)) return;
+    visited.add(path);
+    const source = await readFile(path, "utf8");
+    if (path.endsWith(".css")) return;
+    const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, path.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+    const dependencies: string[] = [];
+    function walk(node: ts.Node): void {
+      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+        const name = node.moduleSpecifier.text;
+        if (!["react", "react-dom/client"].includes(name)) {
+          assert.ok(name.startsWith("."), `Unexpected browser package: ${name}`);
+          dependencies.push(new URL(name, new URL(`../${path}`, import.meta.url)).pathname.slice(new URL("../", import.meta.url).pathname.length));
+        }
+      }
+      if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword || node.expression.getText(file) === "require")) assert.fail("Unexpected dynamic browser dependency");
+      ts.forEachChild(node, walk);
+    }
+    walk(file);
+    for (const dependency of dependencies) await visit(dependency);
+  }
+  await visit("web/main.tsx");
+  assert.ok(visited.has("web/App.tsx"));
+  assert.ok(visited.has("src/world-form.ts"));
+  assert.ok(visited.has("src/world-snapshot.ts"));
 });
 
 test("manifest wiring guard keeps check connected to both typechecks, tests, and the production build", async () => {

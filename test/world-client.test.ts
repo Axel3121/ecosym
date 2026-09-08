@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 import { loadWorld } from "../web/world-client.ts";
 import type { WorldSnapshot } from "../src/world-snapshot.ts";
+import { inspectSourceFields, worldForm } from "../src/world-form.ts";
 
 const instant = "2026-01-01T00:00:00.000Z";
 function snapshot(): WorldSnapshot {
@@ -82,9 +83,72 @@ test("the exposed form retains every truth axis and pairs exact validated object
   assert.equal(result.form.terrain, null);
   assert.deepEqual(Object.keys(result.form).sort(), ["places", "snapshot", "terrain"]);
   for (const [index, place] of result.form.places.entries()) {
-    assert.deepEqual(Object.keys(place).sort(), ["declaration", "sourcePicture"]);
+    assert.deepEqual(Object.keys(place).sort(), ["declaration", "domain", "id", "inspection", "institution", "marks", "name", "sourcePicture"]);
     assert.equal(place.declaration, result.form.snapshot.civilizations[index]);
     assert.equal(place.sourcePicture, result.form.snapshot.sourcePictures.find((picture) => picture.civilizationId === place.declaration.civilizationId));
+    assert.equal(place.id, place.declaration.civilizationId);
+    assert.equal(place.name, place.declaration.name);
+    assert.equal(place.domain, place.declaration.bodyReadable ? place.declaration.domain : "unknown");
+    assert.equal(place.institution, place.declaration.mandate.status);
+    const sourceFields = inspectSourceFields(place.sourcePicture, result.form.snapshot);
+    assert.deepEqual(place.inspection.slice(-sourceFields.length), sourceFields);
+    assert.deepEqual(place.inspection.find((field) => field.label === "sources")?.values,
+      !place.declaration.bodyReadable ? ["unknown"] : place.declaration.sources.length ? place.declaration.sources : ["[]"]);
+    assert.deepEqual(place.marks.filter((mark) => mark.axis === "limits").map((mark) => mark.kind), ["observations-truncated", "claims-truncated"]);
+    assert.deepEqual(place.marks.filter((mark) => mark.axis === "collection").map((mark) => mark.kind),
+      [index >= reasons.length ? "unknown" : place.sourcePicture.sources[0]!.collection?.status ?? "missing"]);
+    const attempts = place.marks.filter((mark) => mark.axis === "attempt");
+    assert.equal(attempts.length, reasons[index] === "incomplete" ? 1 : 0);
+    if (attempts.length) {
+      assert.equal(attempts[0]!.kind, "in-progress");
+      assert.match(attempts[0]!.label, /running; not proof of a live collector/);
+    }
+    const epistemic = place.marks.filter((mark) => mark.axis === "epistemic");
+    const temporal = place.marks.filter((mark) => mark.axis === "temporal");
+    assert.deepEqual(epistemic.map((mark) => mark.kind), index === 8 ? ["observation", "claim"] : []);
+    assert.deepEqual(temporal.map((mark) => mark.kind), index === 8 ? ["unknown", "current", "historical", "unknown", "current", "historical"] : []);
+    if (index === 8) {
+      assert.ok(temporal.slice(0, 3).every((mark) => mark.label.includes("observation")));
+      assert.ok(temporal.slice(3).every((mark) => mark.label.includes("claim")));
+    }
+  }
+});
+
+test("declaration inspection preserves metadata and distinguishes unreadable bodies from empty declarations", () => {
+  for (const status of ["active", "dissolved", "unreadable"] as const) {
+    for (const bodyReadable of status === "unreadable" ? [false] : [true, false]) {
+      const input = snapshot();
+      const declaration = { civilizationId: "civilization:trace", name: "Trace", foundedAt: instant,
+        bodyReadable, domain: bodyReadable ? "Declared domain" : "", sources: [],
+        mayActAlone: bodyReadable ? ["Read records"] : [], mustEscalate: bodyReadable ? ["Change policy"] : [],
+        mandate: status === "unreadable" ? { status } : { status, mandateId: "mandate:trace", revision: "v2", recordedAt: instant } };
+      input.civilizations.push(declaration);
+      input.sourcePictures.push({ civilizationId: declaration.civilizationId, sources: [] });
+      const place = worldForm(input).places[0]!;
+      const fields = Object.fromEntries(place.inspection.map((field) => [field.label, field.values]));
+      assert.equal(place.institution, status);
+      assert.deepEqual(place.marks.map(({ axis, kind }) => ({ axis, kind })), [
+        { axis: "institution", kind: status }, { axis: "collection", kind: "unknown" },
+      ]);
+      assert.deepEqual(fields.Institution, [place.marks[0]!.label]);
+      assert.deepEqual(fields["Civilization ID"], [declaration.civilizationId]);
+      assert.deepEqual(fields.Name, [declaration.name]);
+      assert.deepEqual(fields["Founded at"], [instant]);
+      assert.deepEqual(fields["Declaration body readable"], [String(bodyReadable)]);
+      assert.deepEqual(fields["Mandate status"], [status]);
+      assert.deepEqual(fields["Mandate ID"], [status === "unreadable" ? "unknown" : "mandate:trace"]);
+      assert.deepEqual(fields["Mandate revision"], [status === "unreadable" ? "unknown" : "v2"]);
+      assert.deepEqual(fields["Mandate recorded at"], [status === "unreadable" ? "unknown" : instant]);
+      assert.deepEqual(fields.Domain, [bodyReadable ? "Declared domain" : "unknown"]);
+      assert.deepEqual(fields.sources, [bodyReadable ? "[]" : "unknown"]);
+      assert.deepEqual(fields.mayActAlone, [bodyReadable ? "Read records" : "unknown"]);
+      assert.deepEqual(fields.mustEscalate, [bodyReadable ? "Change policy" : "unknown"]);
+      for (const axis of ["observations", "claims"] as const) {
+        input[`${axis}Truncated`] = true;
+        assert.deepEqual(worldForm(input).places[0]!.marks.filter((mark) => mark.axis === "limits").map((mark) => mark.kind), [`${axis}-truncated`]);
+        input[`${axis}Truncated`] = false;
+      }
+    }
   }
 });
 

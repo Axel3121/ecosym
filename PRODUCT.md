@@ -388,12 +388,13 @@ and a deterministic authority projection, and a petition envelope, withdrawal,
 and proof-record representation — nothing is configured to consume either. A
 command line that emits JSON.
 
-Built also: a blank React browser skeleton, a
+Built also: a React world surface with neutral pixel terrain, inspectable declared
+places, core-projected evidence distinctions, and keyboard/pointer navigation; a
 read-only declarative SQLite runtime bridge, and an application-composed,
 runtime-validated world contract joining declared source IDs to collected facts
 and separately labeled collection health. The local server exposes that combined
-contract over HTTP; the browser skeleton does not fetch or depict it. The former
-canvas world and civilization inspection UI have been removed. This is a read-only
+contract over HTTP; the browser loads and depicts its validated form projection.
+The scene never infers activity from founding or collection health. This is a read-only
 observation slice, not runtime governance. Selected
 Hermes task status is its recorded task-row state, not evidence of completion,
 operational success, population, prosperity, decay, or causal attribution.
@@ -402,7 +403,7 @@ Not built: the authoritative control plane, non-bypassable admission, petition
 execution, durable cases, council, lasting city hall, routing and escalation, or
 general orchestration. Nothing enforces a mandate, and no petition reaches a
 runtime. Beyond the inventory above, nothing this document describes has been
-built. The React skeleton establishes no visual direction or data integration.
+built.
 
 ### The first proof
 

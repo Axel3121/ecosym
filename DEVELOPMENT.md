@@ -46,9 +46,10 @@ npm run dev
 
 Open `http://127.0.0.1:5173`. Vite binds to loopback and fails if that port is
 occupied. Editing `web/App.tsx` uses React Fast Refresh; TypeScript is checked by
-`npm run typecheck:world`, not by Vite's transpiler. The app is intentionally a
-blank, unstyled React root with no world data, loading states, or API requests.
+`npm run typecheck:world`, not by Vite's transpiler. The app loads the validated
+world contract and renders the core form projection.
 The dev server does not open stores and has no API proxy or fallback data.
+Without the production API, it displays an invalid-response state, not a sample world.
 Do not expose this development tool with `--host` or use it for production.
 
 ## Production world
@@ -67,25 +68,26 @@ maps. Generated output is ignored and must not be committed.
 The existing world-server serves those files and preserves its exact Host check,
 realpath containment, strict production CSP, sanitized errors, and GET-only
 `/api/world-snapshot` contract. The launcher opens the local Ecosym store; the
-blank frontend does not request it. React owns presentation only. Core contracts,
+frontend requests that contract through `loadWorld()`. React owns presentation only. Core contracts,
 composition, and store access remain in `src/`, independent of React.
 
 `test/world-frontend.test.ts` removes stale `dist/world` output and executes
 `npm run build:world` with the committed config, then starts `src/world-main.ts`
 with temporary store state on an ephemeral loopback port. It fetches the served
-HTML and its built JavaScript and renders the root in Chromium at desktop and
-mobile sizes under the production CSP, permitting only document and built-script
-requests. It separately loads the committed dev config without root, filesystem,
-host, or port overrides and checks for errors and API/data requests. Stop any
+HTML and its built JavaScript and CSS and renders the world in Chromium at desktop
+and mobile sizes under the production CSP, permitting only document, built assets,
+and world-snapshot requests. Routed synthetic snapshots exercise evidence distinctions,
+inspection, native place hit targets, keyboard and pointer navigation, and narrow layout.
+It separately loads the committed dev config without root, filesystem,
+host, or port overrides and checks the explicit invalid-response state. Stop any
 running dev server before testing: this check requires port 5173 to be free.
 Fast Refresh is verified against an isolated copy of the frontend, not the
 unmodified config. The manifest wiring guard checks script strings only;
 `npm run check` supplies execution evidence. No personal stores are read by these
 tests. The production integration test is the suite's only build writer and awaits
 the build before launching; check's final build follows the completed suite. Do
-not run a separate build concurrently with the tests. The old canvas
-placement, inspection UI, and client-state tests were retired with that UI;
-core form, snapshot, transition, and server security tests remain in the suite.
+not run a separate build concurrently with the tests. Core form, snapshot,
+transition, and server security tests remain in the suite.
 
 ## Changes
 
