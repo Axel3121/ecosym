@@ -3,7 +3,6 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 import { loadWorld } from "../web/world-client.ts";
-import { worldState } from "../web/state.ts";
 import type { WorldSnapshot } from "../src/world-snapshot.ts";
 
 const instant = "2026-01-01T00:00:00.000Z";
@@ -12,11 +11,10 @@ function snapshot(): WorldSnapshot {
 }
 const respond = (value: unknown): typeof fetch => async () => Response.json(value);
 
-test("loading, HTTP, invalid response, request failure, empty and populated are distinct", async () => {
-  assert.deepEqual(worldState(), { kind: "loading" });
+test("HTTP, invalid response, request failure and loaded empty are distinct", async () => {
   const empty = await loadWorld({ fetch: respond(snapshot()) });
   assert.equal(empty.kind, "loaded");
-  assert.equal(worldState(empty).kind, "empty");
+  assert.deepEqual(empty, { kind: "loaded", form: { snapshot: snapshot(), terrain: null, places: [] } });
   for (const value of [null, {}, { ...snapshot(), extra: true }, { ...snapshot(), claimsTruncated: "false" }]) {
     assert.deepEqual(await loadWorld({ fetch: respond(value) }), { kind: "failure", reason: "invalid-response" });
   }
@@ -79,7 +77,7 @@ test("the exposed form retains every truth axis and pairs exact validated object
   const result = await loadWorld({ fetch: respond(input) });
   assert.equal(result.kind, "loaded");
   if (result.kind !== "loaded") return;
-  assert.equal(worldState(result).kind, "ready");
+  assert.equal(result.form.places.length, input.civilizations.length);
   assert.deepEqual(result.form.snapshot, input);
   assert.equal(result.form.terrain, null);
   assert.deepEqual(Object.keys(result.form).sort(), ["places", "snapshot", "terrain"]);

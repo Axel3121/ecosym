@@ -220,15 +220,14 @@ auto-discover sources, found civilizations, or start work in Hermes. Restarting
 it is repeatable and reads the same persisted Ecosym state.
 
 The server exposes `/api/world-snapshot` through a callback supplied by the
-launcher that calls `composeWorldSnapshot`. The browser fetches and validates
-that combined contract. Select a civilization to inspect its declaration,
-recorded source fields, claims, provenance/currentness, and separately labeled
-collection metadata. These textual fields do not change terrain, population, or
-activity. Compare them with `status` and `query` above, keeping the collection
-boundary distinct from the later `verify` audit.
+launcher that calls `composeWorldSnapshot`. The React view reads that contract once
+and displays stored declarations and separately labeled source evidence. Inspect the endpoint directly
+or use `status` and `query` above, keeping the collection boundary distinct from
+the later `verify` audit. See [DEVELOPMENT.md](../DEVELOPMENT.md) for frontend
+dev/build/serve commands.
 
-After collecting again, reload the page to fetch a new stored picture. The
-browser does not poll or collect sources. Startup alone does not establish that
+After collecting again, reload the browser for a new GET of the updated stored picture.
+The browser does not poll or collect sources. Startup alone does not establish that
 a source was read successfully or that its recorded fields prove an outcome.
 This is an operator procedure, not a claim that real data has been connected or
 verified by the documentation's authors; repository proof uses synthetic sources.
@@ -241,8 +240,8 @@ or read external sources. `src/world-snapshot.ts` runtime-validates the closed
 display shape, exact civilization/source links, connection versions, separate
 observation and claim lists, and timestamps, returning detached data. Institutional
 state is not routed through the observation owner. Observation-derived depiction
-belongs to the pure `src/world-form.ts` field projection consumed by the temporary
-browser; HTTP revalidates and serializes the callback's
+belongs to the pure `src/world-form.ts` field projection, retained independently
+of the browser skeleton; HTTP revalidates and serializes the callback's
 already-composed snapshot rather than implementing a second mapping. No source handle, reader configuration, or
 database handle belongs in the browser contract.
 

@@ -9,15 +9,26 @@
   "scripts": {
     "audit": "npm audit --include=dev --audit-level=high",
     "check": "npm run typecheck && npm run typecheck:world && npm test && npm run build:world",
-    "build:world": "tsc -p tsconfig.world.json && node scripts/build-world.ts",
+    "build:world": "vite build",
+    "dev": "vite",
     "typecheck:world": "tsc -p tsconfig.world.json --noEmit",
     "world": "npm run build:world && node src/world-main.ts",
+    "serve:world": "node src/world-main.ts",
     "ecosym": "node src/cli.ts",
     "test": "node -e \"const { globSync } = require('node:fs'); if (globSync('test/*.test.ts').length === 0) throw new Error('no tests discovered')\" && node --test --test-concurrency=3 --test-reporter=spec test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^26.4.0",
-    "typescript": "^5.9.2"
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "playwright": "^1.63.0",
+    "typescript": "^5.9.2",
+    "vite": "^8.2.2"
+  },
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
   }
 }

@@ -28,11 +28,70 @@ Ecosym requires the Node version declared in `.nvmrc` and `package.json`.
 
 ```sh
 npm ci
+npx playwright install chromium
 npm run check
 ```
 
-`npm run check` is the single local verification entry point. It runs the
-TypeScript compiler and the product test suite.
+`npm run check` is the single local verification entry point. It runs the core
+and frontend TypeScript checks, the complete product test suite (including
+Chromium frontend smoke tests), and the actual Vite production build. On Linux,
+if browser system libraries are missing, use
+`npx playwright install --with-deps chromium` (also used by CI).
+
+## Browser development
+
+```sh
+npm run dev
+```
+
+Open `http://127.0.0.1:5173`. Vite binds to loopback and fails if that port is
+occupied. Editing `web/App.tsx` uses React Fast Refresh; TypeScript is checked by
+`npm run typecheck:world`, not by Vite's transpiler. The app reads
+`/api/world-snapshot` once, distinguishing loading, request/HTTP/validation failure,
+and loaded empty or populated declarations. Unmount aborts the read.
+The dev server does not open stores and has no API proxy or fallback data.
+Without a supplied API, development shows an invalid-response failure; use the
+production world launcher below to inspect local stored data.
+Do not expose this development tool with `--host` or use it for production.
+
+## Production world
+
+```sh
+npm run build:world
+npm run serve:world -- --port 4317
+```
+
+Open `http://127.0.0.1:4317`. Alternatively, `npm run world` builds and starts
+the server on an available loopback port, printing its URL. `serve:world` serves
+the existing build without rebuilding; rebuild after source edits. Vite replaces
+`dist/world` with bundled production HTML and hashed JavaScript/CSS, without source
+maps. Generated output is ignored and must not be committed.
+
+The existing world-server serves those files and preserves its exact Host check,
+realpath containment, strict production CSP, sanitized errors, and GET-only
+`/api/world-snapshot` contract. The launcher opens the local Ecosym store; the
+frontend reads only this contract through `web/world-client.ts`, independent of
+React and store/runtime adapters. `src/world-form.ts` owns the projection and
+retains orthogonal truth axes without semantic terrain. React owns presentation only. Core contracts,
+composition, and store access remain in `src/`, independent of React.
+
+`test/world-frontend.test.ts` removes stale `dist/world` output and executes
+`npm run build:world` with the committed config, then starts `src/world-main.ts`
+with temporary store state on an ephemeral loopback port. It fetches the served
+HTML and its built JavaScript and renders the root in Chromium at desktop and
+mobile sizes under the production CSP, permitting document, built assets, and
+GET snapshot requests. It separately loads the committed dev config without root,
+filesystem, host, or port overrides and tests loading, failure, and evidence with
+intercepted synthetic API responses. Stop any
+running dev server before testing: this check requires port 5173 to be free.
+Fast Refresh is verified against an isolated copy of the frontend, not the
+unmodified config. The manifest wiring guard checks script strings only;
+`npm run check` supplies execution evidence. No personal stores are read by these
+tests. The production integration test is the suite's only build writer and awaits
+the build before launching; check's final build follows the completed suite. Do
+not run a separate build concurrently with the tests. The old canvas
+placement, inspection UI, and client-state tests were retired with that UI;
+core form, snapshot, transition, and server security tests remain in the suite.
 
 ## Changes
 

@@ -3,27 +3,10 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Ecosym · Sivilisasjoner</title>
-    <link rel="stylesheet" href="/world.css">
-    <script type="module" src="/web/main.js"></script>
+    <title>EcoSym</title>
+    <script type="module" src="/main.tsx"></script>
   </head>
   <body>
-    <header><h1>Ecosym</h1><span>Et landskap av erklæringer</span></header>
-    <main id="overview">
-      <section id="notice" data-state="loading" role="status" aria-live="polite">
-        <h2 id="notice-title">Leser grunnlagte sivilisasjoner</h2>
-        <p id="notice-detail">Henter det lagrede institusjonsbildet.</p>
-      </section>
-      <div id="viewport" tabindex="0" aria-label="Verdenskart. Rull for å utforske landskapet.">
-        <div id="world"><canvas id="terrain" aria-hidden="true"></canvas><div id="places" role="group" aria-label="Grunnlagte sivilisasjoner"></div></div>
-      </div>
-      <p id="legend">Stedene har lik form. Terreng og avstand uttrykker ingen institusjonelle forhold.</p>
-    </main>
-    <dialog id="inspect" aria-labelledby="inspect-title">
-      <button id="close" type="button">Tilbake til verden <kbd>Esc</kbd></button>
-      <p class="eyebrow">Lagret erklæring</p><h2 id="inspect-title"></h2>
-      <dl id="fields"></dl>
-    </dialog>
-    <noscript>JavaScript må være aktivert for å lese og vise institusjonsbildet.</noscript>
+    <div id="root"></div>
   </body>
 </html>
