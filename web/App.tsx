@@ -40,6 +40,7 @@ function Projects({ civilizationId, projects, canCreate, reload }: {
 }) {
   const [name, setName] = useState("");
   const [requestKey, setRequestKey] = useState(() => crypto.randomUUID());
+  const failedCreateName = useRef<string | null>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pending = useRef(false);
@@ -71,6 +72,7 @@ function Projects({ civilizationId, projects, canCreate, reload }: {
       });
       const body: unknown = await response.json();
       if (!response.ok) {
+        if (!project) failedCreateName.current = name;
         const code = typeof body === "object" && body !== null && "error" in body ? body.error : null;
         setError(projectErrorMessage(code));
         return;
@@ -78,7 +80,7 @@ function Projects({ civilizationId, projects, canCreate, reload }: {
       const result = validateWorldProjectSnapshot(body);
       if (result.civilizationId !== civilizationId || (project && result.projectId !== project.projectId)) throw new Error("Invalid project link");
       if (project) retryKeys.current.delete(project.projectId);
-      else { setRequestKey(crypto.randomUUID()); setName(""); }
+      else { failedCreateName.current = null; setRequestKey(crypto.randomUUID()); setName(""); }
       reload();
     } catch {
       setError(genericProjectError);
@@ -97,7 +99,13 @@ function Projects({ civilizationId, projects, canCreate, reload }: {
       </li>;
     })}</ul>}
     {canCreate && <form onSubmit={(event) => { event.preventDefault(); void send(); }}>
-      <label>Prosjektnavn<input name="name" required value={name} disabled={sending} onChange={(event) => setName(event.target.value)} /></label>
+      <label>Prosjektnavn<input name="name" required value={name} disabled={sending} onChange={(event) => {
+        if (failedCreateName.current !== null && event.target.value !== failedCreateName.current) {
+          setRequestKey(crypto.randomUUID());
+          failedCreateName.current = null;
+        }
+        setName(event.target.value);
+      }} /></label>
       <label htmlFor="project-harness">Harness</label>
       <select id="project-harness" name="harness" disabled={sending} defaultValue="hermes"><option value="hermes">hermes</option></select>
       <button disabled={sending} type="submit">Opprett</button>

@@ -1123,7 +1123,7 @@ export class ObservationStore {
   }
 
   getProjectRetry(projectId: string, requestKey: string): { project: WorldProjectSnapshot; pending: boolean } | undefined {
-    return this.#projectTransaction(() => {
+    return this.#readTransaction(() => {
       const event = this.#database.prepare(`SELECT event_id, state, attempt, reason FROM project_provisioning_events
         WHERE project_id = ? AND attempt = (
           SELECT attempt FROM project_provisioning_events WHERE project_id = ? AND retry_request_key = ?)
