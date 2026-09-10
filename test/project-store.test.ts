@@ -148,7 +148,7 @@ test("dissolution refuses a new project attempt without changing its history", (
 });
 
 for (const errorCode of ["EPERM", "ESRCH", "ENOENT", "EIO"]) {
-  test(`${errorCode} cannot confirm durable project ownership for retry or forget`, (t) => {
+  test(`${errorCode} ${errorCode === "ESRCH" ? "permits" : "blocks"} retry and forget of a durable project owner`, (t) => {
     const { store, directory, input } = setup(t);
     const id = store.requestProject(input).project.projectId;
     const database = new DatabaseSync(join(directory, "observations.sqlite"));
@@ -156,10 +156,18 @@ for (const errorCode of ["EPERM", "ESRCH", "ENOENT", "EIO"]) {
     database.prepare("UPDATE project_provisioning_events SET event_id = ?, retry_request_key = ? WHERE project_id = ?")
       .run(`project-owner:${process.pid}:previous-process-identity:synthetic-owner:event`, "old-retry", id);
     const kill = t.mock.method(process, "kill", () => { throw Object.assign(new Error(errorCode), { code: errorCode }); });
-    assert.equal(store.getProjectRetry(id, "old-retry")!.pending, false);
-    assert.equal(store.claimProjectAttempt(id, "new-retry"), 1);
+    assert.equal(store.getProjectRetry(id, "old-retry")!.pending, errorCode !== "ESRCH");
+    if (errorCode === "ESRCH") {
+      assert.equal(store.claimProjectAttempt(id, "new-retry"), 1);
+    } else {
+      assert.throws(() => store.claimProjectAttempt(id, "new-retry"), code("retry_in_progress"));
+    }
     store.dissolveCivilization(input.civilizationId);
-    assert.equal(store.planForgetCivilization(input.civilizationId, "user").counts.projects, 1);
+    if (errorCode === "ESRCH") {
+      assert.equal(store.planForgetCivilization(input.civilizationId, "user").counts.projects, 1);
+    } else {
+      assert.throws(() => store.planForgetCivilization(input.civilizationId, "user"), code("retry_in_progress"));
+    }
     assert.ok(kill.mock.callCount() >= 3);
     store.releaseProjectAttempt(id);
   });

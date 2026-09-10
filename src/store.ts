@@ -126,8 +126,8 @@ function projectOwnerAlive(eventId: string): boolean {
   try {
     process.kill(Number(match[1]), 0);
     return projectProcessIdentity(Number(match[1])) === match[2];
-  } catch {
-    return false;
+  } catch (error) {
+    return !(error instanceof Error && "code" in error && error.code === "ESRCH");
   }
 }
 
