@@ -145,7 +145,7 @@ export class ProjectService {
         : (error as NodeJS.ErrnoException).code === "ENOTDIR" ? "not_a_directory" : "filesystem_denied";
       this.#store.appendProjectEvent(project.projectId, external ? "external-unknown" : "failed", attempt, code);
     } finally {
-      try { this.#store.releaseProjectAttempt(project.projectId); } finally { active--; }
+      try { this.#store.releaseProjectAttempt(project.projectId); } catch { /* Preserve the provisioning outcome. */ } finally { active--; }
     }
     return requestKey === undefined ? this.#store.getProject(project.projectId)!
       : this.#store.getProjectRetry(project.projectId, requestKey)!.project;
