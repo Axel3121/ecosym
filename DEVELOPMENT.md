@@ -101,6 +101,13 @@ then `~/.hermes`. The adapter explicitly supplies the resolved value as
 `HERMES_HOME` to native calls and records the profile actually used with the
 binding. Registration uses the CLI, not direct access to its private database.
 
+Retry request keys are scoped to a project and stored with its provisioning
+attempt. Reusing a key waits for a live attempt or replays its last recorded
+result, including after restart or a later retry. A new key explicitly requests
+a new attempt; replaying an interrupted attempt does not resume effects.
+Store schema 18 adds a nullable retry key to event history without changing
+existing events. The keys are included in project history exports and forgetting.
+
 For tests, set `ECOSYM_PROJECT_ROOT` to a temporary workspace root and
 `ECOSYM_HARNESS_HOME` and `HERMES_HOME` to an isolated temporary harness home.
 Keep the Ecosym store isolated too. Native integration tests must reject the

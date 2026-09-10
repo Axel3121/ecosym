@@ -2103,7 +2103,7 @@ test("the ordering-index migration does not rewrite version-five facts", async (
     const version = inspected.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(version.user_version, 17);
+    assert.equal(version.user_version, 18);
     const columns = (
       inspected.prepare("PRAGMA index_info(facts_identity_source_time)").all() as {
         name: string;
@@ -2154,7 +2154,7 @@ test("schema-eight stores gain an empty resolution log without rewriting facts",
     const version = inspected.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(version.user_version, 17);
+    assert.equal(version.user_version, 18);
     const resolutions = inspected
       .prepare("SELECT count(*) AS count FROM record_index_mode_resolutions")
       .get() as { count: number };
@@ -2247,7 +2247,7 @@ test("schema-ten stores gain an empty confirmation-preview ledger without rewrit
     const version = inspected.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    assert.equal(version.user_version, 17);
+    assert.equal(version.user_version, 18);
     const previews = inspected
       .prepare("SELECT count(*) AS count FROM confirmation_previews")
       .get() as { count: number };
@@ -2276,7 +2276,7 @@ test("schema-eleven stores gain institutional tables before WAL is enabled", () 
     assert.equal(
       (inspected.prepare("PRAGMA user_version").get() as { user_version: number })
         .user_version,
-      17,
+      18,
     );
     assert.deepEqual(
       inspected
@@ -2329,7 +2329,7 @@ test("an interrupted legacy rebuild remains resumable as schema nine", () => {
     assert.equal(
       (inspected.prepare("PRAGMA user_version").get() as { user_version: number })
         .user_version,
-      17,
+      18,
     );
     assert.equal(
       (inspected

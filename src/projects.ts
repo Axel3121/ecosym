@@ -70,10 +70,25 @@ export class ProjectService {
   }
 
   async retry(projectId: string, body: unknown): Promise<WorldProjectSnapshot> {
-    request(body, ["requestKey"]);
-    const project = this.#store.getProject(projectId);
-    if (!project || project.state === "established") throw new ProjectError("invalid_request");
-    return this.#attempt(project, true);
+    const value = request(body, ["requestKey"]);
+    const requestKey = (value.requestKey as string).toLowerCase();
+    for (;;) {
+      const replay = this.#store.getProjectRetry(projectId, requestKey);
+      if (replay) {
+        if (!replay.pending) return replay.project;
+        await new Promise((done) => setTimeout(done, 25));
+        continue;
+      }
+      const project = this.#store.getProject(projectId);
+      if (!project || project.state === "established") throw new ProjectError("invalid_request");
+      try {
+        return await this.#attempt(project, true, requestKey);
+      } catch (error) {
+        // Another process may have claimed this same key since the replay lookup.
+        if (!(error instanceof ProjectError && error.code === "retry_in_progress" &&
+          this.#store.getProjectRetry(projectId, requestKey))) throw error;
+      }
+    }
   }
 
   async #directory(project: WorldProjectSnapshot, retry: boolean): Promise<void> {
@@ -105,9 +120,9 @@ export class ProjectService {
     await verify(project.workspacePath);
   }
 
-  async #attempt(project: WorldProjectSnapshot, retry: boolean): Promise<WorldProjectSnapshot> {
+  async #attempt(project: WorldProjectSnapshot, retry: boolean, requestKey?: string): Promise<WorldProjectSnapshot> {
     if (active >= 4) throw new ProjectError("busy");
-    const attempt = this.#store.claimProjectAttempt(project.projectId);
+    const attempt = this.#store.claimProjectAttempt(project.projectId, requestKey);
     active++;
     let external = false;
     try {
@@ -130,6 +145,7 @@ export class ProjectService {
     } finally {
       try { this.#store.releaseProjectAttempt(project.projectId); } finally { active--; }
     }
-    return this.#store.getProject(project.projectId)!;
+    return requestKey === undefined ? this.#store.getProject(project.projectId)!
+      : this.#store.getProjectRetry(project.projectId, requestKey)!.project;
   }
 }

@@ -140,6 +140,51 @@ for (const state of ["requested", "directory-created", "external-unknown", "fail
   });
 }
 
+test("retry keys replay the same attempt across concurrent stores, later retries and restart", async (t) => {
+  let calls = 0;
+  let release!: () => void;
+  const wait = new Promise<void>((done) => { release = done; });
+  const adapter: HarnessAdapter = { id: "hermes",
+    async reconcile() { calls++; await wait; return calls === 1 ? { kind: "unknown", reason: "harness_timeout" } : bound; },
+    async provision() { assert.fail("retry must not provision after timeout or binding"); },
+  };
+  const s = setup(t, adapter);
+  const project = s.store.requestProject({ ...body(), harness: "hermes", civilizationId: s.civ,
+    slug: "fjordkart", workspacePath: join(s.root, s.civ.slice(13), "fjordkart"), requestDigest: "synthetic" }).project;
+  const key = { requestKey: randomUUID() };
+  const otherStore = new ObservationStore(join(s.tmp, "state"));
+  t.after(() => otherStore.close());
+  const other = new ProjectService(otherStore, { root: s.root, adapter });
+  const first = s.service.retry(project.projectId, key);
+  while (calls === 0) await new Promise((done) => setTimeout(done, 5));
+  const duplicate = other.retry(project.projectId, { requestKey: key.requestKey.toUpperCase() });
+  release();
+  const result = await first;
+  assert.deepEqual(await duplicate, result);
+  assert.equal(calls, 1);
+  assert.equal(result.reason, "harness_timeout");
+  assert.deepEqual(await other.retry(project.projectId, key), result);
+  const next = await other.retry(project.projectId, { requestKey: randomUUID() });
+  assert.equal(next.state, "established");
+  assert.equal(next.attempt, result.attempt + 1);
+  assert.deepEqual(await s.service.retry(project.projectId, key), result);
+  s.store.close();
+  otherStore.close();
+  const reopened = new ObservationStore(join(s.tmp, "state"));
+  t.after(() => reopened.close());
+  const restarted = new ProjectService(reopened, { root: s.root, adapter });
+  assert.deepEqual(await restarted.retry(project.projectId, key), result);
+  assert.equal(calls, 2);
+  const another = reopened.requestProject({ ...body("Other"), harness: "hermes", civilizationId: s.civ,
+    slug: "other", workspacePath: join(s.root, s.civ.slice(13), "other"), requestDigest: "other" }).project;
+  const scoped = await restarted.retry(another.projectId, key);
+  assert.equal(scoped.projectId, another.projectId);
+  assert.equal(scoped.state, "established");
+  assert.equal(calls, 3);
+  assert.deepEqual(await restarted.retry(another.projectId, key), scoped);
+  assert.equal(calls, 3);
+});
+
 test("external success followed by throw remains unknown; retry adopts with no new registration", async (t) => {
   let creates = 0;
   const s = setup(t, { id: "hermes", async provision() { creates++; throw new Error("PRIVATE traceback /secret"); },

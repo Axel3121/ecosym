@@ -355,7 +355,7 @@ for (const arguments_ of [
 }
 
 for (const version of [0, 9, 13, 14]) {
-  test(`${version === 0 ? "fresh" : `schema ${version}`} stores gain usable work claims at schema 17`, async (t) => {
+  test(`${version === 0 ? "fresh" : `schema ${version}`} stores gain usable work claims at schema 18`, async (t) => {
     const f = fixture(t);
     let civilizationId: string;
     if (version === 9) {
@@ -437,7 +437,7 @@ for (const version of [0, 9, 13, 14]) {
       assert.deepEqual(claims(await f.run(["claims"])), []);
     }
     f.database(true, (database) => {
-      assert.equal(database.prepare("PRAGMA user_version").get()!.user_version, 17);
+      assert.equal(database.prepare("PRAGMA user_version").get()!.user_version, 18);
       const index = database.prepare("SELECT sql FROM sqlite_schema WHERE name = 'work_claims_open_resource'").get();
       assert.ok(index);
       assert.match(index.sql as string, /UNIQUE INDEX/i);

@@ -159,14 +159,19 @@ for (const state of ["requested", "directory-created", "external-unknown", "fail
     const id = store.requestProject(input).project.projectId;
     const script = `import { ObservationStore } from ${JSON.stringify(new URL("../src/store.ts", import.meta.url).href)};
       const s = new ObservationStore(${JSON.stringify(directory)});
-      const a = s.claimProjectAttempt(${JSON.stringify(id)});
+      const a = s.claimProjectAttempt(${JSON.stringify(id)}, "interrupted-retry");
       s.appendProjectEvent(${JSON.stringify(id)}, ${JSON.stringify(state)}, a, ${state === "failed" ? '"filesystem_denied"' : "undefined"});
       process.exit(0);`;
     const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8" });
     assert.equal(child.status, 0, child.stderr);
     assert.equal(store.getProject(id)!.state, state);
     assert.equal(store.getProject(id)!.attempt, 1);
+    const replay = store.getProjectRetry(id, "interrupted-retry")!;
+    assert.equal(replay.pending, false);
+    assert.deepEqual(replay.project, store.getProject(id));
+    assert.throws(() => store.claimProjectAttempt(id, "interrupted-retry"), code("retry_in_progress"));
     assert.equal(store.claimProjectAttempt(id), 2);
+    assert.deepEqual(store.getProjectRetry(id, "interrupted-retry"), replay);
     store.releaseProjectAttempt(id);
   });
 }
@@ -269,7 +274,7 @@ test("PID reuse does not retain an abandoned durable owner", (t) => {
 });
 
 for (const version of [15, 16]) {
-  test(`schema ${version} migrates to 17 with exact project columns and preserved history`, (t) => {
+  test(`schema ${version} migrates to 18 with exact project columns and preserved history`, (t) => {
     const { store, directory, input } = setup(t);
     store.dissolveCivilization(input.civilizationId);
     store.close();
@@ -285,11 +290,11 @@ for (const version of [15, 16]) {
     assert.deepEqual(migrated.listProjects(), []);
     const database = new DatabaseSync(path);
     t.after(() => database.close());
-    assert.equal(database.prepare("PRAGMA user_version").get()!.user_version, 17);
+    assert.equal(database.prepare("PRAGMA user_version").get()!.user_version, 18);
     assert.deepEqual(database.prepare("SELECT * FROM mandate_revisions ORDER BY revision_order").all(), before);
     for (const [table, columns] of Object.entries({
       projects: "project_order project_id civilization_id name slug workspace_path harness request_key request_digest requested_at",
-      project_provisioning_events: "event_order event_id project_id state attempt reason recorded_at",
+      project_provisioning_events: "event_order event_id project_id state attempt reason recorded_at retry_request_key",
       project_harness_bindings: "project_id harness harness_home harness_version external_id external_slug external_archived provenance observed_at",
     })) {
       assert.deepEqual(database.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name), columns.split(" "));
@@ -299,13 +304,36 @@ for (const version of [15, 16]) {
   });
 }
 
+test("schema 17 adds retry keys without changing existing project history", (t) => {
+  const { store, directory, input } = setup(t);
+  const project = store.requestProject(input).project;
+  store.close();
+  const historical = new DatabaseSync(join(directory, "observations.sqlite"));
+  historical.exec(`DROP INDEX project_retry_requests;
+    ALTER TABLE project_provisioning_events DROP COLUMN retry_request_key;
+    PRAGMA user_version = 17;`);
+  const before = historical.prepare("SELECT * FROM project_provisioning_events ORDER BY event_order").all();
+  historical.close();
+  const migrated = new ObservationStore(directory);
+  t.after(() => migrated.close());
+  assert.deepEqual(migrated.getProject(project.projectId), project);
+  const events = migrated.exportOwnedState().bundle.institutionStore.projectProvisioningEvents!;
+  assert.deepEqual(events.map(({ retry_request_key, ...event }) => {
+    assert.equal(retry_request_key, null);
+    return event;
+  }), before.map((event) => ({ ...event })));
+  const attempt = migrated.claimProjectAttempt(project.projectId, "new-retry");
+  migrated.releaseProjectAttempt(project.projectId);
+  assert.equal(migrated.getProjectRetry(project.projectId, "new-retry")!.project.attempt, attempt);
+});
+
 test("forget inventories and exports projects, deletes all project rows transactionally, never directories", async (t) => {
   const { store, directory, input } = setup(t);
   mkdirSync(input.workspacePath);
   const file = join(input.workspacePath, "user-work.txt");
   writeFileSync(file, "user-owned contents");
   const id = store.requestProject(input).project.projectId;
-  const attempt = store.claimProjectAttempt(id);
+  const attempt = store.claimProjectAttempt(id, "exported-retry");
   store.bindProject(id, attempt, binding);
   store.releaseProjectAttempt(id);
   store.dissolveCivilization(input.civilizationId);
@@ -322,6 +350,7 @@ test("forget inventories and exports projects, deletes all project rows transact
   assert.equal(exported.counts.projects, institution.projects!.length);
   assert.equal(exported.counts.projectProvisioningEvents, institution.projectProvisioningEvents!.length);
   assert.equal(exported.counts.projectHarnessBindings, institution.projectHarnessBindings!.length);
+  assert.ok(institution.projectProvisioningEvents!.some((event) => event.retry_request_key === "exported-retry"));
   const database = new DatabaseSync(join(directory, "observations.sqlite"));
   t.after(() => database.close());
   database.exec("CREATE TRIGGER refuse_project_forget BEFORE DELETE ON projects BEGIN SELECT RAISE(ABORT, 'test refusal'); END");
@@ -336,6 +365,7 @@ test("forget inventories and exports projects, deletes all project rows transact
     assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()!.n, 0);
   }
   assert.deepEqual(store.listProjects(), []);
+  assert.equal(store.getProjectRetry(id, "exported-retry"), undefined);
   assert.equal(readFileSync(file, "utf8"), "user-owned contents");
 });
 

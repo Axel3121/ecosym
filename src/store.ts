@@ -60,7 +60,7 @@ export type {
   StoredFact,
 } from "./observation-snapshot.ts";
 
-const STORE_SCHEMA_VERSION = 17;
+const STORE_SCHEMA_VERSION = 18;
 const LEGACY_REBUILD_SCHEMA_VERSION = 9;
 const STORE_FILENAME = "observations.sqlite";
 const BUSY_RETRY_WINDOW_MILLISECONDS = 250;
@@ -90,10 +90,13 @@ const CREATE_PROJECTS = `
     state TEXT NOT NULL CHECK (state IN ('requested','directory-created','external-unknown','established','failed')),
     attempt INTEGER NOT NULL,
     reason TEXT,
-    recorded_at TEXT NOT NULL
+    recorded_at TEXT NOT NULL,
+    retry_request_key TEXT
   ) STRICT;
   CREATE INDEX IF NOT EXISTS project_provisioning_current
     ON project_provisioning_events(project_id, event_order DESC);
+  CREATE UNIQUE INDEX IF NOT EXISTS project_retry_requests
+    ON project_provisioning_events(project_id, retry_request_key) WHERE retry_request_key IS NOT NULL;
   CREATE TABLE IF NOT EXISTS project_harness_bindings (
     project_id TEXT PRIMARY KEY REFERENCES projects(project_id),
     harness TEXT NOT NULL,
@@ -1119,9 +1122,29 @@ export class ObservationStore {
       });
   }
 
-  claimProjectAttempt(projectId: string): number {
+  getProjectRetry(projectId: string, requestKey: string): { project: WorldProjectSnapshot; pending: boolean } | undefined {
+    return this.#projectTransaction(() => {
+      const event = this.#database.prepare(`SELECT event_id, state, attempt, reason FROM project_provisioning_events
+        WHERE project_id = ? AND attempt = (
+          SELECT attempt FROM project_provisioning_events WHERE project_id = ? AND retry_request_key = ?)
+        ORDER BY event_order DESC LIMIT 1`).get(projectId, projectId, requestKey) as
+        { event_id: string; state: ProjectState; attempt: number; reason: ProjectErrorCode | null } | undefined;
+      if (event === undefined) return undefined;
+      const project = this.getProject(projectId)!;
+      const abandonedByThisProcess = projectAttemptOwners.get(projectId) === undefined &&
+        event.event_id.startsWith(`project-owner:${process.pid}:${projectProcessIdentity(process.pid)}:`);
+      return { project: { ...project, state: event.state, attempt: event.attempt, reason: event.reason,
+        harness: event.state === "established" ? project.harness : null },
+        pending: project.attempt === event.attempt && projectOwnerAlive(event.event_id) && !abandonedByThisProcess };
+    });
+  }
+
+  claimProjectAttempt(projectId: string, requestKey?: string): number {
     const owner = `project-owner:${process.pid}:${projectProcessIdentity(process.pid)}:${randomUUID()}:`;
     const attempt = this.#projectTransaction(() => {
+      if (requestKey !== undefined && this.#database.prepare(
+        "SELECT 1 FROM project_provisioning_events WHERE project_id = ? AND retry_request_key = ?",
+      ).get(projectId, requestKey)) throw new ProjectError("retry_in_progress");
       const current = this.getProject(projectId);
       if (current === undefined || current.state === "established") throw new ProjectError("invalid_request");
       const event = this.#database.prepare(
@@ -1134,7 +1157,7 @@ export class ObservationStore {
         throw new ProjectError("retry_in_progress");
       }
       const next = current.attempt + 1;
-      this.#insertProjectEvent(projectId, current.state, next, current.reason, owner);
+      this.#insertProjectEvent(projectId, current.state, next, current.reason, owner, requestKey);
       return next;
     });
     this.#projectAttempts.set(projectId, { attempt, owner });
@@ -1200,10 +1223,10 @@ export class ObservationStore {
     return owned.owner;
   }
 
-  #insertProjectEvent(projectId: string, state: ProjectState, attempt: number, reason: ProjectErrorCode | null, owner = "project-event:"): void {
+  #insertProjectEvent(projectId: string, state: ProjectState, attempt: number, reason: ProjectErrorCode | null, owner = "project-event:", requestKey?: string): void {
     this.#database.prepare(`INSERT INTO project_provisioning_events
-      (event_id, project_id, state, attempt, reason, recorded_at) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(`${owner}${randomUUID()}`, projectId, state, attempt, reason, new Date().toISOString());
+      (event_id, project_id, state, attempt, reason, recorded_at, retry_request_key) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(`${owner}${randomUUID()}`, projectId, state, attempt, reason, new Date().toISOString(), requestKey ?? null);
   }
 
   #projectTransaction<T>(operation: () => T): T {
@@ -3074,6 +3097,15 @@ export class ObservationStore {
     if (version.user_version === STORE_SCHEMA_VERSION) {
       return;
     }
+    if (version.user_version === 17) {
+      this.#transaction(() => {
+        this.#database.exec(`ALTER TABLE project_provisioning_events ADD COLUMN retry_request_key TEXT;
+          CREATE UNIQUE INDEX project_retry_requests
+            ON project_provisioning_events(project_id, retry_request_key) WHERE retry_request_key IS NOT NULL;
+          PRAGMA user_version = 18;`);
+      });
+      return;
+    }
     if (version.user_version === 15) {
       this.#transaction(() => {
         this.#database.exec(CREATE_SOURCE_REPORTS);
@@ -3085,7 +3117,7 @@ export class ObservationStore {
     if (version.user_version === 16) {
       this.#transaction(() => {
         this.#database.exec(CREATE_PROJECTS);
-        this.#database.exec("PRAGMA user_version = 17");
+        this.#database.exec("PRAGMA user_version = 18");
       });
       return;
     }
