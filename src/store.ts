@@ -1147,6 +1147,7 @@ export class ObservationStore {
       const owner = this.#assertProjectAttempt(projectId, attempt);
       if (!["requested", "directory-created", "external-unknown", "failed"].includes(state) ||
           (state === "failed" && reason === undefined) ||
+          ((state === "requested" || state === "directory-created") && reason !== undefined) ||
           (reason !== undefined && !PROJECT_ERROR_CODES.includes(reason))) throw new ProjectError("invalid_request");
       this.#insertProjectEvent(projectId, state, attempt, reason ?? null, owner);
     });

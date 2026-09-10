@@ -9,6 +9,7 @@ import { test, type TestContext } from "node:test";
 import { parseCivilizationConfig } from "../src/institution.ts";
 import { ProjectError, type ProjectRequest } from "../src/project-types.ts";
 import { ObservationStore } from "../src/store.ts";
+import { validateWorldProjectSnapshot } from "../src/world-snapshot.ts";
 
 function setup(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), "ecosym-project-store-"));
@@ -34,6 +35,20 @@ const binding = {
   externalId: "p_ab12cd34", externalSlug: "fjordkart-2", externalArchived: true,
   harnessHome: "/synthetic/isolated-hermes", harnessVersion: "0.21.0", provenance: "adopted" as const,
 };
+
+for (const state of ["requested", "directory-created"] as const) {
+  test(`${state} rejects failure reasons without changing the persisted snapshot`, (t) => {
+    const { store, input } = setup(t);
+    const id = store.requestProject(input).project.projectId;
+    const attempt = store.claimProjectAttempt(id);
+    const before = store.getProject(id)!;
+    assert.throws(() => store.appendProjectEvent(id, state, attempt, "filesystem_denied"), code("invalid_request"));
+    assert.deepEqual(store.getProject(id), before);
+    store.appendProjectEvent(id, state, attempt);
+    assert.deepEqual(validateWorldProjectSnapshot(store.getProject(id)), store.getProject(id));
+    store.releaseProjectAttempt(id);
+  });
+}
 
 test("fresh project store persists intent and idempotency without claiming observed activity", (t) => {
   const { directory, store, input } = setup(t);
