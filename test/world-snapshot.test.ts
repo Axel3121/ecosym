@@ -18,19 +18,19 @@ const project: WorldProjectSnapshot = {
     provenance: "adopted", observedAt: instant },
 };
 function snapshot(): WorldSnapshot {
-  return { schemaVersion: 2, projects: [structuredClone(project)],
+  return { schemaVersion: 1, projects: [structuredClone(project)],
     civilizations: [{ civilizationId: project.civilizationId, name: "Synthetic", foundedAt: instant,
       bodyReadable: true, domain: "Synthetic", sources: [], mayActAlone: [], mustEscalate: [],
       mandate: { status: "active", mandateId: "mandate:synthetic", revision: "v1", recordedAt: instant } }],
     sourcePictures: [{ civilizationId: project.civilizationId, sources: [] }], observationsTruncated: false, claimsTruncated: false };
 }
 
-test("schema 2 projects are detached declared state, not source observations or activity marks", () => {
+test("schema 1 projects are detached declared state, not source observations or activity marks", () => {
   const input = snapshot();
   const validated = validateWorldSnapshot(input);
   assert.deepEqual(validated, input);
-  assert.notEqual(validated.projects[0], input.projects[0]);
-  assert.notEqual(validated.projects[0]!.harness, input.projects[0]!.harness);
+  assert.notEqual(validated.projects![0], input.projects![0]);
+  assert.notEqual(validated.projects![0]!.harness, input.projects![0]!.harness);
   assert.match(WORLD_FACT_SEMANTICS_CAVEAT, /A project is a declared place/);
   assert.match(WORLD_FACT_SEMANTICS_CAVEAT, /never a present-tense claim/);
   assert.match(WORLD_FACT_SEMANTICS_CAVEAT, /never evidence of work, activity, or an admitted mandate/);
@@ -42,13 +42,30 @@ test("schema 2 projects are detached declared state, not source observations or 
   }
 });
 
+test("schema 1 snapshots without projects remain valid TypeScript and retain their runtime shape", () => {
+  const { civilizations, sourcePictures, observationsTruncated, claimsTruncated } = snapshot();
+  const legacy: WorldSnapshot = { schemaVersion: 1, civilizations, sourcePictures, observationsTruncated, claimsTruncated };
+  for (const input of [legacy, JSON.parse(JSON.stringify(legacy))]) {
+    const validated = validateWorldSnapshot(input);
+    assert.deepEqual(validated, legacy);
+    assert.equal(Object.hasOwn(validated, "projects"), false);
+    assert.notEqual(validated.civilizations[0], input.civilizations[0]);
+    assert.deepEqual(worldForm(input).snapshot, legacy);
+    assert.deepEqual(worldForm(input).places, worldForm({ ...legacy, projects: [] }).places);
+  }
+  assert.deepEqual(validateWorldSnapshot({ ...legacy, projects: [] }).projects, []);
+});
+
 test("project contracts reject missing and extra keys, accessors, invalid values and inconsistent links", () => {
   const rejects = (value: unknown) => assert.throws(() => validateWorldSnapshot(value));
   const input = snapshot();
-  rejects({ ...input, schemaVersion: 1 });
-  const { projects: _, ...missing } = input;
-  rejects(missing);
+  rejects({ ...input, schemaVersion: 2 });
+  rejects({ ...input, projects: undefined });
   rejects({ ...input, projects: null });
+  rejects({ ...input, projects: {} });
+  const projectsAccessor = { ...input };
+  Object.defineProperty(projectsAccessor, "projects", { get() { assert.fail("must not invoke projects getter"); } });
+  rejects(projectsAccessor);
   rejects({ ...input, projects: new Array(1) });
   for (const key of Object.keys(project)) {
     const value = { ...project } as Record<string, unknown>;
@@ -96,7 +113,7 @@ test("owner composition requires listProjects and an open work claim changes no 
     externalArchived: true, provenance: "adopted", harnessHome: join(directory, "hermes"), harnessVersion: "0.21.0" });
   store.releaseProjectAttempt(requested.projectId);
   const before = composeWorldSnapshot(store);
-  assert.equal(before.projects[0]!.state, "established");
+  assert.equal(before.projects![0]!.state, "established");
   assert.deepEqual(before.sourcePictures, [{ civilizationId, sources: [] }]);
   store.claimResource(civilizationId, "synthetic-resource", "synthetic-agent");
   assert.deepEqual(composeWorldSnapshot(store), before);

@@ -223,7 +223,7 @@ export function App() {
         <ul className="evidence-key">{inspected.marks.map((mark, index) => <li key={index} data-axis={mark.axis} data-kind={mark.kind}>{mark.label}</li>)}</ul>
         {inspected.inspection.map((field, index) => <section key={index} className="inspection-field"><h3>{field.label}</h3>{field.values.map((value, valueIndex) => <p key={valueIndex}>{value}</p>)}</section>)}
         <Projects key={inspected.id} civilizationId={inspected.id} canCreate={inspected.institution === "active"}
-          projects={form!.snapshot.projects.filter((project) => project.civilizationId === inspected.id)}
+          projects={(form!.snapshot.projects ?? []).filter((project) => project.civilizationId === inspected.id)}
           reload={() => setRevision((value) => value + 1)} />
       </aside>}
     </div>

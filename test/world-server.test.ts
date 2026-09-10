@@ -129,14 +129,22 @@ test("invalid source shapes and thrown failures produce sanitized errors, never 
   assert.equal((await get("/api/world-snapshot")).status, 200);
 });
 
+test("the server serves legacy schema 1 snapshots without adding projects", async (t) => {
+  const { projects: _, ...legacy } = snapshot([entry]);
+  const get = await serve(t, () => legacy, join(temporary(t), "absent"));
+  const response = await get("/api/world-snapshot");
+  assert.equal(response.status, 200);
+  assert.deepEqual(JSON.parse(response.body), legacy);
+});
+
 test("shared validator rejects closed-shape violations and normalizes unknown bodies without aliases", () => {
-  for (const value of [undefined, null, false, 0, "snapshot", [], {}, { ...snapshot(), schemaVersion: 1 },
+  for (const value of [undefined, null, false, 0, "snapshot", [], {}, { ...snapshot(), schemaVersion: 2 },
     { ...snapshot(), extra: true }, { schemaVersion: 1, civilizations: [] },
     { ...snapshot(), observationsTruncated: "false" }, { ...snapshot(), claimsTruncated: "false" },
     ...invalidEntries.map((entry) => ({ ...snapshot(), civilizations: [entry] }))]) {
     assert.throws(() => validateWorldSnapshot(value));
   }
-  for (const field of Object.keys(snapshot())) {
+  for (const field of Object.keys(snapshot()).filter((field) => field !== "projects")) {
     const missing: Record<string, unknown> = { ...snapshot() };
     delete missing[field];
     assert.throws(() => validateWorldSnapshot(missing), `missing required top-level field: ${field}`);

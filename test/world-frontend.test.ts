@@ -14,7 +14,7 @@ import { validateWorldSnapshot, type WorldSnapshot } from "../src/world-snapshot
 import { worldForm } from "../src/world-form.ts";
 
 const pureSources = ["world-form.ts", "world-snapshot.ts", "project-types.ts", "institution-snapshot.ts", "observation-snapshot.ts", "validate-institution-snapshot.ts", "time.ts", "source-report.ts", "source-report-time.ts"];
-const empty: WorldSnapshot = { schemaVersion: 2, civilizations: [], sourcePictures: [], projects: [], observationsTruncated: false, claimsTruncated: false };
+const empty: WorldSnapshot = { schemaVersion: 1, civilizations: [], sourcePictures: [], projects: [], observationsTruncated: false, claimsTruncated: false };
 
 function foundedSnapshot(): WorldSnapshot {
   const snapshot = structuredClone(empty);
@@ -185,6 +185,20 @@ test("the production world surface uses the actual build and launcher with isola
   const snapshot = foundedSnapshot();
   const form = worldForm(snapshot);
   for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+    await t.test(`${viewport.width}px legacy schema 1 snapshots without projects remain inspectable`, async () => {
+      const page = await browser.newPage({ viewport });
+      const { projects: _, ...legacy } = foundedSnapshot();
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      try {
+        await page.route("**/api/world-snapshot", (route) => route.fulfill({ json: legacy }));
+        await page.goto(url);
+        await page.getByRole("button", { name: `Inspect ${legacy.civilizations[0]!.name}`, exact: true }).click();
+        await page.getByRole("region", { name: "Prosjekter", exact: true }).getByText("Ingen prosjekter", { exact: true }).waitFor();
+        assert.equal(await page.locator(".place").count(), legacy.civilizations.length);
+        assert.deepEqual(errors, []);
+      } finally { await page.close(); }
+    });
     await t.test(`${viewport.width}px project creation retains failed keys, rotates success and reloads without optimistic insertion`, async () => {
       const page = await browser.newPage({ viewport });
       const picture = foundedSnapshot();
@@ -221,7 +235,7 @@ test("the production world surface uses the actual build and launcher with isola
             name: body.name, slug: "fjordkart", workspacePath: "/synthetic/fjordkart", state: "established" as const,
             attempt: 1, reason: null, harness: { id: "hermes" as const, externalId: "p_ab12cd34", externalSlug: "fjordkart-2",
               externalArchived: true, provenance: "created" as const, observedAt: "2026-01-01T00:00:00.000Z" } };
-          picture.projects.push(project);
+          picture.projects!.push(project);
           await route.fulfill({ status: 201, json: project });
         });
         await page.goto(url);
@@ -298,7 +312,7 @@ test("the production world surface uses the actual build and launcher with isola
         retries.push(body);
         if (!failed) { failed = true; await route.fulfill({ status: 409, json: { error: "retry_in_progress" } }); return; }
         const id = decodeURIComponent(new URL(route.request().url()).pathname.split("/")[3]!);
-        const project = picture.projects.find((project) => project.projectId === id)!;
+        const project = picture.projects!.find((project) => project.projectId === id)!;
         project.state = "established";
         project.reason = null;
         project.harness = { id: "hermes", externalId: "p_ab12cd34", externalSlug: project.slug, externalArchived: false,

@@ -144,7 +144,7 @@ test("real HTTP native create and show primary readback survive browser reload",
   store = new ObservationStore(state);
   const reloaded = await reload();
   assert.deepEqual(reloaded.projects, [project]);
-  assert.equal(reloaded.projects[0]!.civilizationId, civilizationId);
+  assert.equal(reloaded.projects![0]!.civilizationId, civilizationId);
   assert.ok(reloaded.civilizations.some((civilization) => civilization.civilizationId === civilizationId));
 
   const snapshotResponse = page.waitForResponse(`${frontendUrl}/api/world-snapshot`);

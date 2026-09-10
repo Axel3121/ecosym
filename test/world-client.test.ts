@@ -8,9 +8,19 @@ import { inspectSourceFields, worldForm } from "../src/world-form.ts";
 
 const instant = "2026-01-01T00:00:00.000Z";
 function snapshot(): WorldSnapshot {
-  return { schemaVersion: 2, civilizations: [], sourcePictures: [], projects: [], observationsTruncated: false, claimsTruncated: false };
+  return { schemaVersion: 1, civilizations: [], sourcePictures: [], projects: [], observationsTruncated: false, claimsTruncated: false };
 }
 const respond = (value: unknown): typeof fetch => async () => Response.json(value);
+
+test("the client loads legacy schema 1 snapshots without inventing projects", async () => {
+  const { projects: _, ...legacy } = snapshot();
+  assert.deepEqual(await loadWorld({ fetch: respond(legacy) }), {
+    kind: "loaded", form: { snapshot: legacy, terrain: null, places: [] },
+  });
+  for (const projects of [null, {}, [null]]) {
+    assert.deepEqual(await loadWorld({ fetch: respond({ ...legacy, projects }) }), { kind: "failure", reason: "invalid-response" });
+  }
+});
 
 test("HTTP, invalid response, request failure and loaded empty are distinct", async () => {
   const empty = await loadWorld({ fetch: respond(snapshot()) });
