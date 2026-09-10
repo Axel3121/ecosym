@@ -872,6 +872,12 @@ export class ObservationStore {
 
   close(): void {
     if (!this.#closed) {
+      for (const [projectId, attempt] of this.#projectAttempts) {
+        if (projectAttemptOwners.get(projectId) === attempt.owner) {
+          projectAttemptOwners.delete(projectId);
+        }
+      }
+      this.#projectAttempts.clear();
       this.#database.close();
       this.#closed = true;
     }
