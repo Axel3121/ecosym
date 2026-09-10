@@ -18,14 +18,14 @@ const project: WorldProjectSnapshot = {
     provenance: "adopted", observedAt: instant },
 };
 function snapshot(): WorldSnapshot {
-  return { schemaVersion: 1, projects: [structuredClone(project)],
+  return { schemaVersion: 2, projects: [structuredClone(project)],
     civilizations: [{ civilizationId: project.civilizationId, name: "Synthetic", foundedAt: instant,
       bodyReadable: true, domain: "Synthetic", sources: [], mayActAlone: [], mustEscalate: [],
       mandate: { status: "active", mandateId: "mandate:synthetic", revision: "v1", recordedAt: instant } }],
     sourcePictures: [{ civilizationId: project.civilizationId, sources: [] }], observationsTruncated: false, claimsTruncated: false };
 }
 
-test("schema 1 projects are detached declared state, not source observations or activity marks", () => {
+test("schema 2 projects are detached declared state, not source observations or activity marks", () => {
   const input = snapshot();
   const validated = validateWorldSnapshot(input);
   assert.deepEqual(validated, input);
@@ -42,24 +42,34 @@ test("schema 1 projects are detached declared state, not source observations or 
   }
 });
 
-test("schema 1 snapshots without projects remain valid TypeScript and retain their runtime shape", () => {
+test("both snapshot versions without projects remain valid TypeScript and retain their runtime shape", () => {
   const { civilizations, sourcePictures, observationsTruncated, claimsTruncated } = snapshot();
-  const legacy: WorldSnapshot = { schemaVersion: 1, civilizations, sourcePictures, observationsTruncated, claimsTruncated };
-  for (const input of [legacy, JSON.parse(JSON.stringify(legacy))]) {
-    const validated = validateWorldSnapshot(input);
-    assert.deepEqual(validated, legacy);
-    assert.equal(Object.hasOwn(validated, "projects"), false);
-    assert.notEqual(validated.civilizations[0], input.civilizations[0]);
-    assert.deepEqual(worldForm(input).snapshot, legacy);
-    assert.deepEqual(worldForm(input).places, worldForm({ ...legacy, projects: [] }).places);
+  for (const schemaVersion of [1, 2] as const) {
+    const legacy: WorldSnapshot = { schemaVersion, civilizations, sourcePictures, observationsTruncated, claimsTruncated };
+    for (const input of [legacy, JSON.parse(JSON.stringify(legacy))]) {
+      const validated = validateWorldSnapshot(input);
+      assert.deepEqual(validated, legacy);
+      assert.equal(Object.hasOwn(validated, "projects"), false);
+      assert.notEqual(validated.civilizations[0], input.civilizations[0]);
+      assert.deepEqual(worldForm(input).snapshot, legacy);
+      assert.deepEqual(worldForm(input).places, worldForm({ ...legacy, schemaVersion: 2, projects: [] }).places);
+    }
   }
-  assert.deepEqual(validateWorldSnapshot({ ...legacy, projects: [] }).projects, []);
+  assert.deepEqual(validateWorldSnapshot({ ...snapshot(), projects: [] }).projects, []);
+});
+
+test("legacy schema 1 keeps its closed shape and rejects projects even when empty or undefined", () => {
+  for (const projects of [[], [project], undefined, null]) {
+    for (const boundary of [validateWorldSnapshot, worldForm]) {
+      assert.throws(() => boundary({ ...snapshot(), schemaVersion: 1, projects }));
+    }
+  }
 });
 
 test("project contracts reject missing and extra keys, accessors, invalid values and inconsistent links", () => {
   const rejects = (value: unknown) => assert.throws(() => validateWorldSnapshot(value));
   const input = snapshot();
-  rejects({ ...input, schemaVersion: 2 });
+  rejects({ ...input, schemaVersion: 3 });
   rejects({ ...input, projects: undefined });
   rejects({ ...input, projects: null });
   rejects({ ...input, projects: {} });
@@ -113,6 +123,7 @@ test("owner composition requires listProjects and an open work claim changes no 
     externalArchived: true, provenance: "adopted", harnessHome: join(directory, "hermes"), harnessVersion: "0.21.0" });
   store.releaseProjectAttempt(requested.projectId);
   const before = composeWorldSnapshot(store);
+  assert.equal(before.schemaVersion, 2);
   assert.equal(before.projects![0]!.state, "established");
   assert.deepEqual(before.sourcePictures, [{ civilizationId, sources: [] }]);
   store.claimResource(civilizationId, "synthetic-resource", "synthetic-agent");

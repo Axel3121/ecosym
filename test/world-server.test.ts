@@ -73,6 +73,8 @@ test("HTTP snapshot round-trips a real isolated store and refreshes redraw and d
   const empty = await get("/api/world-snapshot");
   assert.equal(empty.status, 200);
   assert.deepEqual(JSON.parse(empty.body), snapshot());
+  assert.equal(JSON.parse(empty.body).schemaVersion, 2);
+  assert.deepEqual(JSON.parse(empty.body).projects, []);
   const second = store.foundCivilization(parseCivilizationConfig({ ...body, name: "Second" }), new Date("2026-01-02"));
   const first = store.foundCivilization(parseCivilizationConfig({ ...body, name: "First" }), new Date("2026-01-01"));
   const verify = async () => {
@@ -130,7 +132,8 @@ test("invalid source shapes and thrown failures produce sanitized errors, never 
 });
 
 test("the server serves legacy schema 1 snapshots without adding projects", async (t) => {
-  const { projects: _, ...legacy } = snapshot([entry]);
+  const { projects: _, ...fields } = snapshot([entry]);
+  const legacy: WorldSnapshot = { ...fields, schemaVersion: 1 };
   const get = await serve(t, () => legacy, join(temporary(t), "absent"));
   const response = await get("/api/world-snapshot");
   assert.equal(response.status, 200);
@@ -138,7 +141,7 @@ test("the server serves legacy schema 1 snapshots without adding projects", asyn
 });
 
 test("shared validator rejects closed-shape violations and normalizes unknown bodies without aliases", () => {
-  for (const value of [undefined, null, false, 0, "snapshot", [], {}, { ...snapshot(), schemaVersion: 2 },
+  for (const value of [undefined, null, false, 0, "snapshot", [], {}, { ...snapshot(), schemaVersion: 3 },
     { ...snapshot(), extra: true }, { schemaVersion: 1, civilizations: [] },
     { ...snapshot(), observationsTruncated: "false" }, { ...snapshot(), claimsTruncated: "false" },
     ...invalidEntries.map((entry) => ({ ...snapshot(), civilizations: [entry] }))]) {

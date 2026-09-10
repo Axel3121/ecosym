@@ -6,7 +6,13 @@ import type { SourceReportProvenance, SourceReportSnapshot } from "./source-repo
 import { sourceReportInstantOrderingKey } from "./source-report-time.ts";
 import { PROJECT_ERROR_CODES, type WorldProjectSnapshot } from "./project-types.ts";
 
-export const WORLD_SNAPSHOT_SCHEMA_VERSION = 1;
+/**
+ * Production GET /api/world-snapshot emits schema 2 with projects, including [].
+ * Validation also accepts legacy schema 1 without projects, preserving its version
+ * and omitted field. Old closed schema-1 consumers cannot accept project fields.
+ * Schema 2 permits omission too; supplied projects are always validated.
+ */
+export const WORLD_SNAPSHOT_SCHEMA_VERSION = 2;
 
 export const WORLD_FACT_SEMANTICS_CAVEAT = "Observations describe the source owner's recorded fields at collection, not completed work, operational success or civilization activity. Runtime prose reports remain claims. Temporal status describes stored collection evidence, not live source truth. collectionAsOf is the latest successful collection interval in the fact's last-seen connection/configuration/activation lifetime; null means unknown. collectedAt is provenance, never a substitute for sourceRecordedAt. Verify does not reconcile this picture; recollect to advance it. Running attempts and truncated results can leave the picture partial. A project is a declared place and its provisioning state. Its harness binding is what was observed at observedAt, never a present-tense claim, and never evidence of work, activity, or an admitted mandate in any runtime.";
 
@@ -25,10 +31,10 @@ export interface WorldSourcePicture {
 }
 
 export interface WorldSnapshot {
-  schemaVersion: typeof WORLD_SNAPSHOT_SCHEMA_VERSION;
+  schemaVersion: 1 | typeof WORLD_SNAPSHOT_SCHEMA_VERSION;
   civilizations: FoundedCivilizationSnapshot[];
   sourcePictures: WorldSourcePicture[];
-  /** Optional additive field: older schema-1 snapshots omit projects. */
+  /** Optional in schema 2; forbidden in legacy schema 1 by runtime validation. */
   projects?: WorldProjectSnapshot[];
   /** Owner-wide limits, not per-civilization completeness assessments. */
   observationsTruncated: boolean;
@@ -272,7 +278,8 @@ export function validateWorldProjectSnapshot(value: unknown): WorldProjectSnapsh
 /** Reject extra fields, accessors and inconsistent links; return recursively detached data. */
 export function validateWorldSnapshot(value: unknown): WorldSnapshot {
   const snapshot = record(value, ["schemaVersion", "civilizations", "sourcePictures", "observationsTruncated", "claimsTruncated"], ["projects"]);
-  if (snapshot.schemaVersion !== WORLD_SNAPSHOT_SCHEMA_VERSION) throw new Error("Invalid world snapshot version");
+  if (snapshot.schemaVersion !== 1 && snapshot.schemaVersion !== WORLD_SNAPSHOT_SCHEMA_VERSION) throw new Error("Invalid world snapshot version");
+  if (snapshot.schemaVersion === 1 && Object.hasOwn(snapshot, "projects")) throw new Error("Invalid world snapshot fields");
   const { civilizations } = validateInstitutionSnapshot({ schemaVersion: 1, civilizations: snapshot.civilizations });
   const civilizationsById = new Map(civilizations.map((entry) => [entry.civilizationId, entry]));
   if (civilizationsById.size !== civilizations.length) throw new Error("Duplicate civilization ID");
@@ -334,7 +341,7 @@ export function validateWorldSnapshot(value: unknown): WorldSnapshot {
   });
   if (seenCivilizations.size !== civilizations.length) throw new Error("Missing civilization picture");
   return {
-    schemaVersion: WORLD_SNAPSHOT_SCHEMA_VERSION, civilizations, sourcePictures, ...(projects ? { projects } : {}),
+    schemaVersion: snapshot.schemaVersion, civilizations, sourcePictures, ...(projects ? { projects } : {}),
     observationsTruncated: boolean(snapshot.observationsTruncated), claimsTruncated: boolean(snapshot.claimsTruncated),
   };
 }

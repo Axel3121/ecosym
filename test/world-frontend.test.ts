@@ -14,7 +14,7 @@ import { validateWorldSnapshot, type WorldSnapshot } from "../src/world-snapshot
 import { worldForm } from "../src/world-form.ts";
 
 const pureSources = ["world-form.ts", "world-snapshot.ts", "project-types.ts", "institution-snapshot.ts", "observation-snapshot.ts", "validate-institution-snapshot.ts", "time.ts", "source-report.ts", "source-report-time.ts"];
-const empty: WorldSnapshot = { schemaVersion: 1, civilizations: [], sourcePictures: [], projects: [], observationsTruncated: false, claimsTruncated: false };
+const empty: WorldSnapshot = { schemaVersion: 2, civilizations: [], sourcePictures: [], projects: [], observationsTruncated: false, claimsTruncated: false };
 
 function foundedSnapshot(): WorldSnapshot {
   const snapshot = structuredClone(empty);
@@ -187,7 +187,8 @@ test("the production world surface uses the actual build and launcher with isola
   for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
     await t.test(`${viewport.width}px legacy schema 1 snapshots without projects remain inspectable`, async () => {
       const page = await browser.newPage({ viewport });
-      const { projects: _, ...legacy } = foundedSnapshot();
+      const { projects: _, ...fields } = foundedSnapshot();
+      const legacy: WorldSnapshot = { ...fields, schemaVersion: 1 };
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
       try {
