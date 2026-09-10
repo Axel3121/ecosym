@@ -83,6 +83,7 @@ function Projects({ civilizationId, projects, canCreate, reload }: {
       else { failedCreateName.current = null; setRequestKey(crypto.randomUUID()); setName(""); }
       reload();
     } catch {
+      if (!project) failedCreateName.current = name;
       setError(genericProjectError);
     } finally { pending.current = false; setSending(false); }
   };
