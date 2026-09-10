@@ -178,7 +178,7 @@ test("non-GET and invalid Host are refused before any store or filesystem access
     for (const path of ["/api/world-snapshot", "/", "/web/main.js", "/unknown"]) {
       const response = await get(path, method);
       assert.equal(response.status, 405);
-      assert.equal(response.headers.allow, "GET");
+      assert.equal(response.headers.allow, method === "POST" ? "GET" : "GET, POST");
     }
   }
   for (const host of ["attacker.example", "localhost", "127.0.0.1:1", "127.0.0.1", "[::1]:80", ""]) {
@@ -356,7 +356,7 @@ test("project HTTP method gate precedes path parsing and non-write POST remains 
   for (const options of [{ method: "DELETE", path: "/%" }, { method: "PUT" }, { path: "/api/world-snapshot" }, { path: "/" }]) {
     const response = await fixture.send(options);
     assert.equal(response.status, 405);
-    assert.equal(response.allow, "GET");
+    assert.equal(response.allow, options.method === undefined ? "GET" : "GET, POST");
   }
   assert.equal((await fixture.send({ path: "/%" })).status, 400);
   assert.deepEqual(fixture.store.listProjects(), []);
@@ -423,5 +423,32 @@ test("disconnected HTTP writes drain before shutdown closes their store", async 
   await closing;
   assert.equal(drained, true);
   assert.equal(fixture.store.listProjects()[0]!.reason, "harness_timeout");
-  assert.match(await fs.readFile("src/world-main.ts", "utf8"), /await server\.drainProjectWrites\(\);\s+closeStore\(\)/u);
+  assert.match(await fs.readFile(new URL("../src/world-main.ts", import.meta.url), "utf8"), /await server\.drainProjectWrites\(\);\s+closeStore\(\)/u);
+});
+
+test("project writes registered mid-drain are awaited before draining completes", { timeout: 5000 }, async (t) => {
+  const fixture = await projectServer(t);
+  const releases: (() => void)[] = [];
+  fixture.server.projectService = new ProjectService(fixture.store, { root: temporary(t), adapter: {
+    id: "hermes",
+    async provision() {
+      await new Promise<void>((resolve) => { releases.push(resolve); });
+      return { kind: "unknown", reason: "harness_timeout" };
+    },
+    async reconcile() { throw new Error("not a retry"); },
+  } });
+  const first = fixture.send();
+  while (releases.length < 1) await new Promise((done) => setTimeout(done, 5));
+  let drained = false;
+  const draining = fixture.server.drainProjectWrites().then(() => { drained = true; });
+  const second = fixture.send({ body: JSON.stringify({ ...fixture.payload, requestKey: randomUUID(), name: "Second" }) });
+  while (releases.length < 2) await new Promise((done) => setTimeout(done, 5));
+  releases[0]!();
+  assert.equal((await first).status, 201);
+  assert.equal(drained, false);
+  releases[1]!();
+  assert.equal((await second).status, 201);
+  await draining;
+  assert.equal(drained, true);
+  assert.ok(fixture.store.listProjects().every((project) => project.reason === "harness_timeout"));
 });

@@ -185,6 +185,27 @@ test("retry keys replay the same attempt across concurrent stores, later retries
   assert.equal(calls, 3);
 });
 
+test("pending retry replay stops waiting at the 120 second deadline", { timeout: 5000 }, async (t) => {
+  const s = setup(t);
+  const project = s.store.requestProject({ ...body(), harness: "hermes", civilizationId: s.civ,
+    slug: "fjordkart", workspacePath: join(s.root, s.civ.slice(13), "fjordkart"), requestDigest: "synthetic" }).project;
+  const key = { requestKey: randomUUID() };
+  s.store.claimProjectAttempt(project.projectId, key.requestKey);
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
+  let settled = false;
+  const retry = s.service.retry(project.projectId, key);
+  void retry.then(() => { settled = true; }, () => { settled = true; });
+  const rejected = assert.rejects(retry, code("retry_in_progress"));
+  t.mock.timers.tick(119_975);
+  await Promise.resolve();
+  assert.equal(settled, false);
+  t.mock.timers.tick(25);
+  await rejected;
+  assert.equal(s.store.getProjectRetry(project.projectId, key.requestKey)!.pending, true);
+  assert.equal(s.calls(), 0);
+  s.store.releaseProjectAttempt(project.projectId);
+});
+
 test("external success followed by throw remains unknown; retry adopts with no new registration", async (t) => {
   let creates = 0;
   const s = setup(t, { id: "hermes", async provision() { creates++; throw new Error("PRIVATE traceback /secret"); },

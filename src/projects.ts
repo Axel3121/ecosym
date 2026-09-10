@@ -70,12 +70,14 @@ export class ProjectService {
   }
 
   async retry(projectId: string, body: unknown): Promise<WorldProjectSnapshot> {
+    const deadline = Date.now() + 120_000;
     const value = request(body, ["requestKey"]);
     const requestKey = (value.requestKey as string).toLowerCase();
     for (;;) {
       const replay = this.#store.getProjectRetry(projectId, requestKey);
       if (replay) {
         if (!replay.pending) return replay.project;
+        if (Date.now() >= deadline) throw new ProjectError("retry_in_progress");
         await new Promise((done) => setTimeout(done, 25));
         continue;
       }

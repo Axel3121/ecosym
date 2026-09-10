@@ -19,7 +19,7 @@ export function createWorldServer(readSnapshot: () => WorldSnapshot, buildDirect
       response.end(JSON.stringify({ error, ...(message === undefined ? {} : { message }) }));
     };
     if (request.method !== "GET" && request.method !== "POST") {
-      response.setHeader("Allow", "GET");
+      response.setHeader("Allow", "GET, POST");
       fail(405, "Metoden er ikke tillatt");
       return;
     }
@@ -126,7 +126,11 @@ export function createWorldServer(readSnapshot: () => WorldSnapshot, buildDirect
       fail(404, "Ikke funnet");
     }
   }) as WorldServer;
-  server.drainProjectWrites = async () => { await Promise.allSettled(writes); };
+  server.drainProjectWrites = async () => {
+    while (writes.size > 0) {
+      await Promise.allSettled([...writes]);
+    }
+  };
   // Framing errors (including a truncated Content-Length) never expose parser details.
   server.on("clientError", (_error, socket) => {
     if (!socket.writable || socket.writableEnded) return;
