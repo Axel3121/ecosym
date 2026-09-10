@@ -5,9 +5,9 @@ import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { ProjectError, type HarnessAdapter, type HarnessBinding, type HarnessOutcome, type HarnessProjectRequest, type ProjectErrorCode } from "./project-types.ts";
 
 // Observed with Hermes v0.21.0. Both identity sources are CLI prose, not JSON.
-const createdPattern = /^Created project ([a-z0-9][a-z0-9-]*) \((p_[0-9a-f]+)\)$/m;
-const adoptedPattern = /folder already belongs to project '([a-z0-9][a-z0-9-]*)' \((p_[0-9a-f]+)\)/;
-const headerPattern = /^([a-z0-9][a-z0-9-]*)  \[(p_[0-9a-f]+)\]( \(archived\))?$/;
+const createdPattern = /^Created project ([a-z0-9][a-z0-9_-]*) \((p_[0-9a-f]+)\)$/m;
+const adoptedPattern = /folder already belongs to project '([a-z0-9][a-z0-9_-]*)' \((p_[0-9a-f]+)\)/;
+const headerPattern = /^([a-z0-9][a-z0-9_-]*)  \[(p_[0-9a-f]+)\]( \(archived\))?$/;
 const unknown = (reason: ProjectErrorCode = "readback_ambiguous"): HarnessOutcome => ({ kind: "unknown", reason });
 type Output = { code: number; stdout: string; stderr: string; reason?: ProjectErrorCode };
 
@@ -96,7 +96,7 @@ export class HermesProjectAdapter implements HarnessAdapter {
     if (lines.length > 200) return unknown("readback_too_large");
     const slugs: string[] = [];
     for (const line of lines) {
-      const match = /^[ *] ([a-z0-9][a-z0-9-]*)\s+.+  \[\d+ folder\(s\)\]$/.exec(line);
+      const match = /^[ *] ([a-z0-9][a-z0-9_-]*)\s+.+  \[\d+ folder\(s\)\]$/.exec(line);
       if (!match || slugs.includes(match[1]!)) return unknown();
       slugs.push(match[1]!);
     }
