@@ -1157,6 +1157,7 @@ export class ObservationStore {
     this.#projectTransaction(() => {
       const owner = this.#assertProjectAttempt(projectId, attempt);
       if (!binding.externalId || !binding.externalSlug || !binding.harnessHome || !binding.harnessVersion ||
+          binding.externalId.length > 128 || binding.externalSlug.length > 128 ||
           typeof binding.externalArchived !== "boolean" || !["created", "adopted"].includes(binding.provenance)) {
         throw new ProjectError("invalid_request");
       }

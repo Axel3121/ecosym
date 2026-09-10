@@ -36,6 +36,21 @@ const binding = {
   harnessHome: "/synthetic/isolated-hermes", harnessVersion: "0.21.0", provenance: "adopted" as const,
 };
 
+for (const field of ["externalId", "externalSlug"] as const) {
+  test(`binding rejects oversized ${field} atomically and accepts the 128-character boundary`, (t) => {
+    const { store, input } = setup(t);
+    const id = store.requestProject(input).project.projectId;
+    const attempt = store.claimProjectAttempt(id);
+    const before = store.getProject(id)!;
+    assert.throws(() => store.bindProject(id, attempt, { ...binding, [field]: "a".repeat(129) }), code("invalid_request"));
+    assert.deepEqual(store.getProject(id), before);
+    store.bindProject(id, attempt, { ...binding, [field]: "a".repeat(128) });
+    assert.equal(store.getProject(id)!.harness![field].length, 128);
+    assert.deepEqual(validateWorldProjectSnapshot(store.getProject(id)), store.getProject(id));
+    store.releaseProjectAttempt(id);
+  });
+}
+
 for (const state of ["requested", "directory-created"] as const) {
   test(`${state} rejects failure reasons without changing the persisted snapshot`, (t) => {
     const { store, input } = setup(t);
