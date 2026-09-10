@@ -315,10 +315,13 @@ test("forget inventories and exports projects, deletes all project rows transact
   assert.equal(plan.counts.projectHarnessBindings, 1);
   assert.match(plan.consequence, /directories.*remain untouched/);
   const exported = store.exportOwnedState();
-  const institution = JSON.parse(exported.bytes).institutionStore;
-  assert.equal(institution.projects[0].project_id, id);
-  assert.equal(institution.projectProvisioningEvents.length, plan.counts.projectProvisioningEvents);
-  assert.equal(institution.projectHarnessBindings[0].harness_home, binding.harnessHome);
+  const institution = exported.bundle.institutionStore;
+  assert.equal(institution.projects![0]!.project_id, id);
+  assert.equal(institution.projectProvisioningEvents!.length, plan.counts.projectProvisioningEvents);
+  assert.equal(institution.projectHarnessBindings![0]!.harness_home, binding.harnessHome);
+  assert.equal(exported.counts.projects, institution.projects!.length);
+  assert.equal(exported.counts.projectProvisioningEvents, institution.projectProvisioningEvents!.length);
+  assert.equal(exported.counts.projectHarnessBindings, institution.projectHarnessBindings!.length);
   const database = new DatabaseSync(join(directory, "observations.sqlite"));
   t.after(() => database.close());
   database.exec("CREATE TRIGGER refuse_project_forget BEFORE DELETE ON projects BEGIN SELECT RAISE(ABORT, 'test refusal'); END");
