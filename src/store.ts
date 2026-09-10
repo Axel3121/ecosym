@@ -126,9 +126,8 @@ function projectOwnerAlive(eventId: string): boolean {
   try {
     process.kill(Number(match[1]), 0);
     return projectProcessIdentity(Number(match[1])) === match[2];
-  } catch (error) {
-    return !(error instanceof Error && "code" in error &&
-      (error.code === "ESRCH" || error.code === "ENOENT"));
+  } catch {
+    return false;
   }
 }
 
@@ -1139,14 +1138,24 @@ export class ObservationStore {
     });
   }
 
-  claimProjectAttempt(projectId: string, requestKey?: string): number {
+  claimProjectAttempt(projectId: string, requestKey?: string, expectedRequestedAttempt?: number): number {
     const owner = `project-owner:${process.pid}:${projectProcessIdentity(process.pid)}:${randomUUID()}:`;
     const attempt = this.#projectTransaction(() => {
       if (requestKey !== undefined && this.#database.prepare(
         "SELECT 1 FROM project_provisioning_events WHERE project_id = ? AND retry_request_key = ?",
       ).get(projectId, requestKey)) throw new ProjectError("retry_in_progress");
       const current = this.getProject(projectId);
+      // A create replay may recover requested work, but must not restart a newer retry.
+      if (expectedRequestedAttempt !== undefined &&
+          (current?.state !== "requested" || current.attempt !== expectedRequestedAttempt)) {
+        throw new ProjectError("retry_in_progress");
+      }
       if (current === undefined || current.state === "established") throw new ProjectError("invalid_request");
+      const civilization = this.#database.prepare(
+        "SELECT status FROM mandate_revisions WHERE civilization_id = ? ORDER BY revision_order DESC LIMIT 1",
+      ).get(current.civilizationId) as { status: string } | undefined;
+      if (civilization === undefined) throw new ProjectError("civilization_unknown");
+      if (civilization.status === "dissolved") throw new ProjectError("civilization_dissolved");
       const event = this.#database.prepare(
         "SELECT event_id FROM project_provisioning_events WHERE project_id = ? ORDER BY event_order DESC LIMIT 1",
       ).get(projectId) as { event_id: string };

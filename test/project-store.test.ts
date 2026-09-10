@@ -135,6 +135,49 @@ for (const state of ["requested", "directory-created", "external-unknown", "fail
   });
 }
 
+test("dissolution refuses a new project attempt without changing its history", (t) => {
+  const { store, input } = setup(t);
+  const id = store.requestProject(input).project.projectId;
+  const attempt = store.claimProjectAttempt(id);
+  store.appendProjectEvent(id, "external-unknown", attempt, "harness_unavailable");
+  store.releaseProjectAttempt(id);
+  store.dissolveCivilization(input.civilizationId);
+  const before = store.exportOwnedState().bundle.institutionStore.projectProvisioningEvents;
+  assert.throws(() => store.claimProjectAttempt(id, "retry-after-dissolution"), code("civilization_dissolved"));
+  assert.deepEqual(store.exportOwnedState().bundle.institutionStore.projectProvisioningEvents, before);
+});
+
+for (const errorCode of ["EPERM", "ESRCH", "ENOENT", "EIO"]) {
+  test(`${errorCode} cannot confirm durable project ownership for retry or forget`, (t) => {
+    const { store, directory, input } = setup(t);
+    const id = store.requestProject(input).project.projectId;
+    const database = new DatabaseSync(join(directory, "observations.sqlite"));
+    t.after(() => database.close());
+    database.prepare("UPDATE project_provisioning_events SET event_id = ?, retry_request_key = ? WHERE project_id = ?")
+      .run(`project-owner:${process.pid}:previous-process-identity:synthetic-owner:event`, "old-retry", id);
+    const kill = t.mock.method(process, "kill", () => { throw Object.assign(new Error(errorCode), { code: errorCode }); });
+    assert.equal(store.getProjectRetry(id, "old-retry")!.pending, false);
+    assert.equal(store.claimProjectAttempt(id, "new-retry"), 1);
+    store.dissolveCivilization(input.civilizationId);
+    assert.equal(store.planForgetCivilization(input.civilizationId, "user").counts.projects, 1);
+    assert.ok(kill.mock.callCount() >= 3);
+    store.releaseProjectAttempt(id);
+  });
+}
+
+test("create replay claims cannot restart a newer attempt or a changed state", (t) => {
+  const { store, input } = setup(t);
+  const id = store.requestProject(input).project.projectId;
+  const attempt = store.claimProjectAttempt(id, "retry");
+  store.releaseProjectAttempt(id);
+  assert.throws(() => store.claimProjectAttempt(id, undefined, 0), code("retry_in_progress"));
+  const next = store.claimProjectAttempt(id);
+  store.appendProjectEvent(id, "failed", next, "filesystem_denied");
+  store.releaseProjectAttempt(id);
+  assert.throws(() => store.claimProjectAttempt(id, undefined, next), code("retry_in_progress"));
+  assert.equal(store.getProject(id)!.attempt, attempt + 1);
+});
+
 test("single-flight spans store instances and refuses non-owner writes and release", async (t) => {
   const { store, directory, input } = setup(t);
   const other = new ObservationStore(directory);
@@ -372,14 +415,12 @@ test("forget inventories and exports projects, deletes all project rows transact
 test("forget cannot race a live provisioning attempt and stale project export is refused", async (t) => {
   const { store, input } = setup(t);
   const id = store.requestProject(input).project.projectId;
+  const attempt = store.claimProjectAttempt(id);
   store.dissolveCivilization(input.civilizationId);
   const stale = store.exportOwnedState();
-  const plan = store.planForgetCivilization(input.civilizationId, "user");
-  const attempt = store.claimProjectAttempt(id);
   assert.throws(() => store.planForgetCivilization(input.civilizationId, "user"), code("retry_in_progress"));
-  store.appendProjectEvent(id, "external-unknown", attempt, "harness_timeout");
   store.releaseProjectAttempt(id);
-  await assert.rejects(store.forgetCivilization(input.civilizationId, "user", stale.digest, plan.confirmationToken), { code: "forget_civilization_state_changed" });
-  const freshPlan = store.planForgetCivilization(input.civilizationId, "user");
-  await assert.rejects(store.forgetCivilization(input.civilizationId, "user", stale.digest, freshPlan.confirmationToken), { code: "forget_civilization_export_coverage_mismatch" });
+  const plan = store.planForgetCivilization(input.civilizationId, "user");
+  assert.equal(store.getProject(id)!.attempt, attempt);
+  await assert.rejects(store.forgetCivilization(input.civilizationId, "user", stale.digest, plan.confirmationToken), { code: "forget_civilization_export_coverage_mismatch" });
 });

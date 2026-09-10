@@ -65,7 +65,15 @@ export class ProjectService {
       requestDigest: createHash("sha256").update(JSON.stringify({ civilizationId, name, harness: "hermes" })).digest("hex"),
       workspacePath: join(this.#root, civilizationId.slice(13), slug),
     });
-    if (!result.created) return result;
+    if (!result.created) {
+      if (result.project.state !== "requested") return result;
+      try {
+        return { project: await this.#attempt(result.project, result.project.attempt > 0, undefined, result.project.attempt), created: false };
+      } catch (error) {
+        if (!(error instanceof ProjectError && error.code === "retry_in_progress")) throw error;
+        return { project: this.#store.getProject(result.project.projectId)!, created: false };
+      }
+    }
     return { project: await this.#attempt(result.project, false), created: true };
   }
 
@@ -122,9 +130,9 @@ export class ProjectService {
     await verify(project.workspacePath);
   }
 
-  async #attempt(project: WorldProjectSnapshot, retry: boolean, requestKey?: string): Promise<WorldProjectSnapshot> {
+  async #attempt(project: WorldProjectSnapshot, retry: boolean, requestKey?: string, expectedRequestedAttempt?: number): Promise<WorldProjectSnapshot> {
     if (active >= 4) throw new ProjectError("busy");
-    const attempt = this.#store.claimProjectAttempt(project.projectId, requestKey);
+    const attempt = this.#store.claimProjectAttempt(project.projectId, requestKey, expectedRequestedAttempt);
     active++;
     let external = false;
     try {

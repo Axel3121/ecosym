@@ -222,9 +222,10 @@ test("external success followed by throw remains unknown; retry adopts with no n
   assert.ok(!JSON.stringify(s.store.listProjects()).includes("PRIVATE"));
 });
 
-test("MAX4 applies across services, and durable singleflight rejects concurrent retries", async (t) => {
+test("MAX4 applies across services, busy create replays recover, and retries remain singleflight", async (t) => {
   let release!: () => void;
   const wait = new Promise<void>((done) => { release = done; });
+  t.after(() => release());
   let entered = 0;
   const adapter: HarnessAdapter = { id: "hermes", async provision() { entered++; await wait; return { kind: "unknown", reason: "harness_timeout" }; },
     async reconcile() { entered++; await wait; return { kind: "unknown", reason: "harness_timeout" }; } };
@@ -232,10 +233,28 @@ test("MAX4 applies across services, and durable singleflight rejects concurrent 
   const pending = Array.from({ length: 4 }, (_, i) => s.service.create(s.civ, body(`Project ${i}`)));
   while (entered < 4) await new Promise((done) => setTimeout(done, 5));
   const other = new ProjectService(s.store, { root: s.root, adapter });
-  await assert.rejects(other.create(s.civ, body("Fifth")), code("busy"));
+  const fifth = body("Fifth");
+  await assert.rejects(other.create(s.civ, fifth), code("busy"));
+  const stuck = s.store.listProjects().find((project) => project.name === "Fifth")!;
+  assert.equal(stuck.state, "requested");
+  assert.equal(stuck.attempt, 0);
+  assert.equal(existsSync(stuck.workspacePath), false);
+  await assert.rejects(other.create(s.civ, fifth), code("busy"));
   release();
   const results = await Promise.all(pending);
   assert.ok(results.every((r) => r.project.state === "external-unknown" && r.project.reason === "harness_timeout"));
+  const recovered = other.create(s.civ, fifth);
+  const duplicate = await s.service.create(s.civ, fifth);
+  assert.equal(duplicate.project.attempt, 1);
+  await assert.rejects(s.service.retry(stuck.projectId, { requestKey: randomUUID() }), code("retry_in_progress"));
+  const replay = await recovered;
+  assert.equal(replay.created, false);
+  assert.equal(replay.project.projectId, stuck.projectId);
+  assert.equal(replay.project.state, "external-unknown");
+  assert.equal(replay.project.reason, "harness_timeout");
+  assert.equal(replay.project.attempt, 1);
+  assert.equal(entered, 5);
+  assert.deepEqual(await other.create(s.civ, fifth), replay);
   const id = results[0]!.project.projectId;
   const retry = s.service.retry(id, { requestKey: randomUUID() });
   await assert.rejects(other.retry(id, { requestKey: randomUUID() }), code("retry_in_progress"));
@@ -249,4 +268,9 @@ test("unavailable native binary does not prevent constructing service or deliver
   assert.equal(project.state, "external-unknown");
   assert.equal(project.reason, "harness_unavailable");
   assert.ok(statSync(project.workspacePath).isDirectory());
+  s.store.dissolveCivilization(s.civ);
+  rmSync(project.workspacePath, { recursive: true });
+  await assert.rejects(service.retry(project.projectId, { requestKey: randomUUID() }), code("civilization_dissolved"));
+  assert.deepEqual(s.store.getProject(project.projectId), project);
+  assert.equal(existsSync(project.workspacePath), false);
 });
