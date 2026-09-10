@@ -4,6 +4,37 @@ import { PROJECT_ERROR_CODES, type WorldProjectSnapshot } from "../src/project-t
 import { validateWorldProjectSnapshot } from "../src/world-snapshot.ts";
 import "./world.css";
 
+const genericProjectError = "Prosjektet kunne ikke behandles. Pr\u00f8v igjen.";
+const projectErrorMessages: Record<(typeof PROJECT_ERROR_CODES)[number], string> = {
+  invalid_name: "Skriv et gyldig prosjektnavn.",
+  slug_underivable: "Prosjektnavnet kan ikke brukes.",
+  slug_taken: "Et prosjekt med dette navnet finnes allerede.",
+  path_taken: "Prosjektmappa brukes allerede.",
+  civilization_unknown: "Sivilisasjonen finnes ikke.",
+  civilization_dissolved: "Sivilisasjonen er oppl\u00f8st.",
+  root_invalid: "Prosjektmappa kan ikke brukes.",
+  directory_exists: "Prosjektmappa finnes allerede.",
+  containment_violation: "Prosjektmappa kan ikke brukes.",
+  not_a_directory: "Prosjektmappa kan ikke brukes.",
+  filesystem_denied: "Prosjektmappa kunne ikke opprettes.",
+  harness_unavailable: "Hermes er ikke tilgjengelig.",
+  harness_refused: "Hermes avslo registreringen.",
+  harness_timeout: "Registreringen i Hermes tok for lang tid.",
+  readback_ambiguous: "Registreringen i Hermes kunne ikke bekreftes.",
+  readback_too_large: "Registreringen i Hermes kunne ikke bekreftes.",
+  request_key_conflict: "Innsendingen kan ikke gjentas.",
+  retry_in_progress: "Et nytt fors\u00f8k p\u00e5g\u00e5r allerede.",
+  busy: "Prosjektet er opptatt. Pr\u00f8v igjen.",
+  invalid_request: genericProjectError,
+  forbidden_origin: genericProjectError,
+};
+
+function projectErrorMessage(code: unknown): string {
+  return typeof code === "string" && PROJECT_ERROR_CODES.some((known) => known === code)
+    ? projectErrorMessages[code as (typeof PROJECT_ERROR_CODES)[number]]
+    : genericProjectError;
+}
+
 function Projects({ civilizationId, projects, canCreate, reload }: {
   civilizationId: string; projects: WorldProjectSnapshot[]; canCreate: boolean; reload: () => void;
 }) {
@@ -41,7 +72,7 @@ function Projects({ civilizationId, projects, canCreate, reload }: {
       const body: unknown = await response.json();
       if (!response.ok) {
         const code = typeof body === "object" && body !== null && "error" in body ? body.error : null;
-        setError(typeof code === "string" && PROJECT_ERROR_CODES.some((known) => known === code) ? code : "invalid_response");
+        setError(projectErrorMessage(code));
         return;
       }
       const result = validateWorldProjectSnapshot(body);
@@ -50,7 +81,7 @@ function Projects({ civilizationId, projects, canCreate, reload }: {
       else { setRequestKey(crypto.randomUUID()); setName(""); }
       reload();
     } catch {
-      setError("Svaret kunne ikke bekreftes. Pr\u00f8v igjen med samme innsending.");
+      setError(genericProjectError);
     } finally { pending.current = false; setSending(false); }
   };
   return <section className="projects" aria-label="Prosjekter">
@@ -60,7 +91,7 @@ function Projects({ civilizationId, projects, canCreate, reload }: {
       const mark = project.state === "established" && binding
         ? `Observert registrert i hermes (${binding.externalSlug}, ${binding.externalId}) ${binding.observedAt}. Erkl\u00e6rt sted, ikke bevis p\u00e5 arbeid.${binding.externalArchived ? ` Registreringen var arkivert i hermes ved siste observasjon ${binding.observedAt}.` : ""}`
         : project.state === "external-unknown" ? "Harness-registrering ukjent; ikke bevis p\u00e5 at den mislyktes. Mappa finnes."
-          : project.state === "failed" ? `Opprettelse mislyktes: ${project.reason}.` : "Opprettelse p\u00e5begynt.";
+          : project.state === "failed" ? `Opprettelse mislyktes. ${projectErrorMessage(project.reason)}` : "Opprettelse p\u00e5begynt.";
       return <li key={project.projectId}><h4>{project.name}</h4><p>{mark}</p><p>{project.workspacePath}</p>
         {project.state !== "established" && <button disabled={sending} onClick={() => void send(project)}>Pr&oslash;v igjen</button>}
       </li>;
@@ -186,14 +217,7 @@ export function App() {
         <nav className="map-controls" aria-label="World navigation"><button aria-label="Zoom out" onClick={() => changeZoom(-0.1)} disabled={zoom <= 0.6}>-</button><output aria-label="Zoom level">{Math.round(zoom * 100)}%</output><button aria-label="Zoom in" onClick={() => changeZoom(0.1)} disabled={zoom >= 1.6}>+</button><button onClick={resetView}>Home</button></nav>
         <p id="navigation-help">Drag to explore. Tab to places; Enter to inspect. Arrow keys pan, +/- zoom, Escape closes.</p>
       </section>
-      {inspected && <aside className="inspection" aria-label={`Inspection: ${inspected.name}`} onKeyDown={(event) => {
-        if (event.key !== "Tab") return;
-        const targets = [...event.currentTarget.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), select:not(:disabled)")];
-        const first = targets[0];
-        const last = targets.at(-1);
-        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-      }}>
+      {inspected && <aside className="inspection" aria-label={`Inspection: ${inspected.name}`}>
         <div className="inspection-heading"><span className="eyebrow">Place / inspection</span><button ref={close} onClick={dismiss}>Close inspection</button></div>
         <h2>{inspected.name}</h2><p className="domain">{inspected.domain}</p>
         <ul className="evidence-key">{inspected.marks.map((mark, index) => <li key={index} data-axis={mark.axis} data-kind={mark.kind}>{mark.label}</li>)}</ul>

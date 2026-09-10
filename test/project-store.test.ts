@@ -48,6 +48,14 @@ test("fresh project store persists intent and idempotency without claiming obser
   assert.deepEqual(store.listProjects(), [project]);
   assert.deepEqual(store.requestProject(input), { project, created: false });
   assert.throws(() => store.requestProject({ ...input, requestDigest: "changed" }), code("request_key_conflict"));
+  const { civilizationId: otherCivilizationId } = store.foundCivilization(parseCivilizationConfig({
+    schemaVersion: 1, name: "Research", domain: "synthetic research",
+    sources: [], mayActAlone: [], mustEscalate: [],
+  }));
+  assert.throws(() => store.requestProject({
+    ...input, civilizationId: otherCivilizationId, slug: "fjordkart-research",
+    workspacePath: join(directory, "other-workspace"),
+  }), code("request_key_conflict"));
   assert.throws(() => store.requestProject({ ...input, requestKey: "other" }), code("slug_taken"));
   assert.throws(() => store.requestProject({ ...input, requestKey: "other", slug: "other" }), code("path_taken"));
   assert.throws(() => store.requestProject({ ...input, requestKey: "other", civilizationId: "missing" }), code("civilization_unknown"));
@@ -185,6 +193,19 @@ test("project contention is a stable error and cannot leave a partial claim", (t
   database.exec("ROLLBACK");
   assert.equal(store.getProject(id)!.attempt, 0);
   assert.equal(store.claimProjectAttempt(id), 1);
+  store.releaseProjectAttempt(id);
+});
+
+test("a failed release clears this process owner so an immediate retry can recover", (t) => {
+  const { store, directory, input } = setup(t);
+  const id = store.requestProject(input).project.projectId;
+  const attempt = store.claimProjectAttempt(id);
+  const database = new DatabaseSync(join(directory, "observations.sqlite"));
+  t.after(() => database.close());
+  database.exec("BEGIN IMMEDIATE");
+  assert.throws(() => store.releaseProjectAttempt(id), code("busy"));
+  database.exec("ROLLBACK");
+  assert.equal(store.claimProjectAttempt(id), attempt + 1);
   store.releaseProjectAttempt(id);
 });
 

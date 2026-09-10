@@ -66,6 +66,7 @@ const STORE_FILENAME = "observations.sqlite";
 const BUSY_RETRY_WINDOW_MILLISECONDS = 250;
 const WORK_CLAIM_TTL_MILLISECONDS = 30 * 60 * 1000; // 30 minutes, first guess
 const CONFIRMATION_CONTENTION_BUDGET_MILLISECONDS = 2_000;
+const projectAttemptOwners = new Map<string, string>();
 
 const CREATE_PROJECTS = `
   CREATE TABLE IF NOT EXISTS projects (
@@ -1051,10 +1052,12 @@ export class ObservationStore {
   requestProject(input: ProjectRequest): { project: WorldProjectSnapshot; created: boolean } {
     return this.#projectTransaction(() => {
       const existing = this.#database.prepare(
-        "SELECT project_id, request_digest FROM projects WHERE request_key = ?",
-      ).get(input.requestKey) as { project_id: string; request_digest: string } | undefined;
+        "SELECT project_id, civilization_id, request_digest FROM projects WHERE request_key = ?",
+      ).get(input.requestKey) as { project_id: string; civilization_id: string; request_digest: string } | undefined;
       if (existing !== undefined) {
-        if (existing.request_digest !== input.requestDigest) throw new ProjectError("request_key_conflict");
+        if (existing.civilization_id !== input.civilizationId || existing.request_digest !== input.requestDigest) {
+          throw new ProjectError("request_key_conflict");
+        }
         return { project: this.getProject(existing.project_id)!, created: false };
       }
       const civilization = this.#database.prepare(
@@ -1118,12 +1121,18 @@ export class ObservationStore {
       const event = this.#database.prepare(
         "SELECT event_id FROM project_provisioning_events WHERE project_id = ? ORDER BY event_order DESC LIMIT 1",
       ).get(projectId) as { event_id: string };
-      if (projectOwnerAlive(event.event_id)) throw new ProjectError("retry_in_progress");
+      const currentOwnerPrefix = `project-owner:${process.pid}:${projectProcessIdentity(process.pid)}:`;
+      const abandonedByThisProcess = projectAttemptOwners.get(projectId) === undefined &&
+        event.event_id.startsWith(currentOwnerPrefix);
+      if (projectOwnerAlive(event.event_id) && !abandonedByThisProcess) {
+        throw new ProjectError("retry_in_progress");
+      }
       const next = current.attempt + 1;
       this.#insertProjectEvent(projectId, current.state, next, current.reason, owner);
       return next;
     });
     this.#projectAttempts.set(projectId, { attempt, owner });
+    projectAttemptOwners.set(projectId, owner);
     return attempt;
   }
 
@@ -1156,13 +1165,19 @@ export class ObservationStore {
   releaseProjectAttempt(projectId: string): void {
     const owned = this.#projectAttempts.get(projectId);
     if (owned === undefined) return;
-    this.#projectTransaction(() => {
-      const current = this.getProject(projectId);
-      if (current === undefined) return;
-      this.#assertProjectAttempt(projectId, owned.attempt, true);
-      this.#insertProjectEvent(projectId, current.state, current.attempt, current.reason);
-    });
-    this.#projectAttempts.delete(projectId);
+    try {
+      this.#projectTransaction(() => {
+        const current = this.getProject(projectId);
+        if (current === undefined) return;
+        this.#assertProjectAttempt(projectId, owned.attempt, true);
+        this.#insertProjectEvent(projectId, current.state, current.attempt, current.reason);
+      });
+    } finally {
+      this.#projectAttempts.delete(projectId);
+      if (projectAttemptOwners.get(projectId) === owned.owner) {
+        projectAttemptOwners.delete(projectId);
+      }
+    }
   }
 
   #assertProjectAttempt(projectId: string, attempt: number, allowEstablished = false): string {

@@ -234,9 +234,8 @@ test("the production world surface uses the actual build and launcher with isola
         const create = projects.getByRole("button", { name: "Opprett", exact: true });
         await close.focus();
         await page.keyboard.press("Shift+Tab");
-        assert.equal(await create.evaluate((node) => node === document.activeElement), true);
-        await page.keyboard.press("Tab");
-        assert.equal(await close.evaluate((node) => node === document.activeElement), true);
+        assert.equal(await page.getByRole("button", { name: "Home", exact: true }).evaluate((node) => node === document.activeElement), true);
+        await close.focus();
         await page.keyboard.press("Tab");
         assert.equal(await projects.getByLabel("Prosjektnavn", { exact: true }).evaluate((node) => node === document.activeElement), true);
         await projects.getByLabel("Prosjektnavn", { exact: true }).fill("Fjordkart");
@@ -250,7 +249,7 @@ test("the production world surface uses the actual build and launcher with isola
         assert.equal(reads, 1);
         release();
         await projects.getByRole("alert").waitFor();
-        assert.equal(await projects.getByRole("alert").innerText(), "invalid_response");
+        assert.equal(await projects.getByRole("alert").innerText(), "Prosjektet kunne ikke behandles. Pr\u00f8v igjen.");
         assert.doesNotMatch(await projects.innerText(), /PRIVATE|\/private/);
         assert.equal(await projects.getByLabel("Prosjektnavn", { exact: true }).inputValue(), "Fjordkart");
         await create.click();
@@ -313,14 +312,15 @@ test("the production world surface uses the actual build and launcher with isola
       await projects.waitFor();
       assert.equal(await projects.getByRole("button", { name: "Pr\u00f8v igjen", exact: true }).count(), 4);
       assert.match(await projects.innerText(), /Harness-registrering ukjent; ikke bevis p\u00e5 at den mislyktes. Mappa finnes./);
-      assert.match(await projects.innerText(), /Opprettelse mislyktes: filesystem_denied./);
+      assert.match(await projects.innerText(), /Opprettelse mislyktes. Prosjektmappa kunne ikke opprettes./);
+      assert.doesNotMatch(await projects.innerText(), /filesystem_denied/);
       assert.equal(await projects.getByText("Opprettelse p\u00e5begynt.", { exact: true }).count(), 2);
       for (const state of states) {
         const row = projects.locator("li").filter({ has: page.getByRole("heading", { name: state, exact: true }) });
         const retry = row.getByRole("button", { name: "Pr\u00f8v igjen", exact: true });
         await retry.click();
         if (state === "requested") {
-          await projects.getByText("retry_in_progress", { exact: true }).waitFor();
+          await projects.getByText("Et nytt fors\u00f8k p\u00e5g\u00e5r allerede.", { exact: true }).waitFor();
           await retry.click();
         }
         await retry.waitFor({ state: "detached" });
