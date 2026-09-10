@@ -26,7 +26,7 @@ function isolated(t: TestContext) {
   return { root, profile, workspace, env, request: { name: "Fjordkart", slug: "fjordkart", workspacePath: workspace } };
 }
 
-function fake(t: TestContext, behavior: string) {
+function fake(t: TestContext, behavior: string, version = "console.log('Hermes Agent v0.21.0 (2026.8.31)');") {
   const s = isolated(t);
   const binary = join(s.root, "hermes");
   const log = join(s.root, "calls.jsonl");
@@ -34,7 +34,7 @@ function fake(t: TestContext, behavior: string) {
 const args=process.argv.slice(2); const root=${JSON.stringify(s.root)};
 appendFileSync(${JSON.stringify(log)}, JSON.stringify({args,env:process.env,cwd:process.cwd()})+'\\n');
 const workspace=${JSON.stringify(s.workspace)};
-if(args[0]==='--version') { console.log('Hermes Agent v0.21.0 (2026.8.31)'); }
+if(args[0]==='--version') { ${version} }
 else { ${behavior} }\n`, { mode: 0o700 });
   const adapter = new HermesProjectAdapter({ root: s.root, binary, home: s.root,
     env: { ...s.env, ECOSYM_HARNESS_HOME: s.profile, HERMES_HOME: "/must-not-use", PRIVATE_TOKEN: "secret" } });
@@ -124,6 +124,24 @@ test("timeout sends TERM at 30 seconds then kills a TERM-ignoring process after 
   assert.deepEqual(await s.adapter.provision(s.request), { kind: "unknown", reason: "harness_timeout" });
   assert.equal(readFileSync(join(s.root, "term"), "utf8"), "received");
   assert.ok(Date.now() - started >= 31_900);
+});
+
+test("enumeration shares a deadline across list, shows and version without creating or binding early", { timeout: 40_000 }, async (t) => {
+  await Promise.all(["absent", "early-match", "version"].map(async (scenario) => {
+    const s = fake(t, `if(args[1]==='list') setTimeout(()=>console.log(
+        Array.from({length:${scenario === "version" ? 1 : 200}},(_,i)=>'  p'+i+'  Name  [1 folder(s)]').join('\\n')),11_000);
+      else if(args[1]==='show') setTimeout(()=>console.log(args[3]+'  [p_ab12]\\n  primary: '+
+        (${JSON.stringify(scenario)}!=='absent' && args[3]==='p0' ? workspace : root+'/other')),11_000);
+      else throw Error('create must not run');`,
+    "setTimeout(()=>console.log('Hermes Agent v0.21.0 (2026.8.31)'),11_000);");
+    const started = performance.now();
+    const result = scenario === "version" ? await s.adapter.reconcile(s.request) : await s.adapter.provision(s.request);
+    assert.deepEqual(result, { kind: "unknown", reason: "harness_timeout" }, scenario);
+    assert.ok(performance.now() - started < 35_000, scenario);
+    assert.deepEqual(s.calls().map((call) => call.args), scenario === "version"
+      ? [["project", "list", "--all"], ["project", "show", "--", "p0"], ["--version"]]
+      : [["project", "list", "--all"], ["project", "show", "--", "p0"], ["project", "show", "--", "p1"]]);
+  }));
 });
 
 test("binary is resolved once and invalid positional inputs cannot invoke native", async (t) => {

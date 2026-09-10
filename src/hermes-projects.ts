@@ -40,7 +40,9 @@ export class HermesProjectAdapter implements HarnessAdapter {
     }
   }
 
-  #run(args: string[]): Promise<Output> {
+  #run(args: string[], deadline = Infinity): Promise<Output> {
+    const remaining = Math.min(30_000, deadline - performance.now());
+    if (remaining <= 0) return Promise.resolve({ code: -1, stdout: "", stderr: "", reason: "harness_timeout" });
     if (!this.#bin) return Promise.resolve({ code: -1, stdout: "", stderr: "", reason: "harness_unavailable" });
     return new Promise((done) => {
       let reason: ProjectErrorCode | undefined;
@@ -53,6 +55,7 @@ export class HermesProjectAdapter implements HarnessAdapter {
         const code = error === null ? 0 : typeof error.code === "number" ? error.code : -1;
         if (error && (error.code === "ENOENT" || error.code === "EACCES")) reason = "harness_unavailable";
         if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") reason = "readback_ambiguous";
+        if (performance.now() >= deadline) reason = "harness_timeout";
         done(reason ? { code, stdout: "", stderr: "", reason } : { code, stdout, stderr });
       });
       const stop = (why: ProjectErrorCode) => {
@@ -62,7 +65,7 @@ export class HermesProjectAdapter implements HarnessAdapter {
         kill = setTimeout(() => child.kill("SIGKILL"), 2000);
       };
       // Native startup can exceed 10 seconds under concurrent load; retain a hard deadline.
-      const timeout = setTimeout(() => stop("harness_timeout"), 30_000);
+      const timeout = setTimeout(() => stop("harness_timeout"), remaining);
       for (const stream of [child.stdout, child.stderr]) {
         let bytes = 0;
         stream?.on("data", (data: string | Buffer) => {
@@ -73,8 +76,8 @@ export class HermesProjectAdapter implements HarnessAdapter {
     });
   }
 
-  async #binding(slug: string, id: string, archived: boolean, provenance: HarnessBinding["provenance"]): Promise<HarnessOutcome> {
-    const version = await this.#run(["--version"]);
+  async #binding(slug: string, id: string, archived: boolean, provenance: HarnessBinding["provenance"], deadline = Infinity): Promise<HarnessOutcome> {
+    const version = await this.#run(["--version"], deadline);
     if (version.reason) return unknown(version.reason);
     const match = /^Hermes Agent v(\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?)\b/.exec(version.stdout);
     if (version.code !== 0 || !match) return unknown();
@@ -83,7 +86,9 @@ export class HermesProjectAdapter implements HarnessAdapter {
   }
 
   async #find(request: HarnessProjectRequest): Promise<HarnessOutcome | null> {
-    const list = await this.#run(["project", "list", "--all"]);
+    // Enumeration must finish within one budget, not 30 seconds per project.
+    const deadline = performance.now() + 30_000;
+    const list = await this.#run(["project", "list", "--all"], deadline);
     if (list.reason) return unknown(list.reason);
     if (list.code !== 0) return unknown();
     if (list.stdout.trim() === "No projects yet. Create one with `hermes project create <name>`.") return null;
@@ -97,7 +102,7 @@ export class HermesProjectAdapter implements HarnessAdapter {
     }
     let found: { slug: string; id: string; archived: boolean } | undefined;
     for (const slug of slugs) {
-      const show = await this.#run(["project", "show", "--", slug]);
+      const show = await this.#run(["project", "show", "--", slug], deadline);
       if (show.reason) return unknown(show.reason);
       const header = headerPattern.exec(show.stdout.split("\n")[0] ?? "");
       const primary = [...show.stdout.matchAll(/^  primary: (.+)$/gm)];
@@ -107,7 +112,7 @@ export class HermesProjectAdapter implements HarnessAdapter {
         found = { slug, id: header[2]!, archived: header[3] !== undefined };
       }
     }
-    return found ? this.#binding(found.slug, found.id, found.archived, "adopted") : null;
+    return found ? this.#binding(found.slug, found.id, found.archived, "adopted", deadline) : null;
   }
 
   async reconcile(request: HarnessProjectRequest): Promise<HarnessOutcome> {
