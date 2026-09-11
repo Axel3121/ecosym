@@ -1,6 +1,131 @@
 import { useEffect, useRef, useState } from "react";
 import { loadWorld, type WorldLoadResult } from "./world-client.ts";
+import { PROJECT_ERROR_CODES, type WorldProjectSnapshot } from "../src/project-types.ts";
+import { validateWorldProjectSnapshot } from "../src/world-snapshot.ts";
 import "./world.css";
+
+const genericProjectError = "Prosjektet kunne ikke behandles. Pr\u00f8v igjen.";
+const projectErrorMessages: Record<(typeof PROJECT_ERROR_CODES)[number], string> = {
+  invalid_name: "Skriv et gyldig prosjektnavn.",
+  slug_underivable: "Prosjektnavnet kan ikke brukes.",
+  slug_taken: "Et prosjekt med dette navnet finnes allerede.",
+  path_taken: "Prosjektmappa brukes allerede.",
+  civilization_unknown: "Sivilisasjonen finnes ikke.",
+  civilization_dissolved: "Sivilisasjonen er oppl\u00f8st.",
+  root_invalid: "Prosjektmappa kan ikke brukes.",
+  directory_exists: "Prosjektmappa finnes allerede.",
+  containment_violation: "Prosjektmappa kan ikke brukes.",
+  not_a_directory: "Prosjektmappa kan ikke brukes.",
+  filesystem_denied: "Prosjektmappa kunne ikke opprettes.",
+  harness_unavailable: "Hermes er ikke tilgjengelig.",
+  harness_refused: "Hermes avslo registreringen.",
+  harness_timeout: "Registreringen i Hermes tok for lang tid.",
+  readback_ambiguous: "Registreringen i Hermes kunne ikke bekreftes.",
+  readback_too_large: "Registreringen i Hermes kunne ikke bekreftes.",
+  request_key_conflict: "Innsendingen kan ikke gjentas.",
+  retry_in_progress: "Et nytt fors\u00f8k p\u00e5g\u00e5r allerede.",
+  busy: "Prosjektet er opptatt. Pr\u00f8v igjen.",
+  invalid_request: genericProjectError,
+  forbidden_origin: genericProjectError,
+};
+
+function projectErrorMessage(code: unknown): string {
+  return typeof code === "string" && PROJECT_ERROR_CODES.some((known) => known === code)
+    ? projectErrorMessages[code as (typeof PROJECT_ERROR_CODES)[number]]
+    : genericProjectError;
+}
+
+function randomUUID(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function Projects({ civilizationId, projects, canCreate, reload }: {
+  civilizationId: string; projects: WorldProjectSnapshot[]; canCreate: boolean; reload: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [requestKey, setRequestKey] = useState(() => randomUUID());
+  const failedCreateName = useRef<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pending = useRef(false);
+  const retryKeys = useRef(new Map<string, string>());
+  const restoreFocus = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (sending) {
+      if (document.activeElement === document.body || document.activeElement === restoreFocus.current) {
+        restoreFocus.current?.closest("aside")?.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
+      }
+      return;
+    }
+    if (document.activeElement === document.body) {
+      if (restoreFocus.current?.isConnected) restoreFocus.current.focus();
+      else document.querySelector(".projects")?.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
+    }
+    restoreFocus.current = null;
+  }, [sending]);
+  const send = async (project?: WorldProjectSnapshot) => {
+    if (pending.current) return;
+    restoreFocus.current = document.activeElement as HTMLElement | null;
+    pending.current = true;
+    setSending(true);
+    setError(null);
+    if (project && !retryKeys.current.has(project.projectId)) retryKeys.current.set(project.projectId, randomUUID());
+    try {
+      const response = await fetch(project ? `/api/projects/${encodeURIComponent(project.projectId)}/retry`
+        : `/api/civilizations/${encodeURIComponent(civilizationId)}/projects`, {
+        method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(project ? { requestKey: retryKeys.current.get(project.projectId) } : { requestKey, name, harness: "hermes" }),
+        signal: AbortSignal.timeout(30000),
+      });
+      const body: unknown = await response.json();
+      if (!response.ok) {
+        if (!project) failedCreateName.current = name;
+        const code = typeof body === "object" && body !== null && "error" in body ? body.error : null;
+        setError(projectErrorMessage(code));
+        return;
+      }
+      const result = validateWorldProjectSnapshot(body);
+      if (result.civilizationId !== civilizationId || (project && result.projectId !== project.projectId)) throw new Error("Invalid project link");
+      if (project) retryKeys.current.delete(project.projectId);
+      else { failedCreateName.current = null; setRequestKey(randomUUID()); setName(""); }
+      reload();
+    } catch {
+      if (!project) failedCreateName.current = name;
+      setError(genericProjectError);
+    } finally { pending.current = false; setSending(false); }
+  };
+  return <section className="projects" aria-label="Prosjekter">
+    <h3>Prosjekter</h3>
+    {projects.length === 0 ? <p>Ingen prosjekter</p> : <ul>{projects.map((project) => {
+      const binding = project.harness;
+      const mark = project.state === "established" && binding
+        ? `Observert registrert i hermes (${binding.externalSlug}, ${binding.externalId}) ${binding.observedAt}. Erkl\u00e6rt sted, ikke bevis p\u00e5 arbeid.${binding.externalArchived ? ` Registreringen var arkivert i hermes ved siste observasjon ${binding.observedAt}.` : ""}`
+        : project.state === "external-unknown" ? "Harness-registrering ukjent; ikke bevis p\u00e5 at den mislyktes. Mappa fantes ved fors\u00f8ket."
+          : project.state === "failed" ? `Opprettelse mislyktes. ${projectErrorMessage(project.reason)}` : "Opprettelse p\u00e5begynt.";
+      return <li key={project.projectId}><h4>{project.name}</h4><p>{mark}</p><p>{project.workspacePath}</p>
+        {project.state !== "established" && <button disabled={sending} onClick={() => void send(project)}>Pr&oslash;v igjen</button>}
+      </li>;
+    })}</ul>}
+    {canCreate && <form onSubmit={(event) => { event.preventDefault(); void send(); }}>
+      <label>Prosjektnavn<input name="name" required value={name} disabled={sending} onChange={(event) => {
+        if (failedCreateName.current !== null && event.target.value !== failedCreateName.current) {
+          setRequestKey(randomUUID());
+          failedCreateName.current = null;
+        }
+        setName(event.target.value);
+      }} /></label>
+      <label htmlFor="project-harness">Harness</label>
+      <select id="project-harness" name="harness" disabled={sending} defaultValue="hermes"><option value="hermes">hermes</option></select>
+      <button disabled={sending} type="submit">Opprett</button>
+    </form>}
+    {error && <p role="alert">{error}</p>}
+  </section>;
+}
 
 export function App() {
   const [load, setLoad] = useState<WorldLoadResult | { kind: "loading" }>({ kind: "loading" });
@@ -118,6 +243,9 @@ export function App() {
         <h2>{inspected.name}</h2><p className="domain">{inspected.domain}</p>
         <ul className="evidence-key">{inspected.marks.map((mark, index) => <li key={index} data-axis={mark.axis} data-kind={mark.kind}>{mark.label}</li>)}</ul>
         {inspected.inspection.map((field, index) => <section key={index} className="inspection-field"><h3>{field.label}</h3>{field.values.map((value, valueIndex) => <p key={valueIndex}>{value}</p>)}</section>)}
+        <Projects key={inspected.id} civilizationId={inspected.id} canCreate={inspected.institution === "active"}
+          projects={(form!.snapshot.projects ?? []).filter((project) => project.civilizationId === inspected.id)}
+          reload={() => setRevision((value) => value + 1)} />
       </aside>}
     </div>
     <footer>ECOSYM <span>Founding is a place. Evidence is not a promise.</span><span>Neutral terrain / no inferred activity</span></footer>

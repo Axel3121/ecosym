@@ -1,5 +1,18 @@
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { ProjectError } from "./project-types.ts";
+
+export function projectsRoot(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
+  const explicit = env.ECOSYM_PROJECT_ROOT;
+  const data = env.XDG_DATA_HOME;
+  const root = explicit !== undefined ? explicit
+    : data !== undefined && data !== "" ? join(data, "ecosym-projects")
+    : join(home, ".local", "share", "ecosym-projects");
+  if (!isAbsolute(root) || (explicit === undefined && data && !isAbsolute(data))) {
+    throw new ProjectError("root_invalid");
+  }
+  return root;
+}
 
 export function defaultStateDirectory(
   environment: NodeJS.ProcessEnv = process.env,

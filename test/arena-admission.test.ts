@@ -363,7 +363,7 @@ test("Arena migration preserves schema-15 history and exports exact report/link 
   store = new ObservationStore(directory);
   const inspect = new DatabaseSync(store.path);
   assert.deepEqual(inspect.prepare("SELECT * FROM connection_versions").all(), prior);
-  assert.equal(inspect.prepare("PRAGMA user_version").get()!.user_version, 16);
+  assert.equal(inspect.prepare("PRAGMA user_version").get()!.user_version, 18);
   inspect.close();
   assert.equal(store.narrate().claims.length, 1);
   store.disconnect("arena");

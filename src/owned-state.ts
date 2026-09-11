@@ -3,6 +3,9 @@ import { canonicalJson, type JsonValue, sha256 } from "./json.ts";
 export const OWNED_STATE_BUNDLE_SCHEMA_VERSION = 1;
 
 export interface OwnedStateCounts {
+  projects?: number;
+  projectProvisioningEvents?: number;
+  projectHarnessBindings?: number;
   sourceReports?: number;
   sourceReportFacts?: number;
   sourceReportAdmissions?: number;
@@ -22,6 +25,9 @@ export interface OwnedStateBundle {
   schemaVersion: 1;
   exportedAt: string;
   institutionStore: {
+    projects?: Record<string, JsonValue>[];
+    projectProvisioningEvents?: Record<string, JsonValue>[];
+    projectHarnessBindings?: Record<string, JsonValue>[];
     schemaVersion: number;
     civilizations: Record<string, JsonValue>[];
     civilizationForgetRecords: Record<string, JsonValue>[];

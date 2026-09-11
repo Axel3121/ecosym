@@ -89,6 +89,31 @@ the build before launching; check's final build follows the completed suite. Do
 not run a separate build concurrently with the tests. Core form, snapshot,
 transition, and server security tests remain in the suite.
 
+## Project development
+
+`ECOSYM_PROJECT_ROOT` selects the workspace root and must be absolute. Otherwise
+the root is `$XDG_DATA_HOME/ecosym-projects`, or
+`~/.local/share/ecosym-projects` when `XDG_DATA_HOME` is unset. Keep workspace
+folders outside the Ecosym state directory, not mixed with protected stores.
+
+`ECOSYM_HARNESS_HOME` selects the Hermes profile; the fallback is `HERMES_HOME`,
+then `~/.hermes`. The adapter explicitly supplies the resolved value as
+`HERMES_HOME` to native calls and records the profile actually used with the
+binding. Registration uses the CLI, not direct access to its private database.
+
+Retry request keys are scoped to a project and stored with its provisioning
+attempt. Reusing a key waits for a live attempt or replays its last recorded
+result, including after restart or a later retry. A new key explicitly requests
+a new attempt; replaying an interrupted attempt does not resume effects.
+Store schema 18 adds a nullable retry key to event history without changing
+existing events. The keys are included in project history exports and forgetting.
+
+For tests, set `ECOSYM_PROJECT_ROOT` to a temporary workspace root and
+`ECOSYM_HARNESS_HOME` and `HERMES_HOME` to an isolated temporary harness home.
+Keep the Ecosym store isolated too. Native integration tests must reject the
+user's real profile rather than falling back to it; they must never create or
+modify user projects. Run them only with these isolated roots.
+
 ## Changes
 
 Keep each change coherent: implementation, tests, and any documentation whose

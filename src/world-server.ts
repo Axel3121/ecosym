@@ -3,16 +3,23 @@ import { createServer, type Server } from "node:http";
 import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 
 import { validateWorldSnapshot, type WorldSnapshot } from "./world-snapshot.ts";
+import { ProjectError, type ProjectWriteService } from "./project-types.ts";
 
-/** The launcher binds this server to 127.0.0.1; no store mutation capability is accepted. */
-export function createWorldServer(readSnapshot: () => WorldSnapshot, buildDirectory: string): Server {
+interface WorldServer extends Server {
+  projectService?: ProjectWriteService;
+  drainProjectWrites(): Promise<void>;
+}
+
+/** The launcher binds to loopback and explicitly attaches the narrow write capability. */
+export function createWorldServer(readSnapshot: () => WorldSnapshot, buildDirectory: string): WorldServer {
+  const writes = new Set<Promise<unknown>>();
   const server = createServer(async (request, response) => {
-    const fail = (status: number, error: string) => {
+    const fail = (status: number, error: string, message?: string) => {
       response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
-      response.end(JSON.stringify({ error }));
+      response.end(JSON.stringify({ error, ...(message === undefined ? {} : { message }) }));
     };
-    if (request.method !== "GET") {
-      response.setHeader("Allow", "GET");
+    if (request.method !== "GET" && request.method !== "POST") {
+      response.setHeader("Allow", "GET, POST");
       fail(405, "Metoden er ikke tillatt");
       return;
     }
@@ -21,7 +28,8 @@ export function createWorldServer(readSnapshot: () => WorldSnapshot, buildDirect
       && request.rawHeaders[index]!.toLowerCase() === "host");
     if (!address || typeof address === "string" || address.address !== "127.0.0.1"
       || hosts.length !== 1 || request.headers.host !== `127.0.0.1:${address.port}`) {
-      fail(400, "Ugyldig vert");
+      if (request.method === "POST") fail(403, "forbidden_origin", "Forespørselen er ikke tillatt");
+      else fail(400, "Ugyldig vert");
       return;
     }
     let pathname: string;
@@ -35,6 +43,57 @@ export function createWorldServer(readSnapshot: () => WorldSnapshot, buildDirect
       }
     } catch {
       fail(400, "Ugyldig sti");
+      return;
+    }
+    if (request.method === "POST") {
+      const create = /^\/api\/civilizations\/([^/]+)\/projects$/u.exec(pathname);
+      const retry = /^\/api\/projects\/([^/]+)\/retry$/u.exec(pathname);
+      if (!create && !retry) {
+        response.setHeader("Allow", "GET");
+        fail(405, "Metoden er ikke tillatt");
+        return;
+      }
+      if (request.headers.origin !== `http://127.0.0.1:${address.port}`
+        || (request.headers["sec-fetch-site"] !== undefined && request.headers["sec-fetch-site"] !== "same-origin")
+        || !/^application\/json(?:\s*;[^\r\n]*)?$/u.test(request.headers["content-type"] ?? "")) {
+        fail(403, "forbidden_origin", "Forespørselen er ikke tillatt");
+        return;
+      }
+      try {
+        const length = request.headers["content-length"];
+        if (length === undefined || !/^\d+$/u.test(length) || Number(length) > 8192) {
+          throw new ProjectError("invalid_request");
+        }
+        const chunks: Buffer[] = [];
+        let bytes = 0;
+        for await (const chunk of request) {
+          bytes += chunk.length;
+          if (bytes > 8192 || bytes > Number(length)) throw new ProjectError("invalid_request");
+          chunks.push(chunk);
+        }
+        if (!request.complete || bytes !== Number(length)) throw new ProjectError("invalid_request");
+        let body: unknown;
+        try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+        catch { throw new ProjectError("invalid_request"); }
+        if (!server.projectService) throw new ProjectError("harness_unavailable");
+        const operation = create ? server.projectService.create(create[1]!, body)
+          : server.projectService.retry(retry![1]!, body).then((project) => ({ project, created: false }));
+        writes.add(operation);
+        const result = await operation.finally(() => writes.delete(operation));
+        response.writeHead(result.created ? 201 : 200, {
+          "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store",
+        });
+        response.end(JSON.stringify(result.project));
+      } catch (error) {
+        if (!(error instanceof ProjectError)) {
+          fail(500, "internal_error", "Prosjektforespørselen kunne ikke fullføres");
+          return;
+        }
+        const code = error.code;
+        const status = ["slug_taken", "path_taken", "request_key_conflict", "retry_in_progress", "civilization_dissolved"].includes(code)
+          ? 409 : code === "busy" || code === "harness_unavailable" ? 503 : 400;
+        fail(status, code, "Prosjektforespørselen kunne ikke fullføres");
+      }
       return;
     }
     if (pathname === "/api/world-snapshot") {
@@ -70,6 +129,17 @@ export function createWorldServer(readSnapshot: () => WorldSnapshot, buildDirect
     } catch {
       fail(404, "Ikke funnet");
     }
+  }) as WorldServer;
+  server.drainProjectWrites = async () => {
+    while (writes.size > 0) {
+      await Promise.allSettled([...writes]);
+    }
+  };
+  // Framing errors (including a truncated Content-Length) never expose parser details.
+  server.on("clientError", (_error, socket) => {
+    if (!socket.writable || socket.writableEnded) return;
+    const body = JSON.stringify({ error: "invalid_request", message: "Prosjektforespørselen kunne ikke fullføres" });
+    socket.end(`HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
   });
   return server;
 }

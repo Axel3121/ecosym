@@ -152,6 +152,32 @@ draws it. Until something has tried and been refused, what exists is a boundary
 in the diff and an assumption in the world. The attempt belongs in the suite, so
 the refusal keeps being true.
 
+### Local project writes
+
+Project creation and retry are narrow POST operations, not a general effect API.
+The server binds to `127.0.0.1` and requires exactly one Host equal to
+`127.0.0.1:<port>`. Writes require Origin exactly `http://127.0.0.1:<port>`;
+missing Origin is refused. If present, Sec-Fetch-Site must be `same-origin`.
+Content-Type must be `application/json` (parameters allowed). Bodies must be
+JSON with exact allowed keys, at most 8 KiB, with a required Content-Length
+matching the actual length. Unsupported methods and POSTs outside the write
+routes are refused; the existing GET protections remain intact.
+
+These Host, Origin, Sec-Fetch-Site, and JSON safeguards protect against browser
+cross-origin writes. There is no CSRF token. **The loopback boundary against a
+local process running as the same user is UNENFORCED.** Such a process can supply
+the required headers; a token obtainable over loopback would not authenticate
+the user or enforce this boundary either.
+
+Workspace paths are server-derived and containment is revalidated at the effect
+boundary, including on retry. Native calls use argument arrays without a shell,
+an option separator, validated names, and an allowlisted environment. Raw native
+stdout and stderr are parsed only in adapter memory and discarded: never stored,
+logged, included in snapshots, or exposed to the browser. Errors expose stable
+codes and fixed messages, not native tracebacks or containment-failure paths.
+Each HTTP safeguard must be tested by sending a request that crosses the boundary
+and verifying refusal, not merely by testing a validation helper.
+
 ## Destructive changes to owned history
 
 Deleting or semantically reinterpreting historical Ecosym-owned state requires:
@@ -174,7 +200,10 @@ effect. Structural migrations must preserve history and remain deterministic;
 reinterpretation is a deliberate product operation.
 
 Tests and development tools must use isolated synthetic state and must not
-reach the user's real institution or observation stores.
+reach the user's real institution or observation stores. Project tests must also
+use an isolated temporary harness home and a separate temporary workspace root;
+they must fail rather than use the user's real Hermes profile (`~/.hermes`). No
+user projects or harness registrations may be created or changed by tests.
 
 ## Incidents
 
