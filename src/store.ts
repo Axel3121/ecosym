@@ -123,9 +123,17 @@ function projectProcessIdentity(pid: number): string {
 function projectOwnerAlive(eventId: string): boolean {
   const match = /^project-owner:(\d+):([^:]+):/.exec(eventId);
   if (match === null) return false;
+  const pid = Number(match[1]);
+  if (process.platform === "linux") {
+    try {
+      return projectProcessIdentity(pid) === match[2];
+    } catch {
+      // Unreadable identity is inconclusive; only ESRCH proves the PID is gone.
+    }
+  }
   try {
-    process.kill(Number(match[1]), 0);
-    return projectProcessIdentity(Number(match[1])) === match[2];
+    process.kill(pid, 0);
+    return process.platform === "linux" || projectProcessIdentity(pid) === match[2];
   } catch (error) {
     return !(error instanceof Error && "code" in error && error.code === "ESRCH");
   }

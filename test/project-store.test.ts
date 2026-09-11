@@ -147,18 +147,31 @@ test("dissolution refuses a new project attempt without changing its history", (
   assert.deepEqual(store.exportOwnedState().bundle.institutionStore.projectProvisioningEvents, before);
 });
 
-for (const errorCode of ["EPERM", "ESRCH", "ENOENT", "EIO"]) {
-  test(`${errorCode} ${errorCode === "ESRCH" ? "permits" : "blocks"} retry and forget of a durable project owner`, (t) => {
+for (const errorCode of [undefined, "EPERM", "ESRCH", "ENOENT", "EIO"]) {
+  test(`unreadable owner identity with kill ${errorCode ?? "success"} ${errorCode === "ESRCH" ? "permits" : "blocks"} retry and forget`, { skip: process.platform !== "linux" }, (t) => {
     const { store, directory, input } = setup(t);
     const id = store.requestProject(input).project.projectId;
     const database = new DatabaseSync(join(directory, "observations.sqlite"));
     t.after(() => database.close());
+    // A readable mismatched identity now decides ownership without consulting kill.
+    // Use a missing /proc entry so these error-code assertions test the fallback.
+    const pid = 2147483647;
+    assert.throws(() => readFileSync(`/proc/${pid}/stat`, "utf8"), { code: "ENOENT" });
+    const eventId = `project-owner:${pid}:previous-process-identity:synthetic-owner:event`;
     database.prepare("UPDATE project_provisioning_events SET event_id = ?, retry_request_key = ? WHERE project_id = ?")
-      .run(`project-owner:${process.pid}:previous-process-identity:synthetic-owner:event`, "old-retry", id);
-    const kill = t.mock.method(process, "kill", () => { throw Object.assign(new Error(errorCode), { code: errorCode }); });
+      .run(eventId, "old-retry", id);
+    const kill = t.mock.method(process, "kill", (ownerPid: number, signal?: string | number) => {
+      assert.equal(ownerPid, pid);
+      assert.equal(signal, 0);
+      if (errorCode !== undefined) throw Object.assign(new Error(errorCode), { code: errorCode });
+      return true;
+    });
     assert.equal(store.getProjectRetry(id, "old-retry")!.pending, errorCode !== "ESRCH");
     if (errorCode === "ESRCH") {
       assert.equal(store.claimProjectAttempt(id, "new-retry"), 1);
+      store.releaseProjectAttempt(id);
+      database.prepare("UPDATE project_provisioning_events SET event_id = ? WHERE event_order = (SELECT MAX(event_order) FROM project_provisioning_events)")
+        .run(`${eventId}-forget`);
     } else {
       assert.throws(() => store.claimProjectAttempt(id, "new-retry"), code("retry_in_progress"));
     }
@@ -168,10 +181,23 @@ for (const errorCode of ["EPERM", "ESRCH", "ENOENT", "EIO"]) {
     } else {
       assert.throws(() => store.planForgetCivilization(input.civilizationId, "user"), code("retry_in_progress"));
     }
-    assert.ok(kill.mock.callCount() >= 3);
+    assert.equal(kill.mock.callCount(), 3);
     store.releaseProjectAttempt(id);
   });
 }
+
+test("matching Linux owner identity blocks retry and forget despite EPERM", { skip: process.platform !== "linux" }, (t) => {
+  const { store, input } = setup(t);
+  const id = store.requestProject(input).project.projectId;
+  store.claimProjectAttempt(id, "old-retry");
+  const kill = t.mock.method(process, "kill", () => { throw Object.assign(new Error("EPERM"), { code: "EPERM" }); });
+  assert.equal(store.getProjectRetry(id, "old-retry")!.pending, true);
+  assert.throws(() => store.claimProjectAttempt(id, "new-retry"), code("retry_in_progress"));
+  store.dissolveCivilization(input.civilizationId);
+  assert.throws(() => store.planForgetCivilization(input.civilizationId, "user"), code("retry_in_progress"));
+  assert.equal(kill.mock.callCount(), 0);
+  store.releaseProjectAttempt(id);
+});
 
 test("create replay claims cannot restart a newer attempt or a changed state", (t) => {
   const { store, input } = setup(t);
@@ -313,15 +339,23 @@ test("binding and established event roll back together if either write fails", (
   store.releaseProjectAttempt(id);
 });
 
-test("PID reuse does not retain an abandoned durable owner", (t) => {
+test("PID reuse permits retry and forget despite EPERM when identity is readable", { skip: process.platform !== "linux" }, (t) => {
   const { store, directory, input } = setup(t);
   const id = store.requestProject(input).project.projectId;
   const database = new DatabaseSync(join(directory, "observations.sqlite"));
   t.after(() => database.close());
-  database.prepare("UPDATE project_provisioning_events SET event_id = ? WHERE project_id = ?")
-    .run(`project-owner:${process.pid}:previous-process-identity:synthetic-owner:event`, id);
+  const eventId = `project-owner:${process.pid}:previous-process-identity:synthetic-owner:event`;
+  database.prepare("UPDATE project_provisioning_events SET event_id = ?, retry_request_key = ? WHERE project_id = ?")
+    .run(eventId, "old-retry", id);
+  const kill = t.mock.method(process, "kill", () => { throw Object.assign(new Error("EPERM"), { code: "EPERM" }); });
+  assert.equal(store.getProjectRetry(id, "old-retry")!.pending, false);
   assert.equal(store.claimProjectAttempt(id), 1);
   store.releaseProjectAttempt(id);
+  database.prepare("UPDATE project_provisioning_events SET event_id = ? WHERE event_order = (SELECT MAX(event_order) FROM project_provisioning_events)")
+    .run(`${eventId}-forget`);
+  store.dissolveCivilization(input.civilizationId);
+  assert.equal(store.planForgetCivilization(input.civilizationId, "user").counts.projects, 1);
+  assert.equal(kill.mock.callCount(), 0);
 });
 
 for (const version of [15, 16]) {
