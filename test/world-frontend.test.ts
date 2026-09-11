@@ -326,7 +326,7 @@ test("the production world surface uses the actual build and launcher with isola
       const projects = page.getByRole("region", { name: "Prosjekter", exact: true });
       await projects.waitFor();
       assert.equal(await projects.getByRole("button", { name: "Pr\u00f8v igjen", exact: true }).count(), 4);
-      assert.match(await projects.innerText(), /Harness-registrering ukjent; ikke bevis p\u00e5 at den mislyktes. Mappa finnes./);
+      assert.match(await projects.innerText(), /Harness-registrering ukjent; ikke bevis p\u00e5 at den mislyktes. Mappa fantes ved fors\u00f8ket./);
       assert.match(await projects.innerText(), /Opprettelse mislyktes. Prosjektmappa kunne ikke opprettes./);
       assert.doesNotMatch(await projects.innerText(), /filesystem_denied/);
       assert.equal(await projects.getByText("Opprettelse p\u00e5begynt.", { exact: true }).count(), 2);

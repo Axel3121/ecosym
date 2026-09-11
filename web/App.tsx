@@ -93,7 +93,7 @@ function Projects({ civilizationId, projects, canCreate, reload }: {
       const binding = project.harness;
       const mark = project.state === "established" && binding
         ? `Observert registrert i hermes (${binding.externalSlug}, ${binding.externalId}) ${binding.observedAt}. Erkl\u00e6rt sted, ikke bevis p\u00e5 arbeid.${binding.externalArchived ? ` Registreringen var arkivert i hermes ved siste observasjon ${binding.observedAt}.` : ""}`
-        : project.state === "external-unknown" ? "Harness-registrering ukjent; ikke bevis p\u00e5 at den mislyktes. Mappa finnes."
+        : project.state === "external-unknown" ? "Harness-registrering ukjent; ikke bevis p\u00e5 at den mislyktes. Mappa fantes ved fors\u00f8ket."
           : project.state === "failed" ? `Opprettelse mislyktes. ${projectErrorMessage(project.reason)}` : "Opprettelse p\u00e5begynt.";
       return <li key={project.projectId}><h4>{project.name}</h4><p>{mark}</p><p>{project.workspacePath}</p>
         {project.state !== "established" && <button disabled={sending} onClick={() => void send(project)}>Pr&oslash;v igjen</button>}
