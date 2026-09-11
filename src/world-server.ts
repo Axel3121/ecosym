@@ -85,7 +85,11 @@ export function createWorldServer(readSnapshot: () => WorldSnapshot, buildDirect
         });
         response.end(JSON.stringify(result.project));
       } catch (error) {
-        const code = error instanceof ProjectError ? error.code : "invalid_request";
+        if (!(error instanceof ProjectError)) {
+          fail(500, "internal_error", "Prosjektforespørselen kunne ikke fullføres");
+          return;
+        }
+        const code = error.code;
         const status = ["slug_taken", "path_taken", "request_key_conflict", "retry_in_progress", "civilization_dissolved"].includes(code)
           ? 409 : code === "busy" || code === "harness_unavailable" ? 503 : 400;
         fail(status, code, "Prosjektforespørselen kunne ikke fullføres");

@@ -35,11 +35,20 @@ function projectErrorMessage(code: unknown): string {
     : genericProjectError;
 }
 
+function randomUUID(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 function Projects({ civilizationId, projects, canCreate, reload }: {
   civilizationId: string; projects: WorldProjectSnapshot[]; canCreate: boolean; reload: () => void;
 }) {
   const [name, setName] = useState("");
-  const [requestKey, setRequestKey] = useState(() => crypto.randomUUID());
+  const [requestKey, setRequestKey] = useState(() => randomUUID());
   const failedCreateName = useRef<string | null>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,7 +62,10 @@ function Projects({ civilizationId, projects, canCreate, reload }: {
       }
       return;
     }
-    if (document.activeElement === document.body && restoreFocus.current?.isConnected) restoreFocus.current.focus();
+    if (document.activeElement === document.body) {
+      if (restoreFocus.current?.isConnected) restoreFocus.current.focus();
+      else document.querySelector(".projects")?.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
+    }
     restoreFocus.current = null;
   }, [sending]);
   const send = async (project?: WorldProjectSnapshot) => {
@@ -62,7 +74,7 @@ function Projects({ civilizationId, projects, canCreate, reload }: {
     pending.current = true;
     setSending(true);
     setError(null);
-    if (project && !retryKeys.current.has(project.projectId)) retryKeys.current.set(project.projectId, crypto.randomUUID());
+    if (project && !retryKeys.current.has(project.projectId)) retryKeys.current.set(project.projectId, randomUUID());
     try {
       const response = await fetch(project ? `/api/projects/${encodeURIComponent(project.projectId)}/retry`
         : `/api/civilizations/${encodeURIComponent(civilizationId)}/projects`, {
@@ -80,7 +92,7 @@ function Projects({ civilizationId, projects, canCreate, reload }: {
       const result = validateWorldProjectSnapshot(body);
       if (result.civilizationId !== civilizationId || (project && result.projectId !== project.projectId)) throw new Error("Invalid project link");
       if (project) retryKeys.current.delete(project.projectId);
-      else { failedCreateName.current = null; setRequestKey(crypto.randomUUID()); setName(""); }
+      else { failedCreateName.current = null; setRequestKey(randomUUID()); setName(""); }
       reload();
     } catch {
       if (!project) failedCreateName.current = name;
@@ -102,7 +114,7 @@ function Projects({ civilizationId, projects, canCreate, reload }: {
     {canCreate && <form onSubmit={(event) => { event.preventDefault(); void send(); }}>
       <label>Prosjektnavn<input name="name" required value={name} disabled={sending} onChange={(event) => {
         if (failedCreateName.current !== null && event.target.value !== failedCreateName.current) {
-          setRequestKey(crypto.randomUUID());
+          setRequestKey(randomUUID());
           failedCreateName.current = null;
         }
         setName(event.target.value);

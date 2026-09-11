@@ -389,8 +389,8 @@ test("project HTTP errors never return native output or filesystem paths", async
     fixture.server.projectService = { async create() { throw error; }, async retry() { throw error; } };
     for (const options of [{}, { path: "/api/projects/project:missing/retry", body: JSON.stringify({ requestKey: randomUUID() }) }]) {
       const result = await fixture.send(options);
-      assert.equal(result.status, 400);
-      assert.deepEqual(JSON.parse(result.body), { error: error instanceof ProjectError ? error.code : "invalid_request",
+      assert.equal(result.status, error instanceof ProjectError ? 400 : 500);
+      assert.deepEqual(JSON.parse(result.body), { error: error instanceof ProjectError ? error.code : "internal_error",
         message: "Prosjektforespørselen kunne ikke fullføres" });
     }
   }

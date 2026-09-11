@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve, sep } from "node:path";
 import { ProjectError, type HarnessAdapter, type HarnessBinding, type HarnessOutcome, type HarnessProjectRequest, type ProjectErrorCode } from "./project-types.ts";
 
 // Observed with Hermes v0.21.0. Both identity sources are CLI prose, not JSON.
@@ -17,12 +17,14 @@ export class HermesProjectAdapter implements HarnessAdapter {
   readonly #root: string;
   readonly #env: NodeJS.ProcessEnv;
   readonly #home: string;
+  readonly #userHome: string;
 
   constructor(options: { root: string; env?: NodeJS.ProcessEnv; home?: string; binary?: string }) {
     const env = options.env ?? process.env;
     const home = options.home ?? homedir();
     if (!isAbsolute(options.root)) throw new ProjectError("root_invalid");
     this.#root = resolve(options.root);
+    this.#userHome = resolve(home);
     this.#home = resolve(env.ECOSYM_HARNESS_HOME ?? env.HERMES_HOME ?? join(home, ".hermes"));
     this.#env = { PATH: env.PATH ?? "/usr/local/bin:/usr/bin:/bin", HOME: home,
       HERMES_HOME: this.#home, LANG: "C", LC_ALL: "C" };
@@ -85,6 +87,11 @@ export class HermesProjectAdapter implements HarnessAdapter {
       harnessHome: this.#home, harnessVersion: match[1]!, provenance } };
   }
 
+  #normalizeWorkspacePath(value: string): string {
+    const expanded = value === "~" ? this.#userHome : value.startsWith(`~${sep}`) ? join(this.#userHome, value.slice(2)) : value;
+    return resolve(expanded);
+  }
+
   async #find(request: HarnessProjectRequest): Promise<HarnessOutcome | null> {
     // Enumeration must finish within one budget, not 30 seconds per project.
     const deadline = performance.now() + 30_000;
@@ -107,7 +114,7 @@ export class HermesProjectAdapter implements HarnessAdapter {
       const header = headerPattern.exec(show.stdout.split("\n")[0] ?? "");
       const primary = [...show.stdout.matchAll(/^  primary: (.+)$/gm)];
       if (show.code !== 0 || !header || header[1] !== slug || primary.length !== 1) return unknown();
-      if (primary[0]![1] === request.workspacePath) {
+      if (this.#normalizeWorkspacePath(primary[0]![1]!) === this.#normalizeWorkspacePath(request.workspacePath)) {
         if (found) return unknown();
         found = { slug, id: header[2]!, archived: header[3] !== undefined };
       }
