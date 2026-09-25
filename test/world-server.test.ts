@@ -366,6 +366,39 @@ test("project HTTP framing rejects mismatched Content-Length over a real socket"
   assert.equal(fixture.provisions(), 0);
 });
 
+test("project HTTP writes refuse a duplicated Content-Type over a real socket", async (t) => {
+  const fixture = await projectServer(t);
+  const data = JSON.stringify(fixture.payload);
+  const raw = (contentTypes: string[]) => new Promise<string>((resolve, reject) => {
+    const socket = connect(fixture.port, "127.0.0.1");
+    t.after(() => socket.destroy());
+    socket.setTimeout(5000, () => { socket.destroy(); reject(new Error("Request timed out")); });
+    let response = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => { response += chunk; });
+    socket.on("error", reject);
+    socket.on("end", () => resolve(response));
+    // Write without half-closing: the server aborts a request whose client has
+    // ended, and Connection: close ends the exchange after the response.
+    socket.on("connect", () => socket.write(`POST ${fixture.path} HTTP/1.1\r\nHost: ${fixture.host}\r\nOrigin: http://${fixture.host}\r\n`
+      + contentTypes.map((type) => `Content-Type: ${type}\r\n`).join("")
+      + `Content-Length: ${Buffer.byteLength(data)}\r\nConnection: close\r\n\r\n${data}`));
+  });
+  // Node keeps only the first Content-Type, so a second, contradicting one
+  // would pass unseen. Like Host, the header must occur exactly once.
+  for (const contentTypes of [["application/json", "text/plain"], ["application/json", "application/json"]]) {
+    const refused = await raw(contentTypes);
+    assert.match(refused, /^HTTP\/1.1 403 /u, contentTypes.join(" + "));
+    assert.match(refused, /"error":"forbidden_origin"/u, contentTypes.join(" + "));
+  }
+  assert.deepEqual(fixture.store.listProjects(), []);
+  assert.equal(fixture.provisions(), 0);
+  // The same raw request with one Content-Type is accepted, so the refusals
+  // above are about the duplicate rather than the raw framing.
+  assert.match(await raw(["application/json"]), /^HTTP\/1.1 201 /u);
+  assert.equal(fixture.store.listProjects().length, 1);
+});
+
 test("project HTTP method gate precedes path parsing and non-write POST remains 405", async (t) => {
   const fixture = await projectServer(t);
   for (const options of [{ method: "DELETE", path: "/%" }, { method: "PUT" }, { path: "/api/world-snapshot" }, { path: "/" }]) {
