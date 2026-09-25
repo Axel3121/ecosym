@@ -4,6 +4,7 @@ import type { FileHandle } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
+import { Readable } from "node:stream";
 
 import { selectorsIn, type ConnectionConfig, type Selector } from "./config.ts";
 
@@ -86,11 +87,13 @@ export async function readJsonlSourceWithRecordIndexModes(
     throw new SourceReadError("source_mapping_invalid");
   }
   const handle = await openFileReadOnly(config.reader.path);
+  let stream: ReturnType<typeof utf8Text> | undefined;
   try {
     const before = await handle.stat({ bigint: true });
+    stream = utf8Text(handle);
     const lines = createInterface({
       crlfDelay: Number.POSITIVE_INFINITY,
-      input: handle.createReadStream({ autoClose: false, encoding: "utf8" }),
+      input: stream.text,
     });
     const physicalLine: SourceRecord[] = [];
     const recordOrdinal: SourceRecord[] = [];
@@ -137,6 +140,7 @@ export async function readJsonlSourceWithRecordIndexModes(
     }
     throw sourceError(error);
   } finally {
+    closeUtf8Text(stream);
     await handle.close();
   }
 }
@@ -186,6 +190,41 @@ function sourceRevision(stats: JsonlSourceRevision): JsonlSourceRevision {
     mtimeNs: stats.mtimeNs,
     size: stats.size,
   };
+}
+
+// The utf8 encoding option replaces bytes that are not UTF-8 with U+FFFD,
+// which would store a value the source never stated. A byte order mark is kept,
+// as the utf8 option keeps it.
+function utf8Decoder(): TextDecoder {
+  return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+}
+
+function decodeUtf8(decoder: TextDecoder, bytes?: Uint8Array, stream = false): string {
+  try {
+    return decoder.decode(bytes, { stream });
+  } catch (error) {
+    throw new SourceReadError("source_malformed", error);
+  }
+}
+
+// Streams a file's text for readline, refusing bytes that are not UTF-8.
+function utf8Text(handle: FileHandle): { bytes: Readable; text: Readable } {
+  const bytes = handle.createReadStream({ autoClose: false });
+  const decoder = utf8Decoder();
+  const text = Readable.from((async function* () {
+    for await (const chunk of bytes) yield decodeUtf8(decoder, chunk as Buffer, true);
+    const rest = decodeUtf8(decoder);
+    if (rest !== "") yield rest;
+  })());
+  return { bytes, text };
+}
+
+// A reader stopped early leaves the decoding stream pending on the file. Tear
+// it down before the handle closes under it, so the byte stream's premature
+// close has no one left to report to.
+function closeUtf8Text(stream: { bytes: Readable; text: Readable } | undefined): void {
+  stream?.text.destroy();
+  stream?.bytes.destroy();
 }
 
 export async function openFileReadOnly(path: string): Promise<FileHandle> {
@@ -241,11 +280,13 @@ async function* readJsonLines(
   }
   const handle = await openFileReadOnly(config.reader.path);
   let before: JsonlSourceRevision | undefined;
+  let stream: ReturnType<typeof utf8Text> | undefined;
   try {
     before = await handle.stat({ bigint: true });
+    stream = utf8Text(handle);
     const lines = createInterface({
       crlfDelay: Number.POSITIVE_INFINITY,
-      input: handle.createReadStream({ autoClose: false, encoding: "utf8" }),
+      input: stream.text,
     });
     let recordIndex = 0;
     for await (const line of lines) {
@@ -269,6 +310,7 @@ async function* readJsonLines(
     if (before !== undefined) await assertSourceRevision(handle, config.reader.path, before);
     throw sourceError(error);
   } finally {
+    closeUtf8Text(stream);
     await handle.close();
   }
 }
@@ -314,12 +356,13 @@ export async function* readJsonFiles(
     }
     try {
       await assertSourceRevision(handle, path, before, stat);
-      let contents: string;
+      let bytes: Buffer;
       try {
-        contents = await handle.readFile({ encoding: "utf8" });
+        bytes = await handle.readFile();
       } catch (error) {
         throw sourceError(error);
       }
+      const contents = decodeUtf8(utf8Decoder(), bytes);
       let parsed: ParsedJson;
       try {
         parsed = parseJson(contents);
@@ -383,12 +426,13 @@ async function* readCsv(config: ConnectionConfig): AsyncGenerator<SourceRecord> 
   let before: JsonlSourceRevision | undefined;
   try {
     before = await handle.stat({ bigint: true });
-    let contents: string;
+    let bytes: Buffer;
     try {
-      contents = await handle.readFile({ encoding: "utf8" });
+      bytes = await handle.readFile();
     } catch (error) {
       throw sourceError(error);
     }
+    let contents = decodeUtf8(utf8Decoder(), bytes);
     // utf8 decoding keeps a leading byte order mark; it is not part of the first header.
     if (contents.startsWith("﻿")) contents = contents.slice(1);
     const rows = parseCsv(contents, config.reader.delimiter);
