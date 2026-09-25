@@ -197,7 +197,10 @@ test("pending retry replay stops waiting at the 120 second deadline", { timeout:
   void retry.then(() => { settled = true; }, () => { settled = true; });
   const rejected = assert.rejects(retry, code("retry_in_progress"));
   t.mock.timers.tick(119_975);
-  await Promise.resolve();
+  // One microtask is not enough: an early rejection settles a few microtasks
+  // after the timer fires. setImmediate is not mocked and runs only once the
+  // microtask queue is empty, so an early deadline has settled by then.
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(settled, false);
   t.mock.timers.tick(25);
   await rejected;
