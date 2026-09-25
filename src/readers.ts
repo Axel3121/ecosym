@@ -639,7 +639,9 @@ function sqliteErrorCode(error: unknown): number | undefined {
     "errcode" in error &&
     typeof error.errcode === "number"
   ) {
-    return error.errcode;
+    // node:sqlite reports the extended result code; its low byte is the
+    // primary code (SQLITE_BUSY_RECOVERY is still SQLITE_BUSY).
+    return error.errcode & 0xff;
   }
   return undefined;
 }
