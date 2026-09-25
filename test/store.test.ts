@@ -704,6 +704,10 @@ test("an older concurrent repeat cannot restore an earlier spelling", async () =
   await older;
 
   try {
+    // Both reads below look at the first row only, so the older repeat could
+    // land as a second row with the earlier spelling unseen. One instant is
+    // one fact.
+    assert.equal(store.countFacts(), 1);
     assert.equal(store.queryObservations()[0]?.sourceRecordedAt, "2026-08-30T10:00:00Z");
     const inspected = new DatabaseSync(store.path, { readOnly: true });
     try {
@@ -713,8 +717,8 @@ test("an older concurrent repeat cannot restore an earlier spelling", async () =
              FROM facts f
              JOIN collection_attempts a ON a.attempt_id = f.attempt_id`,
         )
-        .get() as { attempt_order: number };
-      assert.equal(provenance.attempt_order, 2);
+        .all() as { attempt_order: number }[];
+      assert.deepEqual(provenance.map((row) => row.attempt_order), [2]);
     } finally {
       inspected.close();
     }
@@ -1177,7 +1181,12 @@ test("collection currentness follows successful attempt order within the last-se
     await store.collect(active, seen);
     const initial = store.queryObservations()[0];
     assert.equal(initial?.temporalStatus, "current");
-    await assert.rejects(store.collect(active, () => { throw new Error("synthetic failure"); }));
+    // Pin the failure: a matcherless rejects would also accept a contention or
+    // completion failure that left a different row behind.
+    await assert.rejects(
+      store.collect(active, () => { throw new Error("synthetic failure"); }),
+      { name: "CollectionFailedError", code: "internal_error" },
+    );
     store.recordSkipped(active, "already_collecting");
     assert.deepEqual(store.queryObservations()[0], initial);
 
@@ -1193,7 +1202,9 @@ test("collection currentness follows successful attempt order within the last-se
     const plan = store.planCollectionAttemptRetirement(running.attemptId, "operator:synthetic");
     await store.retireCollectionAttempt(plan.attemptId, plan.retiredBy, plan.confirmationToken);
     retirementRelease.resolve();
-    await assert.rejects(retired);
+    // The retired attempt must fail because it is no longer running, not for
+    // any other reason.
+    await assert.rejects(retired, { name: "CollectionFailedError", code: "collection_attempt_not_running" });
     assert.deepEqual(store.queryObservations()[0], initial);
 
     const ready = Promise.withResolvers<void>();

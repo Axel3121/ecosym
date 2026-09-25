@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:f
 import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
 import { parseConnectionConfig } from "../src/config.ts";
@@ -457,4 +458,88 @@ test("an unescaped quote inside an unquoted CSV field is malformed", async () =>
   const records = await readAll(config(reader));
   assert.equal(records.length, 1);
   assert.equal(records[0]?.record.subject, 'su"bject');
+});
+
+test("bytes that are not UTF-8 make a text source malformed rather than a replacement character", async () => {
+  const directory = workspace();
+  const prefix = {
+    csv: "id,subject,at,value\nr1,s,2026-08-30T00:00:00.000Z,",
+    json: '[{"id":"r1","subject":"s","at":"2026-08-30T00:00:00.000Z","value":"',
+    jsonl: '{"id":"r1","subject":"s","at":"2026-08-30T00:00:00.000Z","value":"',
+  };
+  const suffix = { csv: "\n", json: '"}]', jsonl: '"}\n' };
+  const reader = (type: "csv" | "json" | "jsonl", path: string) =>
+    type === "csv" ? { type, path, delimiter: "," }
+      : type === "json" ? { type, pathPattern: path, recordsPath: "" }
+        : { type, path };
+
+  for (const type of ["csv", "json", "jsonl"] as const) {
+    const path = join(directory, `source.${type}`);
+    // 0xff never occurs in UTF-8. Decoding it as U+FFFD would store a value
+    // the source never stated.
+    writeFileSync(path, Buffer.concat([Buffer.from(prefix[type]), Buffer.from([0xff]), Buffer.from(suffix[type])]));
+    assert.equal(await readError(config(reader(type, path))), "source_malformed", type);
+
+    // Record-index resolution reads JSONL through its own path.
+    if (type === "jsonl") {
+      await assert.rejects(
+        readJsonlSourceWithRecordIndexModes(config(reader(type, path))),
+        (error: unknown) => error instanceof SourceReadError && error.code === "source_malformed",
+      );
+    }
+
+    // A U+FFFD the source really encodes is data, so the refusal above is
+    // about the bytes rather than the character.
+    writeFileSync(path, `${prefix[type]}�${suffix[type]}`);
+    const records = await readAll(config(reader(type, path)));
+    assert.equal(records.length, 1, type);
+    assert.equal(records[0]?.record.value, "�", type);
+    if (type === "jsonl") {
+      const modes = await readJsonlSourceWithRecordIndexModes(config(reader(type, path)));
+      assert.equal(modes.recordOrdinal[0]?.record.value, "�");
+    }
+  }
+
+  // JSONL is streamed in 64 KiB chunks. A two-byte character split across a
+  // chunk boundary is well formed and must still read.
+  const path = join(directory, "boundary.jsonl");
+  const padding = "a".repeat(65535 - Buffer.byteLength(prefix.jsonl));
+  writeFileSync(path, `${prefix.jsonl}${padding}é${suffix.jsonl}`);
+  const records = await readAll(config(reader("jsonl", path)));
+  assert.equal(records.length, 1);
+  assert.equal(records[0]?.record.value, `${padding}é`);
+});
+
+test("SQLite source failures are classified by primary result code", async (t) => {
+  const directory = workspace();
+  const path = join(directory, "source.db");
+  const database = new DatabaseSync(path);
+  database.exec("CREATE TABLE measurements (id TEXT, subject TEXT, at TEXT, value INTEGER)");
+  database.close();
+  const reader = { type: "sqlite", path, table: "measurements" };
+
+  // node:sqlite reports the extended result code, whose low byte is the
+  // primary code. A lock during WAL recovery (SQLITE_BUSY_RECOVERY, 261) is
+  // still a lock, and a corrupt index (SQLITE_CORRUPT_INDEX, 779) is still a
+  // malformed source; neither is an unreadable file. The primary codes are
+  // the positive controls for the same mapping.
+  for (const [errcode, expected] of [
+    [5, "source_locked"],
+    [261, "source_locked"],
+    [517, "source_locked"],
+    [6, "source_locked"],
+    [262, "source_locked"],
+    [11, "source_malformed"],
+    [779, "source_malformed"],
+    [26, "source_malformed"],
+  ] as const) {
+    t.mock.method(DatabaseSync.prototype, "prepare", () => {
+      throw Object.assign(new Error("synthetic SQLite failure"), { errcode });
+    });
+    try {
+      assert.equal(await readError(config(reader)), expected, `errcode ${errcode}`);
+    } finally {
+      t.mock.restoreAll();
+    }
+  }
 });

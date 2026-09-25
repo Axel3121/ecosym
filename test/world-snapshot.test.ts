@@ -73,9 +73,14 @@ test("project contracts reject missing and extra keys, accessors, invalid values
   rejects({ ...input, projects: undefined });
   rejects({ ...input, projects: null });
   rejects({ ...input, projects: {} });
+  // A getter that throws would satisfy the bare assert.throws above by itself,
+  // so each getter counts its calls and returns the valid value instead: the
+  // accessor alone must cause the rejection, and it must never be invoked.
+  let getterCalls = 0;
   const projectsAccessor = { ...input };
-  Object.defineProperty(projectsAccessor, "projects", { get() { assert.fail("must not invoke projects getter"); } });
+  Object.defineProperty(projectsAccessor, "projects", { enumerable: true, get() { getterCalls += 1; return input.projects; } });
   rejects(projectsAccessor);
+  assert.equal(getterCalls, 0, "projects getter");
   rejects({ ...input, projects: new Array(1) });
   for (const key of Object.keys(project)) {
     const value = { ...project } as Record<string, unknown>;
@@ -103,11 +108,13 @@ test("project contracts reject missing and extra keys, accessors, invalid values
   ]) rejects({ ...input, projects: [invalid] });
   rejects({ ...input, projects: [project, project] });
   const accessor = { ...project };
-  Object.defineProperty(accessor, "name", { get() { assert.fail("must not invoke getter"); } });
+  Object.defineProperty(accessor, "name", { enumerable: true, get() { getterCalls += 1; return project.name; } });
   rejects({ ...input, projects: [accessor] });
+  assert.equal(getterCalls, 0, "project name getter");
   const bindingAccessor = { ...project.harness };
-  Object.defineProperty(bindingAccessor, "externalId", { get() { assert.fail("must not invoke binding getter"); } });
+  Object.defineProperty(bindingAccessor, "externalId", { enumerable: true, get() { getterCalls += 1; return project.harness!.externalId; } });
   rejects({ ...input, projects: [{ ...project, harness: bindingAccessor }] });
+  assert.equal(getterCalls, 0, "binding externalId getter");
 });
 
 test("owner composition requires listProjects and an open work claim changes no project depiction", (t) => {

@@ -176,20 +176,37 @@ function leafPaths(value: unknown, prefix: string[] = []): string[][] {
 }
 
 test("every signed leaf participates in the envelope digest", () => {
-  const representation = createPetitionEnvelope(validEnvelope());
+  const input = validEnvelope();
+  const representation = createPetitionEnvelope(input);
   const original = representation.envelope as unknown as JsonValue;
+  const envelopeDigestOf = (value: JsonValue) => {
+    const bytes = Buffer.from(canonicalJson(value), "utf8");
+    return `sha256:${createHash("sha256")
+      .update(Buffer.concat([Buffer.from("ecosym.petition-envelope.v1"), Buffer.from([0])]))
+      .update(bytes)
+      .digest("hex")}`;
+  };
+  const valueAt = (root: unknown, path: string[]) =>
+    path.reduce<unknown>((value, key) => recordAt(value)[key], root);
+
+  // Comparing a mutated copy's hash with the returned digest alone passes for
+  // any digest, so first pin what the code signed: the returned bytes are the
+  // canonical form of the whole returned envelope and the digest covers
+  // exactly those bytes. A digest over a subset of the envelope fails here.
+  assert.deepEqual(representation.canonicalBytes, Buffer.from(canonicalJson(original), "utf8"));
+  assert.equal(representation.envelopeDigest, envelopeDigestOf(original));
+  // The signed envelope carries every leaf the caller supplied, so no input
+  // leaf can be dropped before signing.
+  for (const path of leafPaths(input)) {
+    assert.deepEqual(valueAt(original, path), valueAt(input, path), path.join("."));
+  }
   for (const path of leafPaths(original)) {
     const changed = structuredClone(original);
-    const current = path.reduce<unknown>((value, key) => recordAt(value)[key], changed);
+    const current = valueAt(changed, path);
     const replacement =
       typeof current === "string" ? `${current}!` : typeof current === "number" ? current + 1 : false;
     setAt(changed, path, replacement);
-    const bytes = Buffer.from(canonicalJson(changed), "utf8");
-    const digest = createHash("sha256")
-      .update(Buffer.concat([Buffer.from("ecosym.petition-envelope.v1"), Buffer.from([0])]))
-      .update(bytes)
-      .digest("hex");
-    assert.notEqual(`sha256:${digest}`, representation.envelopeDigest, path.join("."));
+    assert.notEqual(envelopeDigestOf(changed), representation.envelopeDigest, path.join("."));
   }
 });
 
