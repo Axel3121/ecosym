@@ -2,19 +2,16 @@ import { Buffer } from "node:buffer";
 import { ArenaAdmissionError, parseArenaBundle, sourceReportProjection, type ArenaBundle } from "./arena-adapter.ts";
 import type { SourceReportSnapshot, SourceReportProvenance } from "./source-report.ts";
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { performance } from "node:perf_hooks";
-import { DatabaseSync, type StatementResultingChanges } from "node:sqlite";
-import { setTimeout as delay } from "node:timers/promises";
+import { DatabaseSync } from "node:sqlite";
 
 import {
   parseConnectionConfig,
-  selectorsIn,
   type ConnectionConfig,
   type ParsedConnectionConfig,
 } from "./config.ts";
-import { canonicalJson, type JsonScalar, type JsonValue, sha256 } from "./json.ts";
+import { canonicalJson, type JsonValue, sha256 } from "./json.ts";
 import type { FoundedCivilizationSnapshot } from "./institution-snapshot.ts";
 import type {
   ConnectionStatus,
@@ -27,7 +24,6 @@ import {
   mandateDigest,
   parseMandateConfig,
   type ParsedCivilizationConfig,
-  type MandateConfig,
   type ParsedMandateConfig,
 } from "./institution.ts";
 import {
@@ -36,20 +32,164 @@ import {
   type OwnedStateExport,
 } from "./owned-state.ts";
 import { defaultStateDirectory } from "./paths.ts";
-import {
-  recordIndexModeEvidence,
-  type RecordIndexModeEvidence,
-} from "./record-index-evidence.ts";
 import type { JsonlRecordIndexMode } from "./readers.ts";
 import { utcInstantOrderingKey } from "./time.ts";
 import { sourceReportFactTimeKey } from "./source-report-time.ts";
 import { PROJECT_ERROR_CODES, ProjectError, type ProjectErrorCode, type ProjectState, type ProjectRequest, type HarnessBinding, type WorldProjectSnapshot } from "./project-types.ts";
 export { ProjectError } from "./project-types.ts";
+export { createCollectionContentionBudget, isSqliteContentionError } from "./store-sqlite.ts";
 import {
   sameVerificationFactSet,
-  verificationFactFromInput,
   verificationFactKey,
 } from "./verification-facts.ts";
+import {
+  CivilizationDissolvedError,
+  CivilizationNotFoundError,
+  CollectionAttemptNotRunningError,
+  CollectionFailedError,
+  ConfirmationAlreadySpentError,
+  ConnectionConflictError,
+  ConnectionInactiveError,
+  ConnectionNotFoundError,
+  FactNotDeclaredError,
+  ForgetCivilizationExportCoverageError,
+  ForgetCivilizationNotDissolvedError,
+  ForgetCivilizationNotFoundError,
+  ForgetCivilizationStateChangedError,
+  ForgetConnectionActiveError,
+  ForgetConnectionNotFoundError,
+  ForgetExportCoverageError,
+  ForgetStateChangedError,
+  MandateUnreadableError,
+  RecordIndexResolutionStateChangedError,
+  SourceRevisionChangedError,
+  StoreContentionError,
+  StoredRecordIndexModeChangedError,
+  StoredRecordIndexModeKnownError,
+  StoredRecordIndexModeUnknownError,
+  WorkClaimConflictError,
+} from "./store-errors.ts";
+
+export {
+  CivilizationDissolvedError,
+  CivilizationNotFoundError,
+  CollectionAttemptNotRunningError,
+  CollectionFailedError,
+  ConfirmationAlreadySpentError,
+  ConfirmationPreviewNotFoundError,
+  ConnectionConflictError,
+  ConnectionInactiveError,
+  ConnectionNotFoundError,
+  FactNotDeclaredError,
+  FactRejectedError,
+  ForgetCivilizationExportCoverageError,
+  ForgetCivilizationNotDissolvedError,
+  ForgetCivilizationNotFoundError,
+  ForgetCivilizationStateChangedError,
+  ForgetConnectionActiveError,
+  ForgetConnectionNotFoundError,
+  ForgetExportCoverageError,
+  ForgetStateChangedError,
+  MandateUnreadableError,
+  RecordIndexResolutionCollectionRunningError,
+  RecordIndexResolutionStateChangedError,
+  SourceRevisionChangedError,
+  StoredRecordIndexModeChangedError,
+  StoredRecordIndexModeKnownError,
+  StoredRecordIndexModeUnknownError,
+  WorkClaimConflictError,
+} from "./store-errors.ts";
+import type {
+  ActiveConnection,
+  CivilizationForgetPlan,
+  CivilizationForgetRecord,
+  CivilizationForgetSnapshot,
+  CollectionAttempt,
+  CollectionAttemptRetirement,
+  CollectionAttemptRetirementPlan,
+  CollectionAttemptRetirementSnapshot,
+  CollectionResult,
+  CollectionSink,
+  ContentionBudget,
+  ForgetPlan,
+  ForgetRecord,
+  ForgetSnapshot,
+  OpenWorkClaim,
+  QueryOptions,
+  RecordIndexModeResolution,
+  RecordIndexModeResolutionPlan,
+  RecordIndexModeResolutionSnapshot,
+  ResolvedAuthorityContext,
+  VerificationFact,
+  VerificationSnapshot,
+} from "./store-types.ts";
+import { ConfirmationState } from "./store-confirmation.ts";
+import { OwnedStateReader } from "./store-export.ts";
+import { migrateStore } from "./store-migrate.ts";
+import { projectOwnerAlive, projectProcessIdentity } from "./store-project-owner.ts";
+import { FACT_COLLECTION_AS_OF_JOIN } from "./store-schema.ts";
+import {
+  BUSY_RETRY_WINDOW_MILLISECONDS,
+  createCollectionContentionBudget,
+  numberOfChanges,
+  retryTransactionWithinContentionBudget,
+  runImmediateTransaction,
+  runReadTransaction,
+} from "./store-sqlite.ts";
+import {
+  addFilter,
+  collectionAttemptFromRow,
+  parseCivilizationExportInventories,
+  parseCivilizationForgetInventory,
+  parseExportInventories,
+  parseForgetInventory,
+  parseJsonlRecordIndexMode,
+  parseStoredConfig,
+  parseStoredIntegerArray,
+  parseStoredMandate,
+  parseStoredStringArray,
+  storedFactFromRow,
+  usesJsonlRecordIndex,
+  type CollectionAttemptRetirementRow,
+  type CollectionAttemptRow,
+  type FoundedMandateRow,
+  type MandateRevisionRow,
+  type StoredFactRow,
+} from "./store-rows.ts";
+import {
+  correctionSlotKey,
+  safeFailureCode,
+  snapshotFact,
+  validateActor,
+  validateFactAndDeriveSourceTimeKey,
+  validateRetirementActor,
+  verificationFactsFromInputs,
+  type PreparedFact,
+} from "./store-validation.ts";
+
+export type {
+  ActiveConnection,
+  CivilizationForgetInventory,
+  CivilizationForgetPlan,
+  CivilizationForgetRecord,
+  CivilizationRevisionIdentity,
+  CollectionAttempt,
+  CollectionAttemptRetirement,
+  CollectionAttemptRetirementPlan,
+  CollectionResult,
+  CollectionSink,
+  ContentionBudget,
+  ForgetInventory,
+  ForgetPlan,
+  ForgetRecord,
+  OpenWorkClaim,
+  QueryOptions,
+  RecordIndexModeResolution,
+  RecordIndexModeResolutionPlan,
+  ResolvedAuthorityContext,
+  VerificationFact,
+  VerificationSnapshot,
+} from "./store-types.ts";
 
 export type {
   ConnectionStatus,
@@ -60,799 +200,17 @@ export type {
   StoredFact,
 } from "./observation-snapshot.ts";
 
-const STORE_SCHEMA_VERSION = 18;
-const LEGACY_REBUILD_SCHEMA_VERSION = 9;
 const STORE_FILENAME = "observations.sqlite";
-const BUSY_RETRY_WINDOW_MILLISECONDS = 250;
 const WORK_CLAIM_TTL_MILLISECONDS = 30 * 60 * 1000; // 30 minutes, first guess
 const CONFIRMATION_CONTENTION_BUDGET_MILLISECONDS = 2_000;
 const projectAttemptOwners = new Map<string, string>();
-
-const CREATE_PROJECTS = `
-  CREATE TABLE IF NOT EXISTS projects (
-    project_order INTEGER PRIMARY KEY,
-    project_id TEXT NOT NULL UNIQUE,
-    civilization_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    slug TEXT NOT NULL,
-    workspace_path TEXT NOT NULL UNIQUE,
-    harness TEXT NOT NULL CHECK (harness IN ('hermes')),
-    request_key TEXT NOT NULL UNIQUE,
-    request_digest TEXT NOT NULL,
-    requested_at TEXT NOT NULL,
-    UNIQUE (civilization_id, slug),
-    FOREIGN KEY (civilization_id) REFERENCES civilizations(civilization_id)
-  ) STRICT;
-  CREATE TABLE IF NOT EXISTS project_provisioning_events (
-    event_order INTEGER PRIMARY KEY,
-    event_id TEXT NOT NULL UNIQUE,
-    project_id TEXT NOT NULL REFERENCES projects(project_id),
-    state TEXT NOT NULL CHECK (state IN ('requested','directory-created','external-unknown','established','failed')),
-    attempt INTEGER NOT NULL,
-    reason TEXT,
-    recorded_at TEXT NOT NULL,
-    retry_request_key TEXT
-  ) STRICT;
-  CREATE INDEX IF NOT EXISTS project_provisioning_current
-    ON project_provisioning_events(project_id, event_order DESC);
-  CREATE UNIQUE INDEX IF NOT EXISTS project_retry_requests
-    ON project_provisioning_events(project_id, retry_request_key) WHERE retry_request_key IS NOT NULL;
-  CREATE TABLE IF NOT EXISTS project_harness_bindings (
-    project_id TEXT PRIMARY KEY REFERENCES projects(project_id),
-    harness TEXT NOT NULL,
-    harness_home TEXT NOT NULL,
-    harness_version TEXT NOT NULL,
-    external_id TEXT NOT NULL,
-    external_slug TEXT NOT NULL,
-    external_archived INTEGER NOT NULL,
-    provenance TEXT NOT NULL CHECK (provenance IN ('created','adopted')),
-    observed_at TEXT NOT NULL
-  ) STRICT;
-`;
-
-// Opaque event identities carry ownership, not state or a public failure reason.
-// Linux start ticks distinguish PID reuse; elsewhere a live PID fails closed.
-function projectProcessIdentity(pid: number): string {
-  if (process.platform !== "linux") return "live";
-  const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-  const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-  if (fields[0] === "Z" || fields[0] === "X") return "dead";
-  return `${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()}.${fields[19]!}`;
-}
-
-function projectOwnerAlive(eventId: string): boolean {
-  const match = /^project-owner:(\d+):([^:]+):/.exec(eventId);
-  if (match === null) return false;
-  const pid = Number(match[1]);
-  if (process.platform === "linux") {
-    try {
-      return projectProcessIdentity(pid) === match[2];
-    } catch {
-      // Unreadable identity is inconclusive; only ESRCH proves the PID is gone.
-    }
-  }
-  try {
-    process.kill(pid, 0);
-    return process.platform === "linux" || projectProcessIdentity(pid) === match[2];
-  } catch (error) {
-    return !(error instanceof Error && "code" in error && error.code === "ESRCH");
-  }
-}
-
-export function createCollectionContentionBudget(): ContentionBudget {
-  return { remainingMilliseconds: BUSY_RETRY_WINDOW_MILLISECONDS };
-}
-
-const CREATE_COLLECTION_ATTEMPTS = `
-  CREATE TABLE collection_attempts (
-    attempt_order INTEGER PRIMARY KEY,
-    attempt_id TEXT NOT NULL UNIQUE,
-    connection_id TEXT NOT NULL,
-    config_hash TEXT NOT NULL,
-    activation_id TEXT NOT NULL,
-    started_at TEXT NOT NULL,
-    completed_at TEXT,
-    outcome TEXT NOT NULL CHECK (outcome IN ('running', 'success', 'failed', 'skipped', 'retired')),
-    source_records_seen INTEGER NOT NULL CHECK (source_records_seen >= 0),
-    facts_seen INTEGER NOT NULL CHECK (facts_seen >= 0),
-    facts_added INTEGER NOT NULL CHECK (facts_added >= 0),
-    facts_changed INTEGER NOT NULL CHECK (facts_changed >= 0),
-    failure_code TEXT,
-    FOREIGN KEY (connection_id, config_hash)
-      REFERENCES connection_versions(connection_id, config_hash),
-    CHECK (
-      (outcome = 'running' AND completed_at IS NULL) OR
-      (outcome <> 'running' AND completed_at IS NOT NULL)
-    ),
-    CHECK (
-      (outcome IN ('failed', 'skipped') AND failure_code IS NOT NULL) OR
-      (outcome IN ('running', 'success', 'retired') AND failure_code IS NULL)
-    )
-  ) STRICT;
-`;
-const CREATE_COLLECTION_ATTEMPTS_LATEST_INDEX = `
-  CREATE INDEX collection_attempts_latest
-    ON collection_attempts(
-      connection_id, config_hash, activation_id, attempt_order DESC
-    );
-`;
-const CREATE_COLLECTION_ATTEMPT_RETIREMENTS = `
-  CREATE TABLE IF NOT EXISTS collection_attempt_retirements (
-    retirement_order INTEGER PRIMARY KEY,
-    retirement_id TEXT NOT NULL UNIQUE,
-    attempt_id TEXT NOT NULL UNIQUE,
-    connection_id TEXT NOT NULL,
-    config_hash TEXT NOT NULL,
-    retired_at TEXT NOT NULL,
-    retired_by TEXT NOT NULL,
-    confirmation_token TEXT NOT NULL,
-    FOREIGN KEY (attempt_id) REFERENCES collection_attempts(attempt_id),
-    FOREIGN KEY (connection_id, config_hash)
-      REFERENCES connection_versions(connection_id, config_hash)
-  ) STRICT;
-`;
-const CREATE_RECORD_INDEX_MODE_RESOLUTIONS = `
-  CREATE TABLE record_index_mode_resolutions (
-    resolution_order INTEGER PRIMARY KEY,
-    resolution_id TEXT NOT NULL UNIQUE,
-    connection_id TEXT NOT NULL,
-    config_hash TEXT NOT NULL,
-    previous_mode TEXT NOT NULL
-      CHECK (previous_mode IN ('physical-line', 'record-ordinal', 'unknown')),
-    record_index_mode TEXT NOT NULL
-      CHECK (record_index_mode IN ('physical-line', 'record-ordinal')),
-    resolved_at TEXT NOT NULL,
-    affected_fact_ids_json TEXT NOT NULL,
-    collection_attempt_ids_json TEXT NOT NULL,
-    confirmation_token TEXT NOT NULL,
-    FOREIGN KEY (connection_id, config_hash)
-      REFERENCES connection_versions(connection_id, config_hash)
-  ) STRICT;
-`;
-const CREATE_CONFIRMATION_PREVIEWS = `
-  CREATE TABLE IF NOT EXISTS confirmation_previews (
-    confirmation_token_hash TEXT NOT NULL PRIMARY KEY,
-    operation TEXT NOT NULL
-      CHECK (operation IN (
-        'resolve-record-index', 'retire-collection-attempt', 'forget',
-        'forget-civilization'
-      )),
-    arguments_json TEXT NOT NULL,
-    state_fingerprint TEXT NOT NULL,
-    issued_at TEXT NOT NULL,
-    consumed_at TEXT
-  ) STRICT;
-`;
-const CREATE_OWNED_STATE_EXPORTS = `
-  CREATE TABLE IF NOT EXISTS owned_state_exports (
-    state_fingerprint TEXT NOT NULL PRIMARY KEY,
-    export_digest TEXT NOT NULL UNIQUE,
-    exported_at TEXT NOT NULL,
-    connection_inventories_json TEXT NOT NULL,
-    civilization_inventories_json TEXT NOT NULL
-  ) STRICT;
-`;
-const CREATE_FORGET_RECORDS = `
-  CREATE TABLE IF NOT EXISTS forget_records (
-    forget_order INTEGER PRIMARY KEY,
-    forget_id TEXT NOT NULL UNIQUE,
-    connection_id TEXT NOT NULL,
-    forgotten_at TEXT NOT NULL,
-    forgotten_by TEXT NOT NULL,
-    inventory_json TEXT NOT NULL,
-    inventory_digest TEXT NOT NULL,
-    export_digest TEXT NOT NULL
-  ) STRICT;
-`;
-const CREATE_CIVILIZATION_FORGET_RECORDS = `
-  CREATE TABLE IF NOT EXISTS civilization_forget_records (
-    forget_order INTEGER PRIMARY KEY,
-    forget_id TEXT NOT NULL UNIQUE,
-    civilization_id TEXT NOT NULL,
-    forgotten_at TEXT NOT NULL,
-    forgotten_by TEXT NOT NULL,
-    inventory_json TEXT NOT NULL,
-    inventory_digest TEXT NOT NULL,
-    export_digest TEXT NOT NULL
-  ) STRICT;
-`;
-
-// Institutional state. Kept in tables distinct from `facts`: SECURITY.md names
-// institutional records and observations as one protected class, so they share a
-// store, but institutional state says what *should* exist while a fact says what
-// was observed, and the two must never be queried as one thing.
-//
-// A mandate revision is never updated in place. Redrawing appends a row; the
-// previous revision stays readable, because history and current truth are
-// distinct. Dissolution appends a `status = 'dissolved'` revision without
-// erasing what the civilization was.
-const CREATE_INSTITUTION = `
-  CREATE TABLE IF NOT EXISTS civilizations (
-    civilization_id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    founded_at TEXT NOT NULL
-  ) STRICT;
-
-  CREATE TABLE IF NOT EXISTS mandate_revisions (
-    revision_order INTEGER PRIMARY KEY,
-    civilization_id TEXT NOT NULL,
-    mandate_id TEXT NOT NULL,
-    revision TEXT NOT NULL,
-    previous_revision TEXT,
-    status TEXT NOT NULL CHECK (status IN ('active', 'dissolved')),
-    mandate_json TEXT NOT NULL,
-    mandate_digest TEXT NOT NULL,
-    recorded_at TEXT NOT NULL,
-    UNIQUE (civilization_id, revision),
-    UNIQUE (mandate_id, revision),
-    FOREIGN KEY (civilization_id) REFERENCES civilizations(civilization_id),
-    FOREIGN KEY (mandate_id, previous_revision)
-      REFERENCES mandate_revisions(mandate_id, revision),
-    CHECK (
-      (revision = 'revision:1' AND previous_revision IS NULL) OR
-      (revision <> 'revision:1' AND previous_revision IS NOT NULL)
-    )
-  ) STRICT;
-
-  CREATE INDEX IF NOT EXISTS mandate_revisions_current
-    ON mandate_revisions(civilization_id, revision_order DESC);
-`;
-
-const CREATE_WORK_CLAIMS = `
-  CREATE TABLE IF NOT EXISTS work_claims (
-    claim_order INTEGER PRIMARY KEY,
-    claim_id TEXT NOT NULL UNIQUE,
-    civilization_id TEXT NOT NULL,
-    resource_id TEXT NOT NULL,
-    claimed_by TEXT NOT NULL,
-    claimed_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('open','closed','expired')),
-    closed_at TEXT,
-    FOREIGN KEY (civilization_id) REFERENCES civilizations(civilization_id)
-      ON DELETE CASCADE
-  ) STRICT;
-
-  CREATE UNIQUE INDEX IF NOT EXISTS work_claims_open_resource
-    ON work_claims(civilization_id, resource_id)
-    WHERE status = 'open';
-`;
-
-const CREATE_SOURCE_REPORTS = `
-  CREATE TABLE IF NOT EXISTS source_reports (
-    report_order INTEGER PRIMARY KEY,
-    report_id TEXT NOT NULL UNIQUE,
-    connection_id TEXT NOT NULL,
-    config_hash TEXT NOT NULL,
-    bundle_id TEXT NOT NULL,
-    digest TEXT NOT NULL,
-    bundle_json TEXT NOT NULL,
-    snapshot_json TEXT NOT NULL,
-    UNIQUE(connection_id, config_hash, bundle_id),
-    FOREIGN KEY(connection_id, config_hash) REFERENCES connection_versions(connection_id, config_hash)
-  ) STRICT;
-  CREATE TABLE IF NOT EXISTS source_report_facts (
-    report_id TEXT NOT NULL REFERENCES source_reports(report_id) ON DELETE CASCADE,
-    fact_id INTEGER NOT NULL REFERENCES facts(fact_id),
-    source_fact_id TEXT NOT NULL,
-    epistemic_type TEXT NOT NULL CHECK(epistemic_type IN ('observation','claim','derived')),
-    PRIMARY KEY(report_id, source_fact_id)
-  ) STRICT;
-  CREATE TABLE IF NOT EXISTS source_report_admissions (
-    admission_order INTEGER PRIMARY KEY,
-    report_id TEXT NOT NULL REFERENCES source_reports(report_id) ON DELETE CASCADE,
-    attempt_id TEXT NOT NULL UNIQUE REFERENCES collection_attempts(attempt_id)
-  ) STRICT;
-`;
-
-export interface ActiveConnection {
-  activationId: string;
-  config: ConnectionConfig;
-  configHash: string;
-  connectedAt: string;
-  jsonlRecordIndexMode: JsonlRecordIndexMode | "unknown";
-}
-
-// A last-seen order, unlike attempt_id, advances even for identical sightings.
-// Never carry absence evidence across configuration or activation boundaries.
-const FACT_COLLECTION_AS_OF_JOIN = `
-  LEFT JOIN collection_attempts seen
-    ON seen.attempt_order = f.last_seen_attempt_order
-   AND seen.connection_id = f.connection_id AND seen.config_hash = f.config_hash
-   AND seen.outcome = 'success'
-  LEFT JOIN collection_attempts collected
-    ON collected.attempt_order = (
-      SELECT MAX(attempt.attempt_order) FROM collection_attempts attempt
-       WHERE attempt.connection_id = seen.connection_id
-         AND attempt.config_hash = seen.config_hash
-         AND attempt.activation_id = seen.activation_id
-         AND attempt.outcome = 'success'
-    )`;
-
-export interface QueryOptions {
-  activeOnly?: boolean;
-  afterId?: number;
-  connectionId?: string;
-  factOwner?: string;
-  kind?: string;
-  limit?: number;
-  order?: "asc" | "desc";
-  subject?: string;
-}
-
-export interface CollectionResult {
-  attemptId: string;
-  completedAt: string;
-  factsAdded: number;
-  factsChanged: number;
-  factsSeen: number;
-  outcome: "success";
-  sourceRecordsSeen: number;
-  startedAt: string;
-}
-
-export interface CollectionAttempt {
-  activationId: string;
-  attemptId: string;
-  completedAt: null | string;
-  connectionId: string;
-  connectionVersion: string;
-  factsAdded: number;
-  factsChanged: number;
-  factsSeen: number;
-  failureCode: null | string;
-  outcome: "failed" | "retired" | "running" | "skipped" | "success";
-  sourceRecordsSeen: number;
-  startedAt: string;
-}
-
-export interface CollectionAttemptRetirement {
-  attemptId: string;
-  connectionId: string;
-  connectionVersion: string;
-  retiredAt: string;
-  retiredBy: string;
-  retirementId: string;
-}
-
-export interface CollectionAttemptRetirementPlan {
-  attemptId: string;
-  confirmationToken: string;
-  connectionId: string;
-  connectionVersion: string;
-  retiredBy: string;
-  startedAt: string;
-}
-
-type CollectionAttemptRetirementSnapshot = Omit<
-  CollectionAttemptRetirementPlan,
-  "confirmationToken"
-> & { stateFingerprint: string };
-
-export interface VerificationFact {
-  epistemicStatus: EpistemicStatus;
-  factOwner: string;
-  kind: string;
-  payloadHash: string;
-  sourceRecordedAt: null | string;
-  sourceRecordId: string;
-  subject: string;
-}
-
-export interface VerificationSnapshot {
-  currentnessKnown: boolean;
-  facts: VerificationFact[];
-  jsonlRecordIndexMode: JsonlRecordIndexMode | "unknown";
-  payloadHashesValid: boolean;
-  sourceTimeKeysValid: boolean;
-}
-
-export interface RecordIndexModeResolution {
-  affectedFactIds: number[];
-  collectionAttemptIds: string[];
-  collectionAttemptsRecorded: number;
-  connectionId: string;
-  connectionVersion: string;
-  factsAffected: number;
-  previousRecordIndexMode: JsonlRecordIndexMode | "unknown";
-  recordIndexMode: JsonlRecordIndexMode;
-  resolutionId: string;
-  resolvedAt: string;
-}
-
-export interface RecordIndexModeResolutionPlan {
-  affectedFactIds: number[];
-  collectionAttemptIds: string[];
-  collectionAttemptsRecorded: number;
-  confirmationToken: string;
-  connectionId: string;
-  connectionVersion: string;
-  currentRecordIndexMode: JsonlRecordIndexMode | "unknown";
-  factsAffected: number;
-  recordIndexMode: JsonlRecordIndexMode;
-  storedIndexEvidence: RecordIndexModeEvidence;
-}
-
-export interface ForgetInventory {
-  sourceReportIds?: string[];
-  sourceReportFacts?: { reportId: string; factId: number; sourceFactId: string }[];
-  sourceReportAdmissions?: { reportId: string; attemptId: string }[];
-  collectionAttemptIds: string[];
-  collectionAttemptRetirementIds: string[];
-  connectionId: string;
-  connectionVersions: string[];
-  counts: {
-    sourceReports?: number;
-    sourceReportFacts?: number;
-    sourceReportAdmissions?: number;
-    collectionAttemptRetirements: number;
-    collectionAttempts: number;
-    connectionVersions: number;
-    facts: number;
-    recordIndexModeResolutions: number;
-  };
-  factIds: number[];
-  recordIndexModeResolutionIds: string[];
-}
-
-export interface ForgetPlan extends ForgetInventory {
-  confirmationToken: string;
-  consequence: string;
-  inventoryDigest: string;
-  forgottenBy: string;
-}
-
-export interface ForgetRecord extends ForgetInventory {
-  exportDigest: string;
-  forgetId: string;
-  forgottenAt: string;
-  forgottenBy: string;
-  inventoryDigest: string;
-}
-
-export interface CivilizationRevisionIdentity {
-  civilizationId: string;
-  mandateId: string;
-  revision: string;
-}
-
-export interface CivilizationForgetInventory {
-  civilizationId: string;
-  counts: {
-    civilizations: 1;
-    mandateRevisions: number;
-    projects?: number;
-    projectProvisioningEvents?: number;
-    projectHarnessBindings?: number;
-  };
-  mandateRevisions: CivilizationRevisionIdentity[];
-  projects?: { projectId: string; workspacePath: string }[];
-  projectProvisioningEventIds?: string[];
-  projectHarnessBindingIds?: string[];
-}
-
-export interface CivilizationForgetPlan extends CivilizationForgetInventory {
-  confirmationToken: string;
-  consequence: string;
-  forgottenBy: string;
-  inventoryDigest: string;
-}
-
-export interface CivilizationForgetRecord extends CivilizationForgetInventory {
-  exportDigest: string;
-  forgetId: string;
-  forgottenAt: string;
-  forgottenBy: string;
-  inventoryDigest: string;
-}
-
-type CivilizationForgetSnapshot = CivilizationForgetInventory & {
-  inventoryDigest: string;
-  stateFingerprint: string;
-};
-
-type ForgetSnapshot = ForgetInventory & {
-  inventoryDigest: string;
-  stateFingerprint: string;
-};
-
-type RecordIndexModeResolutionSnapshot = Omit<
-  RecordIndexModeResolutionPlan,
-  "confirmationToken"
-> & { stateFingerprint: string };
-
-export interface CollectionSink {
-  recordSourceRecord(facts: () => readonly FactInput[]): void;
-}
-
-export interface ResolvedAuthorityContext {
-  authorityContext: {
-    civilizationId: string;
-    authorityContext: {
-      mandateId: string;
-      mandateRevision: string;
-      mandateDigest: string;
-    };
-  };
-  mandate: MandateConfig;
-}
-
-export class CivilizationNotFoundError extends Error {
-  readonly code = "civilization_not_found";
-
-  constructor(_civilizationId: string) {
-    super("No civilization is founded under this id");
-    this.name = "CivilizationNotFoundError";
-  }
-}
-
-export class CivilizationDissolvedError extends Error {
-  readonly code = "civilization_dissolved";
-
-  constructor(_civilizationId: string) {
-    super("This civilization has been dissolved");
-    this.name = "CivilizationDissolvedError";
-  }
-}
-
-/**
- * A stored mandate that cannot be read back as the thing it was written as is
- * an unknown territory, and an unknown territory cannot authorize anything.
- */
-export class MandateUnreadableError extends Error {
-  readonly code = "mandate_unreadable";
-
-  constructor(_civilizationId: string) {
-    super("The stored mandate could not be read as a mandate");
-    this.name = "MandateUnreadableError";
-  }
-}
-
-export class ConnectionConflictError extends Error {
-  readonly code = "connection_conflict";
-
-  constructor(_connectionId: string) {
-    super("A different configuration is already connected under this id");
-    this.name = "ConnectionConflictError";
-  }
-}
-
-export interface OpenWorkClaim {
-  claimId: string;
-  civilizationId: string;
-  resourceId: string;
-  claimedBy: string;
-  claimedAt: string;
-  expiresAt: string;
-}
-
-export class WorkClaimConflictError extends Error {
-  readonly code = "work_claim_conflict";
-
-  constructor() {
-    super("An open work claim already exists for this civilization and resource");
-    this.name = "WorkClaimConflictError";
-  }
-}
-
-export class ConnectionNotFoundError extends Error {
-  readonly code = "connection_not_found";
-
-  constructor(_connectionId: string) {
-    super("No active connection is registered under this id");
-    this.name = "ConnectionNotFoundError";
-  }
-}
-
-export class ConnectionInactiveError extends Error {
-  readonly code = "connection_inactive";
-
-  constructor(_connectionId: string) {
-    super("The connection revision is no longer active");
-    this.name = "ConnectionInactiveError";
-  }
-}
-
-export class StoredRecordIndexModeUnknownError extends Error {
-  readonly code = "store_record_index_mode_unknown";
-
-  constructor(_connectionId: string) {
-    super("The stored JSONL record-index mode cannot be determined");
-    this.name = "StoredRecordIndexModeUnknownError";
-  }
-}
-
-export class StoredRecordIndexModeKnownError extends Error {
-  readonly code = "store_record_index_mode_known";
-
-  constructor(_connectionId: string) {
-    super("The stored JSONL record-index mode is already known");
-    this.name = "StoredRecordIndexModeKnownError";
-  }
-}
-
-export class RecordIndexResolutionStateChangedError extends Error {
-  readonly code = "record_index_resolution_state_changed";
-
-  constructor() {
-    super("The record-index resolution scope changed after confirmation was requested");
-    this.name = "RecordIndexResolutionStateChangedError";
-  }
-}
-
-export class ConfirmationPreviewNotFoundError extends Error {
-  readonly code = "confirmation_preview_not_found";
-
-  constructor() {
-    super("No matching confirmation preview was issued");
-    this.name = "ConfirmationPreviewNotFoundError";
-  }
-}
-
-export class ConfirmationAlreadySpentError extends Error {
-  readonly code = "confirmation_already_spent";
-
-  constructor() {
-    super("The confirmation preview has already been spent");
-    this.name = "ConfirmationAlreadySpentError";
-  }
-}
-
-export class ForgetConnectionActiveError extends Error {
-  readonly code = "forget_connection_active";
-
-  constructor(_connectionId: string) {
-    super("An active connection cannot be forgotten");
-    this.name = "ForgetConnectionActiveError";
-  }
-}
-
-export class ForgetConnectionNotFoundError extends Error {
-  readonly code = "forget_connection_not_found";
-
-  constructor(_connectionId: string) {
-    super("No owned state exists for this connection");
-    this.name = "ForgetConnectionNotFoundError";
-  }
-}
-
-export class ForgetExportCoverageError extends Error {
-  readonly code = "forget_export_coverage_mismatch";
-
-  constructor() {
-    super("The presented export does not cover the exact forget inventory");
-    this.name = "ForgetExportCoverageError";
-  }
-}
-
-export class ForgetStateChangedError extends Error {
-  readonly code = "forget_state_changed";
-
-  constructor() {
-    super("The forget scope changed after confirmation was requested");
-    this.name = "ForgetStateChangedError";
-  }
-}
-
-export class ForgetCivilizationNotFoundError extends Error {
-  readonly code = "forget_civilization_not_found";
-
-  constructor(_civilizationId: string) {
-    super("No owned institutional state exists for this civilization");
-    this.name = "ForgetCivilizationNotFoundError";
-  }
-}
-
-export class ForgetCivilizationNotDissolvedError extends Error {
-  readonly code = "forget_civilization_not_dissolved";
-
-  constructor(_civilizationId: string) {
-    super("A civilization must be dissolved before it can be forgotten");
-    this.name = "ForgetCivilizationNotDissolvedError";
-  }
-}
-
-export class ForgetCivilizationExportCoverageError extends Error {
-  readonly code = "forget_civilization_export_coverage_mismatch";
-
-  constructor() {
-    super("The presented export does not cover the exact civilization inventory");
-    this.name = "ForgetCivilizationExportCoverageError";
-  }
-}
-
-export class ForgetCivilizationStateChangedError extends Error {
-  readonly code = "forget_civilization_state_changed";
-
-  constructor() {
-    super("The civilization forget scope changed after confirmation was requested");
-    this.name = "ForgetCivilizationStateChangedError";
-  }
-}
-
-export class StoredRecordIndexModeChangedError extends Error {
-  readonly code = "store_record_index_mode_changed";
-
-  constructor(_connectionId: string) {
-    super("The stored JSONL record-index mode changed during the operation");
-    this.name = "StoredRecordIndexModeChangedError";
-  }
-}
-
-export class RecordIndexResolutionCollectionRunningError extends Error {
-  readonly code = "record_index_resolution_collection_running";
-
-  constructor(_connectionId: string) {
-    super("A collection is still running for this connection version");
-    this.name = "RecordIndexResolutionCollectionRunningError";
-  }
-}
-
-export class CollectionAttemptNotRunningError extends Error {
-  readonly code = "collection_attempt_not_running";
-
-  constructor(_attemptId: string) {
-    super("The collection attempt is no longer running");
-    this.name = "CollectionAttemptNotRunningError";
-  }
-}
-
-export class SourceRevisionChangedError extends Error {
-  readonly code = "source_changed";
-
-  constructor() {
-    super("The source changed while its record-index mode was being resolved");
-    this.name = "SourceRevisionChangedError";
-  }
-}
-
-export class FactRejectedError extends TypeError {
-  readonly code = "fact_rejected";
-  readonly field: string;
-  readonly reason: string;
-
-  constructor(field: string, reason: string) {
-    super(`Fact ${field} ${reason}`);
-    this.name = "FactRejectedError";
-    this.field = field;
-    this.reason = reason;
-  }
-}
-
-export class FactNotDeclaredError extends TypeError {
-  readonly code = "fact_not_declared";
-
-  constructor() {
-    super("Fact is not declared by the registered connection");
-    this.name = "FactNotDeclaredError";
-  }
-}
-
-export class CollectionFailedError extends Error {
-  readonly attemptId: string;
-  readonly code: string;
-
-  constructor(attemptId: string, code: string) {
-    super("Collection failed");
-    this.name = "CollectionFailedError";
-    this.attemptId = attemptId;
-    this.code = code;
-  }
-}
-
-class StoreContentionError extends Error {
-  readonly code = "store_contention";
-
-  constructor(cause: unknown) {
-    super("Observation store remained busy", { cause });
-    this.name = "StoreContentionError";
-  }
-}
 
 export class ObservationStore {
   readonly path: string;
   readonly #busyTimeoutMilliseconds: number;
   readonly #database: DatabaseSync;
+  readonly #ownedState: OwnedStateReader;
+  readonly #confirmations: ConfirmationState;
   readonly #projectAttempts = new Map<string, { attempt: number; owner: string }>();
   #closed = false;
 
@@ -874,9 +232,11 @@ export class ObservationStore {
     this.path = join(stateDirectory, STORE_FILENAME);
     this.#busyTimeoutMilliseconds = busyTimeoutMilliseconds;
     this.#database = new DatabaseSync(this.path, { timeout: busyTimeoutMilliseconds });
+    this.#ownedState = new OwnedStateReader(this.#database);
+    this.#confirmations = new ConfirmationState(this.#database, this.#ownedState);
     chmodSync(this.path, 0o600);
     this.#database.exec("PRAGMA foreign_keys = ON");
-    this.#migrate();
+    migrateStore(this.#database);
     this.#database.exec("PRAGMA journal_mode = WAL");
   }
 
@@ -1604,8 +964,8 @@ export class ObservationStore {
     write?: (exported: OwnedStateExport) => void,
   ): OwnedStateExport {
     return this.#transaction(() => {
-      const institutionStore = this.#ownedInstitutionState();
-      const observationStore = this.#ownedObservationState();
+      const institutionStore = this.#ownedState.ownedInstitutionState();
+      const observationStore = this.#ownedState.ownedObservationState();
       const omitted = [
         {
           section: "confirmationPreviews",
@@ -1635,7 +995,7 @@ export class ObservationStore {
         omitted,
       };
       const exported = createOwnedStateExport(bundle);
-      const projectState = this.#projectExport();
+      const projectState = this.#ownedState.projectExport();
       if (projectState.projects!.length > 0) {
         Object.assign(exported.counts, {
           projects: projectState.projects!.length,
@@ -1659,7 +1019,7 @@ export class ObservationStore {
           try {
             return [{
               connectionId,
-              inventoryDigest: this.#forgetSnapshot(connectionId, false).inventoryDigest,
+              inventoryDigest: this.#confirmations.forgetSnapshot(connectionId, false).inventoryDigest,
             }];
           } catch (error) {
             if (error instanceof ForgetConnectionNotFoundError) {
@@ -1674,7 +1034,7 @@ export class ObservationStore {
             .all() as { civilization_id: string }[]
         ).map((row) => ({
           civilizationId: row.civilization_id,
-          inventoryDigest: this.#civilizationForgetSnapshot(
+          inventoryDigest: this.#confirmations.civilizationForgetSnapshot(
             row.civilization_id,
             false,
           ).inventoryDigest,
@@ -1705,11 +1065,11 @@ export class ObservationStore {
   ): ForgetPlan {
     validateActor(forgottenBy, "forget");
     return this.#transaction(() => {
-      const snapshot = this.#forgetSnapshot(connectionId);
+      const snapshot = this.#confirmations.forgetSnapshot(connectionId);
       const { stateFingerprint, ...inventory } = snapshot;
       return {
         ...inventory,
-        confirmationToken: this.#issueConfirmationPreview(
+        confirmationToken: this.#confirmations.issueConfirmationPreview(
           "forget",
           canonicalJson([connectionId, forgottenBy]),
           stateFingerprint,
@@ -1732,7 +1092,7 @@ export class ObservationStore {
     validateActor(forgottenBy, "forget");
     const forgottenAt = now.toISOString();
     const forget = () => {
-      const preview = this.#confirmationPreview(
+      const preview = this.#confirmations.confirmationPreview(
         "forget",
         canonicalJson([connectionId, forgottenBy]),
         confirmationToken,
@@ -1742,7 +1102,7 @@ export class ObservationStore {
       }
       let snapshot: ForgetSnapshot;
       try {
-        snapshot = this.#forgetSnapshot(connectionId);
+        snapshot = this.#confirmations.forgetSnapshot(connectionId);
       } catch (error) {
         if (
           error instanceof ForgetConnectionActiveError ||
@@ -1812,7 +1172,7 @@ export class ObservationStore {
           inventoryDigest,
           exportDigest,
         );
-      this.#spendConfirmationPreview(confirmationToken, forgottenAt);
+      this.#confirmations.spendConfirmationPreview(confirmationToken, forgottenAt);
       return {
         ...inventory,
         inventoryDigest,
@@ -1836,10 +1196,10 @@ export class ObservationStore {
     validateActor(forgottenBy, "forget-civilization");
     return this.#transaction(() => {
       const { stateFingerprint, ...inventory } =
-        this.#civilizationForgetSnapshot(civilizationId);
+        this.#confirmations.civilizationForgetSnapshot(civilizationId);
       return {
         ...inventory,
-        confirmationToken: this.#issueConfirmationPreview(
+        confirmationToken: this.#confirmations.issueConfirmationPreview(
           "forget-civilization",
           canonicalJson([civilizationId, forgottenBy]),
           stateFingerprint,
@@ -1862,7 +1222,7 @@ export class ObservationStore {
     validateActor(forgottenBy, "forget-civilization");
     const forgottenAt = now.toISOString();
     const forget = () => {
-      const preview = this.#confirmationPreview(
+      const preview = this.#confirmations.confirmationPreview(
         "forget-civilization",
         canonicalJson([civilizationId, forgottenBy]),
         confirmationToken,
@@ -1872,7 +1232,7 @@ export class ObservationStore {
       }
       let snapshot: CivilizationForgetSnapshot;
       try {
-        snapshot = this.#civilizationForgetSnapshot(civilizationId);
+        snapshot = this.#confirmations.civilizationForgetSnapshot(civilizationId);
       } catch (error) {
         if (
           error instanceof ForgetCivilizationNotFoundError ||
@@ -1945,7 +1305,7 @@ export class ObservationStore {
           inventoryDigest,
           exportDigest,
         );
-      this.#spendConfirmationPreview(confirmationToken, forgottenAt);
+      this.#confirmations.spendConfirmationPreview(confirmationToken, forgottenAt);
       return {
         ...inventory,
         exportDigest,
@@ -1972,14 +1332,14 @@ export class ObservationStore {
     }
     const issuedAt = now.toISOString();
     return this.#transaction(() => {
-      const { stateFingerprint, ...plan } = this.#recordIndexModeResolutionSnapshot(
+      const { stateFingerprint, ...plan } = this.#confirmations.recordIndexModeResolutionSnapshot(
         connectionId,
         connectionVersion,
         recordIndexMode,
       );
       return {
         ...plan,
-        confirmationToken: this.#issueConfirmationPreview(
+        confirmationToken: this.#confirmations.issueConfirmationPreview(
           "resolve-record-index",
           canonicalJson([connectionId, connectionVersion, recordIndexMode]),
           stateFingerprint,
@@ -2001,7 +1361,7 @@ export class ObservationStore {
     }
     const resolvedAt = now.toISOString();
     const resolve = () => {
-      const preview = this.#confirmationPreview(
+      const preview = this.#confirmations.confirmationPreview(
         "resolve-record-index",
         canonicalJson([connectionId, connectionVersion, recordIndexMode]),
         confirmationToken,
@@ -2011,7 +1371,7 @@ export class ObservationStore {
       }
       let snapshot: RecordIndexModeResolutionSnapshot;
       try {
-        snapshot = this.#recordIndexModeResolutionSnapshot(
+        snapshot = this.#confirmations.recordIndexModeResolutionSnapshot(
           connectionId,
           connectionVersion,
           recordIndexMode,
@@ -2071,7 +1431,7 @@ export class ObservationStore {
           canonicalJson(snapshot.collectionAttemptIds),
           confirmationToken,
         );
-      this.#spendConfirmationPreview(confirmationToken, resolvedAt);
+      this.#confirmations.spendConfirmationPreview(confirmationToken, resolvedAt);
       return {
         affectedFactIds: snapshot.affectedFactIds,
         collectionAttemptIds: snapshot.collectionAttemptIds,
@@ -2100,10 +1460,10 @@ export class ObservationStore {
     const issuedAt = now.toISOString();
     return this.#transaction(() => {
       const { stateFingerprint, ...plan } =
-        this.#collectionAttemptRetirementSnapshot(attemptId, retiredBy);
+        this.#confirmations.collectionAttemptRetirementSnapshot(attemptId, retiredBy);
       return {
         ...plan,
-        confirmationToken: this.#issueConfirmationPreview(
+        confirmationToken: this.#confirmations.issueConfirmationPreview(
           "retire-collection-attempt",
           canonicalJson([attemptId, retiredBy]),
           stateFingerprint,
@@ -2122,7 +1482,7 @@ export class ObservationStore {
     validateRetirementActor(retiredBy);
     const retiredAt = now.toISOString();
     const retire = () => {
-      const preview = this.#confirmationPreview(
+      const preview = this.#confirmations.confirmationPreview(
         "retire-collection-attempt",
         canonicalJson([attemptId, retiredBy]),
         confirmationToken,
@@ -2132,7 +1492,7 @@ export class ObservationStore {
       }
       let snapshot: CollectionAttemptRetirementSnapshot;
       try {
-        snapshot = this.#collectionAttemptRetirementSnapshot(attemptId, retiredBy);
+        snapshot = this.#confirmations.collectionAttemptRetirementSnapshot(attemptId, retiredBy);
       } catch (error) {
         if (error instanceof CollectionAttemptNotRunningError) {
           throw new RecordIndexResolutionStateChangedError();
@@ -2178,7 +1538,7 @@ export class ObservationStore {
           retiredBy,
           confirmationToken,
         );
-      this.#spendConfirmationPreview(confirmationToken, retiredAt);
+      this.#confirmations.spendConfirmationPreview(confirmationToken, retiredAt);
       return {
         attemptId,
         connectionId: snapshot.connectionId,
@@ -3107,508 +2467,6 @@ export class ObservationStore {
     });
   }
 
-  #migrate(): void {
-    const version = this.#database.prepare("PRAGMA user_version").get() as {
-      user_version: number;
-    };
-    if (version.user_version === STORE_SCHEMA_VERSION) {
-      return;
-    }
-    if (version.user_version === 17) {
-      this.#transaction(() => {
-        this.#database.exec(`ALTER TABLE project_provisioning_events ADD COLUMN retry_request_key TEXT;
-          CREATE UNIQUE INDEX project_retry_requests
-            ON project_provisioning_events(project_id, retry_request_key) WHERE retry_request_key IS NOT NULL;
-          PRAGMA user_version = 18;`);
-      });
-      return;
-    }
-    if (version.user_version === 15) {
-      this.#transaction(() => {
-        this.#database.exec(CREATE_SOURCE_REPORTS);
-        this.#database.exec("PRAGMA user_version = 16");
-      });
-      this.#migrate();
-      return;
-    }
-    if (version.user_version === 16) {
-      this.#transaction(() => {
-        this.#database.exec(CREATE_PROJECTS);
-        this.#database.exec("PRAGMA user_version = 18");
-      });
-      return;
-    }
-    if (version.user_version === 13) {
-      this.#migrateSchemaThirteen();
-      return;
-    }
-    if (version.user_version === 14) {
-      this.#migrateSchemaFourteen();
-      return;
-    }
-    if (version.user_version === 12) {
-      this.#transaction(() => {
-        this.#database.exec(`
-          ALTER TABLE confirmation_previews RENAME TO confirmation_previews_v12;
-          ${CREATE_CONFIRMATION_PREVIEWS}
-          INSERT INTO confirmation_previews
-            SELECT * FROM confirmation_previews_v12;
-          DROP TABLE confirmation_previews_v12;
-          ${CREATE_INSTITUTION}
-          ${CREATE_OWNED_STATE_EXPORTS}
-          ${CREATE_FORGET_RECORDS}
-          PRAGMA user_version = 13;
-        `);
-      });
-      this.#migrateSchemaThirteen();
-      return;
-    }
-    if (version.user_version === 11) {
-      this.#transaction(() => {
-        this.#database.exec(`
-          ALTER TABLE confirmation_previews RENAME TO confirmation_previews_v11;
-          ${CREATE_CONFIRMATION_PREVIEWS}
-          INSERT INTO confirmation_previews
-            SELECT * FROM confirmation_previews_v11;
-          DROP TABLE confirmation_previews_v11;
-          ${CREATE_INSTITUTION}
-          ${CREATE_OWNED_STATE_EXPORTS}
-          ${CREATE_FORGET_RECORDS}
-          PRAGMA user_version = 13;
-        `);
-      });
-      this.#migrateSchemaThirteen();
-      return;
-    }
-    if (version.user_version === 10) {
-      this.#transaction(() => {
-        this.#database.exec(`
-          ${CREATE_CONFIRMATION_PREVIEWS}
-          ${CREATE_INSTITUTION}
-          ${CREATE_OWNED_STATE_EXPORTS}
-          ${CREATE_FORGET_RECORDS}
-          PRAGMA user_version = 13;
-        `);
-      });
-      this.#migrateSchemaThirteen();
-      return;
-    }
-    if (version.user_version === 9) {
-      this.#migrateSchemaNine();
-      return;
-    }
-    this.#transaction(() => {
-      const row = this.#database.prepare("PRAGMA user_version").get() as {
-        user_version: number;
-      };
-      if (row.user_version === STORE_SCHEMA_VERSION) {
-        return;
-      }
-      if (row.user_version === 8) {
-        this.#database.exec(`
-          ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
-          PRAGMA user_version = ${LEGACY_REBUILD_SCHEMA_VERSION};
-        `);
-        return;
-      }
-      // Schema 7 was the rejected candidate that guessed a mode for schema-six rows.
-      if (row.user_version === 7) {
-        throw new Error(
-          "Observation store schema 7 does not record a trustworthy JSONL record-index mode",
-        );
-      }
-      if (
-        row.user_version !== 0 &&
-        row.user_version !== 1 &&
-        row.user_version !== 2 &&
-        row.user_version !== 3 &&
-        row.user_version !== 4 &&
-        row.user_version !== 5 &&
-        row.user_version !== 6
-      ) {
-        throw new Error(`Unsupported observation store schema ${row.user_version}`);
-      }
-      if (row.user_version === 0) {
-        this.#database.exec(`
-        CREATE TABLE connection_versions (
-          connection_id TEXT NOT NULL,
-          config_hash TEXT NOT NULL,
-          config_json TEXT NOT NULL,
-          registered_at TEXT NOT NULL,
-          jsonl_record_index_mode TEXT NOT NULL DEFAULT 'record-ordinal'
-            CHECK (jsonl_record_index_mode IN ('physical-line', 'record-ordinal', 'unknown')),
-          PRIMARY KEY (connection_id, config_hash)
-        ) STRICT;
-
-        CREATE TABLE active_connections (
-          connection_id TEXT PRIMARY KEY,
-          config_hash TEXT NOT NULL,
-          activation_id TEXT NOT NULL,
-          connected_at TEXT NOT NULL,
-          FOREIGN KEY (connection_id, config_hash)
-            REFERENCES connection_versions(connection_id, config_hash)
-        ) STRICT;
-
-        ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
-
-        ${CREATE_CONFIRMATION_PREVIEWS}
-
-        ${CREATE_INSTITUTION}
-        ${CREATE_WORK_CLAIMS}
-        ${CREATE_PROJECTS}
-        ${CREATE_OWNED_STATE_EXPORTS}
-        ${CREATE_FORGET_RECORDS}
-        ${CREATE_CIVILIZATION_FORGET_RECORDS}
-
-        ${CREATE_COLLECTION_ATTEMPTS}
-        ${CREATE_SOURCE_REPORTS}
-        ${CREATE_COLLECTION_ATTEMPTS_LATEST_INDEX}
-        ${CREATE_COLLECTION_ATTEMPT_RETIREMENTS}
-
-        CREATE TABLE facts (
-          fact_id INTEGER PRIMARY KEY,
-          connection_id TEXT NOT NULL,
-          config_hash TEXT NOT NULL,
-          attempt_id TEXT NOT NULL,
-          fact_owner TEXT NOT NULL,
-          kind TEXT NOT NULL,
-          subject TEXT NOT NULL,
-          epistemic_status TEXT NOT NULL CHECK (epistemic_status IN ('observation', 'claim')),
-          source_record_id TEXT NOT NULL,
-          source_recorded_at TEXT,
-          source_time_key TEXT NOT NULL,
-          payload_json TEXT NOT NULL,
-          payload_hash TEXT NOT NULL,
-          collected_at TEXT NOT NULL,
-          last_seen_attempt_order INTEGER NOT NULL,
-          FOREIGN KEY (attempt_id) REFERENCES collection_attempts(attempt_id),
-          FOREIGN KEY (connection_id, config_hash)
-            REFERENCES connection_versions(connection_id, config_hash),
-          UNIQUE (
-            connection_id, config_hash, fact_owner, kind, subject,
-            epistemic_status, source_record_id, source_time_key, payload_hash
-          )
-        ) STRICT;
-
-        CREATE INDEX facts_query
-          ON facts(epistemic_status, fact_id);
-        CREATE INDEX facts_identity_time
-          ON facts(fact_owner, kind, subject, epistemic_status, source_recorded_at);
-        CREATE INDEX facts_identity_source_time
-          ON facts(
-            connection_id, fact_owner, kind, subject, epistemic_status,
-            source_time_key
-          );
-        CREATE INDEX facts_source_version
-          ON facts(connection_id, config_hash, source_record_id, source_time_key);
-        CREATE INDEX facts_correction_slot
-          ON facts(
-            connection_id, fact_owner, kind, subject, epistemic_status,
-            source_record_id, source_time_key, last_seen_attempt_order
-          );
-
-        PRAGMA user_version = ${STORE_SCHEMA_VERSION};
-      `);
-        return;
-      }
-
-      if (row.user_version === 6) {
-        this.#database.exec(`
-          ALTER TABLE connection_versions ADD COLUMN jsonl_record_index_mode TEXT
-            NOT NULL DEFAULT 'unknown'
-            CHECK (jsonl_record_index_mode IN ('physical-line', 'record-ordinal', 'unknown'));
-        `);
-        const versions = this.#database
-          .prepare("SELECT connection_id, config_hash, config_json FROM connection_versions")
-          .all() as {
-          config_hash: string;
-          config_json: string;
-          connection_id: string;
-        }[];
-        const hasFacts = this.#database.prepare(
-          `SELECT EXISTS (
-             SELECT 1 FROM facts WHERE connection_id = ? AND config_hash = ?
-           ) AS stored`,
-        );
-        const updateMode = this.#database.prepare(
-          `UPDATE connection_versions SET jsonl_record_index_mode = ?
-            WHERE connection_id = ? AND config_hash = ?`,
-        );
-        for (const version of versions) {
-          const config = parseStoredConfig(version.config_json, version.config_hash);
-          const stored = hasFacts.get(version.connection_id, version.config_hash) as {
-            stored: number;
-          };
-          const mode =
-            stored.stored === 1 && usesJsonlRecordIndex(config)
-              ? "unknown"
-              : "record-ordinal";
-          updateMode.run(mode, version.connection_id, version.config_hash);
-        }
-        this.#database.exec(`
-          ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
-          PRAGMA user_version = ${LEGACY_REBUILD_SCHEMA_VERSION};
-        `);
-        return;
-      }
-
-      if (row.user_version === 5) {
-        this.#database.exec(`
-          CREATE INDEX facts_identity_source_time
-            ON facts(
-              connection_id, fact_owner, kind, subject, epistemic_status,
-              source_time_key
-            );
-          ALTER TABLE connection_versions ADD COLUMN jsonl_record_index_mode TEXT
-            NOT NULL DEFAULT 'physical-line'
-            CHECK (jsonl_record_index_mode IN ('physical-line', 'record-ordinal', 'unknown'));
-          ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
-          PRAGMA user_version = ${LEGACY_REBUILD_SCHEMA_VERSION};
-        `);
-        return;
-      }
-
-      if (row.user_version === 1 || row.user_version === 2) {
-        this.#database.exec(`
-          ALTER TABLE collection_attempts ADD COLUMN attempt_order INTEGER;
-          UPDATE collection_attempts SET attempt_order = rowid;
-          CREATE UNIQUE INDEX collection_attempts_order
-            ON collection_attempts(attempt_order);
-          DROP INDEX collection_attempts_latest;
-          ALTER TABLE active_connections
-            ADD COLUMN activation_id TEXT NOT NULL DEFAULT '';
-          ALTER TABLE collection_attempts
-            ADD COLUMN activation_id TEXT NOT NULL DEFAULT '';
-        `);
-
-        const pairs = this.#database
-          .prepare(
-            `SELECT connection_id, config_hash FROM active_connections
-             UNION
-             SELECT connection_id, config_hash FROM collection_attempts`,
-          )
-          .all() as { config_hash: string; connection_id: string }[];
-        const updateActive = this.#database.prepare(
-          `UPDATE active_connections SET activation_id = ?
-            WHERE connection_id = ? AND config_hash = ?`,
-        );
-        const updateAttempts = this.#database.prepare(
-          `UPDATE collection_attempts SET activation_id = ?
-            WHERE connection_id = ? AND config_hash = ?`,
-        );
-        for (const pair of pairs) {
-          const suffix = sha256(canonicalJson([pair.connection_id, pair.config_hash]));
-          updateActive.run(
-            `legacy-current:${suffix}`,
-            pair.connection_id,
-            pair.config_hash,
-          );
-          updateAttempts.run(
-            `legacy-history:${suffix}`,
-            pair.connection_id,
-            pair.config_hash,
-          );
-        }
-      }
-
-      if (row.user_version === 1) {
-        this.#database.exec(`
-          ALTER TABLE facts
-            ADD COLUMN last_seen_attempt_order INTEGER NOT NULL DEFAULT 0;
-          UPDATE facts AS target
-             SET last_seen_attempt_order = COALESCE(
-               (SELECT attempt_order
-                  FROM collection_attempts
-                 WHERE collection_attempts.attempt_id = target.attempt_id),
-               0
-             )
-           WHERE NOT EXISTS (
-              SELECT 1
-               FROM facts other
-              WHERE other.fact_id <> target.fact_id
-                AND other.connection_id = target.connection_id
-                AND other.fact_owner = target.fact_owner
-                 AND other.kind = target.kind
-                AND other.subject = target.subject
-                AND other.epistemic_status = target.epistemic_status
-                AND other.source_record_id = target.source_record_id
-                AND other.source_time_key = target.source_time_key
-           );
-        `);
-      } else if (row.user_version === 2) {
-        this.#database.exec(`
-          UPDATE facts AS target
-             SET last_seen_attempt_order = 0
-           WHERE EXISTS (
-              SELECT 1
-               FROM facts other
-              WHERE other.fact_id <> target.fact_id
-                AND other.connection_id = target.connection_id
-                AND other.fact_owner = target.fact_owner
-                 AND other.kind = target.kind
-                AND other.subject = target.subject
-                AND other.epistemic_status = target.epistemic_status
-                AND other.source_record_id = target.source_record_id
-                AND other.source_time_key = target.source_time_key
-           );
-        `);
-      }
-
-      if (row.user_version <= 3) {
-        this.#database.exec(`
-          ALTER TABLE collection_attempts
-            ADD COLUMN facts_changed INTEGER NOT NULL DEFAULT 0;
-          UPDATE collection_attempts AS attempt
-             SET facts_changed = CASE
-               WHEN attempt.facts_added > 0 THEN attempt.facts_added
-               WHEN attempt.outcome = 'success' AND EXISTS (
-                 SELECT 1
-                   FROM facts current
-                  WHERE current.last_seen_attempt_order = attempt.attempt_order
-                    AND current.connection_id = attempt.connection_id
-                    AND EXISTS (
-                      SELECT 1
-                        FROM facts other
-                       WHERE other.connection_id = current.connection_id
-                         AND other.fact_owner = current.fact_owner
-                         AND other.kind = current.kind
-                         AND other.subject = current.subject
-                         AND other.epistemic_status = current.epistemic_status
-                         AND other.source_record_id = current.source_record_id
-                         AND other.source_time_key = current.source_time_key
-                         AND other.payload_hash <> current.payload_hash
-                         AND other.last_seen_attempt_order < current.last_seen_attempt_order
-                    )
-               ) THEN 1
-               ELSE 0
-             END;
-        `);
-      }
-      if (row.user_version === 1 || row.user_version === 2) {
-        this.#database.exec(`
-          CREATE INDEX collection_attempts_latest
-            ON collection_attempts(
-              connection_id, config_hash, activation_id, attempt_order DESC
-            );
-        `);
-      }
-      this.#database.exec(`
-        CREATE INDEX facts_correction_slot
-          ON facts(
-            connection_id, fact_owner, kind, subject, epistemic_status,
-            source_record_id, source_time_key, last_seen_attempt_order
-          );
-      `);
-      const activeRows = this.#database
-        .prepare(
-          "SELECT connection_id, config_hash, activation_id FROM active_connections",
-        )
-        .all() as {
-        activation_id: string;
-        config_hash: string;
-        connection_id: string;
-      }[];
-      const resetActivation = this.#database.prepare(
-        "UPDATE active_connections SET activation_id = ? WHERE connection_id = ?",
-      );
-      for (const active of activeRows) {
-        const activationId = `migration-v5:${sha256(
-          canonicalJson([
-            active.connection_id,
-            active.config_hash,
-            active.activation_id,
-          ]),
-        )}`;
-        resetActivation.run(activationId, active.connection_id);
-      }
-      this.#database.exec(`
-        ALTER TABLE connection_versions ADD COLUMN jsonl_record_index_mode TEXT
-          NOT NULL DEFAULT 'physical-line'
-          CHECK (jsonl_record_index_mode IN ('physical-line', 'record-ordinal', 'unknown'));
-        CREATE INDEX facts_identity_source_time
-          ON facts(
-            connection_id, fact_owner, kind, subject, epistemic_status,
-            source_time_key
-          );
-        ${CREATE_RECORD_INDEX_MODE_RESOLUTIONS}
-        PRAGMA user_version = ${LEGACY_REBUILD_SCHEMA_VERSION};
-      `);
-    });
-    if (version.user_version !== 0) {
-      this.#migrateSchemaNine();
-    }
-  }
-
-  #migrateSchemaNine(): void {
-    this.#database.exec("PRAGMA foreign_keys = OFF");
-    try {
-      this.#transaction(() => {
-        this.#database.exec(
-          CREATE_COLLECTION_ATTEMPTS.replace(
-            "CREATE TABLE collection_attempts",
-            "CREATE TABLE collection_attempts_replacement",
-          ),
-        );
-        this.#database.exec(`
-          INSERT INTO collection_attempts_replacement (
-            attempt_order, attempt_id, connection_id, config_hash, activation_id,
-            started_at, completed_at, outcome, source_records_seen, facts_seen,
-            facts_added, facts_changed, failure_code
-          )
-          SELECT
-            attempt_order, attempt_id, connection_id, config_hash, activation_id,
-            started_at, completed_at, outcome, source_records_seen, facts_seen,
-            facts_added, facts_changed, failure_code
-          FROM collection_attempts;
-          DROP TABLE collection_attempts;
-          ALTER TABLE collection_attempts_replacement RENAME TO collection_attempts;
-        `);
-        this.#database.exec(CREATE_COLLECTION_ATTEMPTS_LATEST_INDEX);
-        this.#database.exec(CREATE_COLLECTION_ATTEMPT_RETIREMENTS);
-        this.#database.exec(CREATE_CONFIRMATION_PREVIEWS);
-        this.#database.exec(CREATE_INSTITUTION);
-        this.#database.exec(CREATE_OWNED_STATE_EXPORTS);
-        this.#database.exec(CREATE_FORGET_RECORDS);
-        this.#database.exec(CREATE_CIVILIZATION_FORGET_RECORDS);
-        this.#database.exec("PRAGMA user_version = 14");
-      });
-    } finally {
-      this.#database.exec("PRAGMA foreign_keys = ON");
-    }
-    this.#migrateSchemaFourteen();
-  }
-
-  #migrateSchemaThirteen(): void {
-    const columns = this.#database.prepare("PRAGMA table_info(owned_state_exports)").all() as {
-      name: string;
-    }[];
-    this.#transaction(() => {
-      this.#database.exec(`
-        ALTER TABLE confirmation_previews RENAME TO confirmation_previews_v13;
-        ${CREATE_CONFIRMATION_PREVIEWS}
-        INSERT INTO confirmation_previews SELECT * FROM confirmation_previews_v13;
-        DROP TABLE confirmation_previews_v13;
-      `);
-      if (!columns.some((column) => column.name === "civilization_inventories_json")) {
-        this.#database.exec(
-          "ALTER TABLE owned_state_exports ADD COLUMN civilization_inventories_json TEXT NOT NULL DEFAULT '[]'",
-        );
-      }
-      this.#database.exec(CREATE_CIVILIZATION_FORGET_RECORDS);
-      this.#database.exec("PRAGMA user_version = 14");
-    });
-    this.#migrateSchemaFourteen();
-  }
-
-  #migrateSchemaFourteen(): void {
-    this.#transaction(() => {
-      this.#database.exec(CREATE_WORK_CLAIMS);
-      this.#database.exec(CREATE_SOURCE_REPORTS);
-      this.#database.exec("PRAGMA user_version = 16");
-    });
-    this.#migrate();
-  }
-
   #assertActive(connection: ActiveConnection): void {
     const active = this.#database
       .prepare(
@@ -3637,647 +2495,6 @@ export class ObservationStore {
       throw new Error("Registered connection configuration is missing");
     }
     return parseStoredConfig(row.config_json, connection.configHash);
-  }
-
-  #ownedInstitutionState(): OwnedStateBundle["institutionStore"] {
-    return {
-      schemaVersion: STORE_SCHEMA_VERSION,
-      ...this.#projectExport(),
-      civilizations: this.#exportRows(
-        `SELECT civilization_id AS civilizationId, name, founded_at AS foundedAt
-           FROM civilizations ORDER BY civilization_id`,
-      ),
-      civilizationForgetRecords: this.#database
-        .prepare(
-          `SELECT forget_order, forget_id, civilization_id, forgotten_at,
-                  forgotten_by, inventory_json, inventory_digest, export_digest
-             FROM civilization_forget_records ORDER BY forget_order`,
-        )
-        .all()
-        .map((value) => {
-          const row = value as Record<string, JsonValue> & { inventory_json: string };
-          return {
-            forgetOrder: row.forget_order,
-            forgetId: row.forget_id,
-            civilizationId: row.civilization_id,
-            forgottenAt: row.forgotten_at,
-            forgottenBy: row.forgotten_by,
-            inventory: JSON.parse(row.inventory_json) as JsonValue,
-            inventoryDigest: row.inventory_digest,
-            exportDigest: row.export_digest,
-          } as Record<string, JsonValue>;
-        }),
-      mandateRevisions: this.#database
-        .prepare(
-          `SELECT revision_order, civilization_id, mandate_id, revision,
-                  previous_revision, status, mandate_json, mandate_digest, recorded_at
-             FROM mandate_revisions ORDER BY revision_order`,
-        )
-        .all()
-        .map((value) => {
-          const row = value as Record<string, JsonValue> & {
-            civilization_id: string;
-            mandate_digest: string;
-            mandate_json: string;
-          };
-          const mandate = parseStoredMandate(row.mandate_json, row.civilization_id);
-          const derivedDigest = mandateDigest(mandate as unknown as JsonValue);
-          if (derivedDigest !== row.mandate_digest) {
-            throw new MandateUnreadableError(row.civilization_id);
-          }
-          return {
-            revisionOrder: row.revision_order,
-            civilizationId: row.civilization_id,
-            mandateId: row.mandate_id,
-            revision: row.revision,
-            previousRevision: row.previous_revision,
-            status: row.status,
-            mandate: mandate as unknown as JsonValue,
-            mandateDigest: derivedDigest,
-            recordedAt: row.recorded_at,
-          } as Record<string, JsonValue>;
-        }),
-    };
-  }
-
-  #ownedObservationState(): OwnedStateBundle["observationStore"] {
-    const sourceReports = this.#exportRows("SELECT * FROM source_reports ORDER BY report_order");
-    const connectionVersions = this.#database
-      .prepare(
-        `SELECT connection_id, config_hash, config_json, registered_at,
-                jsonl_record_index_mode
-           FROM connection_versions
-          ORDER BY connection_id, config_hash`,
-      )
-      .all()
-      .map((value) => {
-        const row = value as Record<string, JsonValue> & { config_json: string };
-        return {
-          connectionId: row.connection_id,
-          connectionVersion: row.config_hash,
-          config: JSON.parse(row.config_json) as JsonValue,
-          registeredAt: row.registered_at,
-          jsonlRecordIndexMode: row.jsonl_record_index_mode,
-        } as Record<string, JsonValue>;
-      });
-    const activeConnections = this.#database
-      .prepare(
-        `SELECT connection_id, config_hash, activation_id, connected_at
-           FROM active_connections
-          ORDER BY connection_id`,
-      )
-      .all()
-      .map((value) => {
-        const row = value as Record<string, JsonValue>;
-        return {
-          connectionId: row.connection_id,
-          connectionVersion: row.config_hash,
-          activationId: row.activation_id,
-          connectedAt: row.connected_at,
-        } as Record<string, JsonValue>;
-      });
-    const facts = this.#database
-      .prepare(
-        `SELECT f.fact_id, f.connection_id, f.config_hash, f.attempt_id,
-                f.fact_owner, f.kind, f.subject, f.epistemic_status,
-                f.source_record_id, f.source_recorded_at, f.source_time_key,
-                f.payload_json, f.payload_hash, f.collected_at,
-                f.last_seen_attempt_order,
-                CASE
-                  WHEN collected.attempt_order > f.last_seen_attempt_order THEN 'historical'
-                  WHEN f.source_recorded_at IS NULL THEN 'unknown'
-                  WHEN EXISTS (
-                    SELECT 1 FROM facts newer
-                     WHERE newer.connection_id = f.connection_id
-                       AND newer.fact_owner = f.fact_owner
-                       AND newer.kind = f.kind
-                       AND newer.subject = f.subject
-                       AND newer.epistemic_status = f.epistemic_status
-                       AND newer.source_time_key > f.source_time_key
-                  ) THEN 'historical'
-                  WHEN (
-                    SELECT MAX(known.last_seen_attempt_order) FROM facts known
-                     WHERE known.connection_id = f.connection_id
-                       AND known.fact_owner = f.fact_owner
-                       AND known.kind = f.kind
-                       AND known.subject = f.subject
-                       AND known.epistemic_status = f.epistemic_status
-                       AND known.source_record_id = f.source_record_id
-                       AND known.source_time_key = f.source_time_key
-                  ) = 0 THEN 'unknown'
-                  WHEN (
-                    SELECT COUNT(*) FROM facts tied
-                     WHERE tied.connection_id = f.connection_id
-                       AND tied.fact_owner = f.fact_owner
-                       AND tied.kind = f.kind
-                       AND tied.subject = f.subject
-                       AND tied.epistemic_status = f.epistemic_status
-                       AND tied.source_record_id = f.source_record_id
-                       AND tied.source_time_key = f.source_time_key
-                       AND tied.last_seen_attempt_order = (
-                         SELECT MAX(latest.last_seen_attempt_order) FROM facts latest
-                          WHERE latest.connection_id = f.connection_id
-                            AND latest.fact_owner = f.fact_owner
-                            AND latest.kind = f.kind
-                            AND latest.subject = f.subject
-                            AND latest.epistemic_status = f.epistemic_status
-                            AND latest.source_record_id = f.source_record_id
-                            AND latest.source_time_key = f.source_time_key
-                       )
-                  ) > 1 THEN 'unknown'
-                  WHEN EXISTS (
-                    SELECT 1 FROM facts corrected
-                     WHERE corrected.connection_id = f.connection_id
-                       AND corrected.fact_owner = f.fact_owner
-                       AND corrected.kind = f.kind
-                       AND corrected.subject = f.subject
-                       AND corrected.epistemic_status = f.epistemic_status
-                       AND corrected.source_record_id = f.source_record_id
-                       AND corrected.source_time_key = f.source_time_key
-                       AND corrected.last_seen_attempt_order > f.last_seen_attempt_order
-                  ) THEN 'historical'
-                  ELSE 'current'
-                END AS temporal_status
-           FROM facts f
-           ${FACT_COLLECTION_AS_OF_JOIN}
-          ORDER BY f.fact_id`,
-      )
-      .all()
-      .map((value) => {
-        const row = value as Record<string, JsonValue> & { payload_json: string };
-        return {
-          id: row.fact_id,
-          connectionId: row.connection_id,
-          connectionVersion: row.config_hash,
-          attemptId: row.attempt_id,
-          factOwner: row.fact_owner,
-          kind: row.kind,
-          subject: row.subject,
-          epistemicStatus: row.epistemic_status,
-          sourceRecordId: row.source_record_id,
-          sourceRecordedAt: row.source_recorded_at,
-          sourceTimeKey: row.source_time_key,
-          payload: JSON.parse(row.payload_json) as JsonValue,
-          payloadHash: row.payload_hash,
-          collectedAt: row.collected_at,
-          lastSeenAttemptOrder: row.last_seen_attempt_order,
-          temporalStatus: row.temporal_status,
-        } as Record<string, JsonValue>;
-      });
-    return {
-      schemaVersion: STORE_SCHEMA_VERSION,
-      activeConnections,
-      ...(sourceReports.length === 0 ? {} : {
-        sourceReports,
-        sourceReportFacts: this.#exportRows("SELECT * FROM source_report_facts ORDER BY report_id, source_fact_id"),
-        sourceReportAdmissions: this.#exportRows("SELECT * FROM source_report_admissions ORDER BY admission_order"),
-      }),
-      collectionAttemptRetirements: this.#exportRows(
-        `SELECT retirement_order AS retirementOrder, retirement_id AS retirementId,
-                attempt_id AS attemptId, connection_id AS connectionId,
-                config_hash AS connectionVersion, retired_at AS retiredAt,
-                retired_by AS retiredBy, confirmation_token AS confirmationToken
-           FROM collection_attempt_retirements ORDER BY retirement_order`,
-      ).map((row) => {
-        const { confirmationToken, ...retirement } = row;
-        return {
-          ...retirement,
-          confirmationTokenDigest: sha256(confirmationToken as string),
-        };
-      }),
-      collectionAttempts: this.#exportRows(
-        `SELECT attempt_order AS attemptOrder, attempt_id AS attemptId,
-                connection_id AS connectionId, config_hash AS connectionVersion,
-                activation_id AS activationId, started_at AS startedAt,
-                completed_at AS completedAt, outcome, source_records_seen AS sourceRecordsSeen,
-                facts_seen AS factsSeen, facts_added AS factsAdded,
-                facts_changed AS factsChanged, failure_code AS failureCode
-           FROM collection_attempts ORDER BY attempt_order`,
-      ),
-      connectionVersions,
-      facts,
-      forgetRecords: this.#database
-        .prepare(
-          `SELECT forget_order, forget_id, connection_id, forgotten_at, forgotten_by,
-                  inventory_json, inventory_digest, export_digest
-             FROM forget_records ORDER BY forget_order`,
-        )
-        .all()
-        .map((value) => {
-          const row = value as Record<string, JsonValue> & { inventory_json: string };
-          return {
-            forgetOrder: row.forget_order,
-            forgetId: row.forget_id,
-            connectionId: row.connection_id,
-            forgottenAt: row.forgotten_at,
-            forgottenBy: row.forgotten_by,
-            inventory: JSON.parse(row.inventory_json) as JsonValue,
-            inventoryDigest: row.inventory_digest,
-            exportDigest: row.export_digest,
-          } as Record<string, JsonValue>;
-        }),
-      recordIndexModeResolutions: this.#database
-        .prepare(
-          `SELECT resolution_order, resolution_id, connection_id, config_hash,
-                  previous_mode, record_index_mode, resolved_at,
-                  affected_fact_ids_json, collection_attempt_ids_json,
-                  confirmation_token
-             FROM record_index_mode_resolutions ORDER BY resolution_order`,
-        )
-        .all()
-        .map((value) => {
-          const row = value as Record<string, JsonValue> & {
-            affected_fact_ids_json: string;
-            collection_attempt_ids_json: string;
-            confirmation_token: string;
-          };
-          return {
-            resolutionOrder: row.resolution_order,
-            resolutionId: row.resolution_id,
-            connectionId: row.connection_id,
-            connectionVersion: row.config_hash,
-            previousRecordIndexMode: row.previous_mode,
-            recordIndexMode: row.record_index_mode,
-            resolvedAt: row.resolved_at,
-            affectedFactIds: JSON.parse(row.affected_fact_ids_json) as JsonValue,
-            collectionAttemptIds: JSON.parse(row.collection_attempt_ids_json) as JsonValue,
-            confirmationTokenDigest: sha256(row.confirmation_token),
-          } as Record<string, JsonValue>;
-        }),
-    };
-  }
-
-  #exportRows(sql: string): Record<string, JsonValue>[] {
-    return this.#database.prepare(sql).all() as Record<string, JsonValue>[];
-  }
-
-  #projectExport(civilizationId?: string): Record<string, Record<string, JsonValue>[]> {
-    const result: Record<string, Record<string, JsonValue>[]> = {};
-    for (const [key, table, order] of [
-      ["projects", "projects", "project_order"],
-      ["projectProvisioningEvents", "project_provisioning_events", "event_order"],
-      ["projectHarnessBindings", "project_harness_bindings", "project_id"],
-    ] as const) {
-      result[key] = this.#database.prepare(`SELECT * FROM ${table}
-        ${civilizationId === undefined ? "" : "WHERE project_id IN (SELECT project_id FROM projects WHERE civilization_id = ?)"}
-        ORDER BY ${order}`).all(...(civilizationId === undefined ? [] : [civilizationId])) as Record<string, JsonValue>[];
-    }
-    return result;
-  }
-
-  #forgetSnapshot(connectionId: string, requireInactive = true): ForgetSnapshot {
-    const active = this.#database
-      .prepare("SELECT 1 AS active FROM active_connections WHERE connection_id = ?")
-      .get(connectionId);
-    if (requireInactive && active !== undefined) {
-      throw new ForgetConnectionActiveError(connectionId);
-    }
-    const connectionVersions = (
-      this.#database
-        .prepare(
-          `SELECT config_hash FROM connection_versions
-            WHERE connection_id = ? ORDER BY config_hash`,
-        )
-        .all(connectionId) as { config_hash: string }[]
-    ).map((row) => row.config_hash);
-    if (connectionVersions.length === 0) {
-      throw new ForgetConnectionNotFoundError(connectionId);
-    }
-    const factIds = (
-      this.#database
-        .prepare("SELECT fact_id FROM facts WHERE connection_id = ? ORDER BY fact_id")
-        .all(connectionId) as { fact_id: number }[]
-    ).map((row) => row.fact_id);
-    const collectionAttemptIds = (
-      this.#database
-        .prepare(
-          `SELECT attempt_id FROM collection_attempts
-            WHERE connection_id = ? ORDER BY attempt_order`,
-        )
-        .all(connectionId) as { attempt_id: string }[]
-    ).map((row) => row.attempt_id);
-    const collectionAttemptRetirementIds = (
-      this.#database
-        .prepare(
-          `SELECT retirement_id FROM collection_attempt_retirements
-            WHERE connection_id = ? ORDER BY retirement_order`,
-        )
-        .all(connectionId) as { retirement_id: string }[]
-    ).map((row) => row.retirement_id);
-    const recordIndexModeResolutionIds = (
-      this.#database
-        .prepare(
-          `SELECT resolution_id FROM record_index_mode_resolutions
-            WHERE connection_id = ? ORDER BY resolution_order`,
-        )
-        .all(connectionId) as { resolution_id: string }[]
-    ).map((row) => row.resolution_id);
-    const sourceReportIds = (this.#database.prepare("SELECT report_id FROM source_reports WHERE connection_id = ? ORDER BY report_order").all(connectionId) as { report_id: string }[]).map((row) => row.report_id);
-    const sourceReportFacts = this.#database.prepare(`SELECT f.report_id AS reportId, f.fact_id AS factId, f.source_fact_id AS sourceFactId FROM source_report_facts f JOIN source_reports r ON r.report_id = f.report_id WHERE r.connection_id = ? ORDER BY r.report_order, f.source_fact_id`).all(connectionId) as { reportId: string; factId: number; sourceFactId: string }[];
-    const sourceReportAdmissions = this.#database.prepare(`SELECT a.report_id AS reportId, a.attempt_id AS attemptId FROM source_report_admissions a JOIN source_reports r ON r.report_id = a.report_id WHERE r.connection_id = ? ORDER BY a.admission_order`).all(connectionId) as { reportId: string; attemptId: string }[];
-    const inventory: ForgetInventory = {
-      ...(sourceReportIds.length === 0 ? {} : { sourceReportIds, sourceReportFacts, sourceReportAdmissions }),
-      collectionAttemptIds,
-      collectionAttemptRetirementIds,
-      connectionId,
-      connectionVersions,
-      counts: {
-        ...(sourceReportIds.length === 0 ? {} : { sourceReports: sourceReportIds.length, sourceReportFacts: sourceReportFacts.length, sourceReportAdmissions: sourceReportAdmissions.length }),
-        collectionAttemptRetirements: collectionAttemptRetirementIds.length,
-        collectionAttempts: collectionAttemptIds.length,
-        connectionVersions: connectionVersions.length,
-        facts: factIds.length,
-        recordIndexModeResolutions: recordIndexModeResolutionIds.length,
-      },
-      factIds,
-      recordIndexModeResolutionIds,
-    };
-    const inventoryDigest = `sha256:${sha256(
-      canonicalJson(inventory as unknown as JsonValue),
-    )}`;
-    return { ...inventory, inventoryDigest, stateFingerprint: inventoryDigest };
-  }
-
-  #civilizationForgetSnapshot(
-    civilizationId: string,
-    requireDissolved = true,
-  ): CivilizationForgetSnapshot {
-    const civilization = this.#database
-      .prepare("SELECT 1 AS found FROM civilizations WHERE civilization_id = ?")
-      .get(civilizationId);
-    if (civilization === undefined) {
-      throw new ForgetCivilizationNotFoundError(civilizationId);
-    }
-    const revisions = this.#database
-      .prepare(
-        `SELECT civilization_id, mandate_id, revision, status
-           FROM mandate_revisions
-          WHERE civilization_id = ?
-          ORDER BY revision_order`,
-      )
-      .all(civilizationId) as {
-      civilization_id: string;
-      mandate_id: string;
-      revision: string;
-      status: "active" | "dissolved";
-    }[];
-    if (revisions.length === 0) {
-      throw new MandateUnreadableError(civilizationId);
-    }
-    if (requireDissolved && revisions.at(-1)?.status !== "dissolved") {
-      throw new ForgetCivilizationNotDissolvedError(civilizationId);
-    }
-    const mandateRevisions = revisions.map((row) => ({
-      civilizationId: row.civilization_id,
-      mandateId: row.mandate_id,
-      revision: row.revision,
-    }));
-    const projectState = this.#projectExport(civilizationId);
-    if (requireDissolved && projectState.projects!.some((project) => {
-      const latest = projectState.projectProvisioningEvents!.filter((event) => event.project_id === project.project_id).at(-1);
-      return latest !== undefined && projectOwnerAlive(latest.event_id as string);
-    })) throw new ProjectError("retry_in_progress");
-    const projects = projectState.projects!.map((row) => ({
-      projectId: row.project_id as string, workspacePath: row.workspace_path as string,
-    }));
-    const projectProvisioningEventIds = projectState.projectProvisioningEvents!.map((row) => row.event_id as string);
-    const projectHarnessBindingIds = projectState.projectHarnessBindings!.map((row) => row.project_id as string);
-    const inventory: CivilizationForgetInventory = {
-      civilizationId,
-      ...(projects.length === 0 ? {} : { projects, projectProvisioningEventIds, projectHarnessBindingIds }),
-      counts: {
-        civilizations: 1,
-        mandateRevisions: mandateRevisions.length,
-        ...(projects.length === 0 ? {} : {
-          projects: projects.length,
-          projectProvisioningEvents: projectProvisioningEventIds.length,
-          projectHarnessBindings: projectHarnessBindingIds.length,
-        }),
-      },
-      mandateRevisions,
-    };
-    const inventoryDigest = `sha256:${sha256(
-      canonicalJson(inventory as unknown as JsonValue),
-    )}`;
-    return { ...inventory, inventoryDigest, stateFingerprint: projects.length === 0 ? inventoryDigest :
-      `sha256:${sha256(canonicalJson({ inventoryDigest, projectState } as unknown as JsonValue))}` };
-  }
-
-  #collectionAttemptRetirementSnapshot(
-    attemptId: string,
-    retiredBy: string,
-  ): CollectionAttemptRetirementSnapshot {
-    const attempt = this.#database
-      .prepare(
-        `SELECT connection_id, config_hash, started_at, outcome
-           FROM collection_attempts
-          WHERE attempt_id = ?`,
-      )
-      .get(attemptId) as
-      | undefined
-      | {
-          config_hash: string;
-          connection_id: string;
-          outcome: "failed" | "retired" | "running" | "skipped" | "success";
-          started_at: string;
-        };
-    if (attempt?.outcome !== "running") {
-      throw new CollectionAttemptNotRunningError(attemptId);
-    }
-    return {
-      attemptId,
-      stateFingerprint: `sha256:${sha256(
-        canonicalJson([
-          attemptId,
-          attempt.connection_id,
-          attempt.config_hash,
-          attempt.started_at,
-          attempt.outcome,
-          retiredBy,
-        ]),
-      )}`,
-      connectionId: attempt.connection_id,
-      connectionVersion: attempt.config_hash,
-      retiredBy,
-      startedAt: attempt.started_at,
-    };
-  }
-
-  #recordIndexModeResolutionSnapshot(
-    connectionId: string,
-    connectionVersion: string,
-    recordIndexMode: JsonlRecordIndexMode,
-  ): RecordIndexModeResolutionSnapshot {
-    const active = this.#database
-      .prepare(
-        `SELECT c.config_hash, v.config_json, v.jsonl_record_index_mode
-           FROM active_connections c
-           JOIN connection_versions v
-             ON v.connection_id = c.connection_id
-            AND v.config_hash = c.config_hash
-          WHERE c.connection_id = ?`,
-      )
-      .get(connectionId) as
-      | undefined
-      | { config_hash: string; config_json: string; jsonl_record_index_mode: string };
-    if (active === undefined) {
-      throw new ConnectionNotFoundError(connectionId);
-    }
-    if (active.config_hash !== connectionVersion) {
-      throw new ConnectionInactiveError(connectionId);
-    }
-    const currentRecordIndexMode = parseJsonlRecordIndexMode(
-      active.jsonl_record_index_mode,
-    );
-    const resolutions = this.#database
-      .prepare(
-        `SELECT count(*) AS count,
-                COALESCE(MAX(resolution_order), 0) AS latest_order
-           FROM record_index_mode_resolutions
-          WHERE connection_id = ? AND config_hash = ?`,
-      )
-      .get(connectionId, connectionVersion) as {
-      count: number;
-      latest_order: number;
-    };
-    if (
-      currentRecordIndexMode === recordIndexMode ||
-      (currentRecordIndexMode !== "unknown" && resolutions.count === 0)
-    ) {
-      throw new StoredRecordIndexModeKnownError(connectionId);
-    }
-    const facts = this.#database
-      .prepare(
-        `SELECT fact_id, last_seen_attempt_order
-           FROM facts
-          WHERE connection_id = ? AND config_hash = ?
-          ORDER BY fact_id`,
-      )
-      .all(connectionId, connectionVersion) as {
-      fact_id: number;
-      last_seen_attempt_order: number;
-    }[];
-    const attempts = this.#database
-      .prepare(
-        `SELECT attempt_id, attempt_order, outcome
-           FROM collection_attempts
-          WHERE connection_id = ? AND config_hash = ?
-          ORDER BY attempt_order`,
-      )
-      .all(connectionId, connectionVersion) as {
-      attempt_id: string;
-      attempt_order: number;
-      outcome: "failed" | "retired" | "running" | "skipped" | "success";
-    }[];
-    if (attempts.some((attempt) => attempt.outcome === "running")) {
-      throw new RecordIndexResolutionCollectionRunningError(connectionId);
-    }
-    const config = parseStoredConfig(active.config_json, connectionVersion);
-    const storedIndexEvidence = recordIndexModeEvidence(
-      this.#database,
-      config,
-      connectionId,
-      connectionVersion,
-    );
-    const affectedFactIds = facts.map((fact) => fact.fact_id);
-    const collectionAttemptIds = attempts.map((attempt) => attempt.attempt_id);
-    // source_records_seen changes only when an attempt is added or completes;
-    // those changes already alter the attempt tuples included below.
-    const stateFingerprint = `sha256:${sha256(
-      canonicalJson([
-        connectionId,
-        connectionVersion,
-        currentRecordIndexMode,
-        recordIndexMode,
-        facts.map((fact) => [fact.fact_id, fact.last_seen_attempt_order]),
-        attempts.map((attempt) => [
-          attempt.attempt_id,
-          attempt.attempt_order,
-          attempt.outcome,
-        ]),
-        resolutions.count,
-        resolutions.latest_order,
-      ]),
-    )}`;
-    return {
-      affectedFactIds,
-      collectionAttemptIds,
-      collectionAttemptsRecorded: collectionAttemptIds.length,
-      connectionId,
-      connectionVersion,
-      currentRecordIndexMode,
-      factsAffected: affectedFactIds.length,
-      recordIndexMode,
-      stateFingerprint,
-      storedIndexEvidence,
-    };
-  }
-
-  #issueConfirmationPreview(
-    operation:
-      | "forget"
-      | "forget-civilization"
-      | "resolve-record-index"
-      | "retire-collection-attempt",
-    argumentsJson: string,
-    stateFingerprint: string,
-    issuedAt: string,
-  ): string {
-    const confirmationToken = `confirmation:${randomUUID()}`;
-    this.#database
-      .prepare(
-        `INSERT INTO confirmation_previews
-           (confirmation_token_hash, operation, arguments_json, state_fingerprint,
-            issued_at, consumed_at)
-         VALUES (?, ?, ?, ?, ?, NULL)`,
-      )
-      .run(
-        sha256(confirmationToken),
-        operation,
-        argumentsJson,
-        stateFingerprint,
-        issuedAt,
-      );
-    return confirmationToken;
-  }
-
-  #confirmationPreview(
-    operation:
-      | "forget"
-      | "forget-civilization"
-      | "resolve-record-index"
-      | "retire-collection-attempt",
-    argumentsJson: string,
-    confirmationToken: string,
-  ): ConfirmationPreviewRow {
-    const preview = this.#database
-      .prepare(
-        `SELECT state_fingerprint, consumed_at
-           FROM confirmation_previews
-          WHERE confirmation_token_hash = ?
-            AND operation = ?
-            AND arguments_json = ?`,
-      )
-      .get(sha256(confirmationToken), operation, argumentsJson) as
-      | ConfirmationPreviewRow
-      | undefined;
-    if (preview === undefined) {
-      throw new ConfirmationPreviewNotFoundError();
-    }
-    return preview;
-  }
-
-  #spendConfirmationPreview(confirmationToken: string, consumedAt: string): void {
-    const spent = this.#database
-      .prepare(
-        `UPDATE confirmation_previews
-            SET consumed_at = ?
-          WHERE confirmation_token_hash = ? AND consumed_at IS NULL`,
-      )
-      .run(consumedAt, sha256(confirmationToken));
-    if (numberOfChanges(spent) !== 1) {
-      throw new ConfirmationAlreadySpentError();
-    }
   }
 
   #assertStoredRecordIndexMode(
@@ -4349,40 +2566,12 @@ export class ObservationStore {
     contentionBudget: ContentionBudget,
     retryableOperation: () => T,
   ): Promise<T> {
-    while (true) {
-      const attemptTimeoutMilliseconds = Math.min(
-        this.#busyTimeoutMilliseconds,
-        Math.max(0, Math.floor(contentionBudget.remainingMilliseconds)),
-      );
-      const attemptStartedAt = performance.now();
-      let chargedMilliseconds = 0;
-      try {
-        return this.#withBusyTimeout(attemptTimeoutMilliseconds, () =>
-          this.#transaction(retryableOperation, (elapsedMilliseconds) => {
-            chargedMilliseconds += elapsedMilliseconds;
-            consumeContentionBudget(contentionBudget, elapsedMilliseconds);
-          }),
-        );
-      } catch (error) {
-        if (!isSqliteContentionError(error)) {
-          throw error;
-        }
-        consumeContentionBudget(
-          contentionBudget,
-          Math.max(0, performance.now() - attemptStartedAt - chargedMilliseconds),
-        );
-        const retryDelay = Math.min(10, contentionBudget.remainingMilliseconds);
-        if (retryDelay <= 0) {
-          throw new StoreContentionError(error);
-        }
-        const retryStartedAt = performance.now();
-        await delay(retryDelay);
-        consumeContentionBudget(
-          contentionBudget,
-          performance.now() - retryStartedAt,
-        );
-      }
-    }
+    return retryTransactionWithinContentionBudget(
+      this.#database,
+      this.#busyTimeoutMilliseconds,
+      contentionBudget,
+      retryableOperation,
+    );
   }
 
   #correctionSignature(connectionId: string, fact: PreparedFact): string {
@@ -4418,514 +2607,11 @@ export class ObservationStore {
     return row.next;
   }
 
-  #transaction<T>(operation: () => T, recordWait?: (milliseconds: number) => void): T {
-    const startedAt = performance.now();
-    try {
-      this.#database.exec("BEGIN IMMEDIATE");
-    } catch (error) {
-      if (isSqliteContentionError(error)) {
-        throw new StoreContentionError(error);
-      }
-      throw error;
-    } finally {
-      recordWait?.(performance.now() - startedAt);
-    }
-    try {
-      const result = operation();
-      this.#database.exec("COMMIT");
-      return result;
-    } catch (error) {
-      if (this.#database.isTransaction) {
-        this.#database.exec("ROLLBACK");
-      }
-      if (isSqliteContentionError(error)) {
-        throw new StoreContentionError(error);
-      }
-      throw error;
-    }
-  }
-
-  #withBusyTimeout<T>(timeoutMilliseconds: number, operation: () => T): T {
-    if (timeoutMilliseconds === this.#busyTimeoutMilliseconds) {
-      return operation();
-    }
-    this.#database.exec(`PRAGMA busy_timeout = ${timeoutMilliseconds}`);
-    try {
-      return operation();
-    } finally {
-      this.#database.exec(`PRAGMA busy_timeout = ${this.#busyTimeoutMilliseconds}`);
-    }
+  #transaction<T>(operation: () => T): T {
+    return runImmediateTransaction(this.#database, operation);
   }
 
   #readTransaction<T>(operation: () => T): T {
-    this.#database.exec("BEGIN");
-    try {
-      const result = operation();
-      this.#database.exec("COMMIT");
-      return result;
-    } catch (error) {
-      if (this.#database.isTransaction) {
-        this.#database.exec("ROLLBACK");
-      }
-      throw error;
-    }
-  }
-}
-
-interface MandateRevisionRow {
-  mandate_id: string;
-  revision: string;
-  status: "active" | "dissolved";
-  mandate_json: string;
-  mandate_digest: string;
-  recorded_at: string;
-}
-
-type FoundedMandateRow = {
-  civilization_id: string;
-  name: string;
-  founded_at: string;
-} & { [Key in keyof MandateRevisionRow]: MandateRevisionRow[Key] | null };
-
-interface CollectionAttemptRow {
-  activation_id: string;
-  attempt_id: string;
-  completed_at: null | string;
-  config_hash: string;
-  connection_id: string;
-  facts_added: number;
-  facts_changed: number;
-  facts_seen: number;
-  failure_code: null | string;
-  outcome: "failed" | "retired" | "running" | "skipped" | "success";
-  source_records_seen: number;
-  started_at: string;
-}
-
-interface CollectionAttemptRetirementRow {
-  attempt_id: string;
-  config_hash: string;
-  connection_id: string;
-  retired_at: string;
-  retired_by: string;
-  retirement_id: string;
-}
-
-interface ConfirmationPreviewRow {
-  consumed_at: null | string;
-  state_fingerprint: string;
-}
-
-interface StoredFactRow {
-  as_of_attempt_id: null | string;
-  as_of_activation_id: null | string;
-  as_of_started_at: null | string;
-  as_of_completed_at: null | string;
-  collected_at: string;
-  config_hash: string;
-  connection_id: string;
-  epistemic_status: EpistemicStatus;
-  fact_id: number;
-  fact_owner: string;
-  kind: string;
-  payload_json: string;
-  source_record_id: string;
-  source_recorded_at: null | string;
-  subject: string;
-  temporal_status: "current" | "historical" | "unknown";
-}
-
-export interface ContentionBudget {
-  remainingMilliseconds: number;
-}
-
-interface PreparedFact extends FactInput {
-  payloadHash: string;
-  payloadJson: string;
-  sourceTimeKey: string;
-}
-
-function correctionSlotKey(connectionId: string, fact: PreparedFact): string {
-  return canonicalJson([
-    connectionId,
-    fact.factOwner,
-    fact.kind,
-    fact.subject,
-    fact.epistemicStatus,
-    fact.sourceRecordId,
-    fact.sourceTimeKey,
-  ]);
-}
-
-function collectionAttemptFromRow(row: CollectionAttemptRow): CollectionAttempt {
-  return {
-    activationId: row.activation_id,
-    attemptId: row.attempt_id,
-    completedAt: row.completed_at,
-    connectionId: row.connection_id,
-    connectionVersion: row.config_hash,
-    factsAdded: row.facts_added,
-    factsChanged: row.facts_changed,
-    factsSeen: row.facts_seen,
-    failureCode: row.failure_code,
-    outcome: row.outcome,
-    sourceRecordsSeen: row.source_records_seen,
-    startedAt: row.started_at,
-  };
-}
-
-function storedFactFromRow(row: StoredFactRow): StoredFact {
-  return {
-    id: row.fact_id,
-    collectedAt: row.collected_at,
-    connectionId: row.connection_id,
-    connectionVersion: row.config_hash,
-    collectionAsOf: row.as_of_attempt_id === null ? null : {
-      attemptId: row.as_of_attempt_id,
-      activationId: row.as_of_activation_id!,
-      startedAt: row.as_of_started_at!,
-      completedAt: row.as_of_completed_at!,
-    },
-    epistemicStatus: row.epistemic_status,
-    factOwner: row.fact_owner,
-    kind: row.kind,
-    payload: JSON.parse(row.payload_json) as Record<string, JsonScalar>,
-    sourceRecordedAt: row.source_recorded_at,
-    sourceRecordId: row.source_record_id,
-    subject: row.subject,
-    temporalStatus: row.temporal_status,
-  };
-}
-
-function parseStoredConfig(configJson: string, expectedHash: string): ConnectionConfig {
-  const parsed = parseConnectionConfig(JSON.parse(configJson) as unknown);
-  if (parsed.hash !== expectedHash) {
-    throw new Error("Stored connection configuration does not match its identity");
-  }
-  return parsed.config;
-}
-
-function parseStoredIntegerArray(value: string): number[] {
-  const parsed = JSON.parse(value) as unknown;
-  if (
-    !Array.isArray(parsed) ||
-    parsed.some(
-      (item) => !Number.isSafeInteger(item) || (item as number) < 1,
-    ) ||
-    new Set(parsed).size !== parsed.length
-  ) {
-    throw new Error("Stored record-index fact inventory is invalid");
-  }
-  return parsed as number[];
-}
-
-function parseStoredStringArray(value: string): string[] {
-  const parsed = JSON.parse(value) as unknown;
-  if (
-    !Array.isArray(parsed) ||
-    parsed.some((item) => typeof item !== "string" || item.length === 0) ||
-    new Set(parsed).size !== parsed.length
-  ) {
-    throw new Error("Stored record-index attempt inventory is invalid");
-  }
-  return parsed as string[];
-}
-
-function parseJsonlRecordIndexMode(
-  value: string,
-): JsonlRecordIndexMode | "unknown" {
-  if (
-    value !== "physical-line" &&
-    value !== "record-ordinal" &&
-    value !== "unknown"
-  ) {
-    throw new Error("Stored JSONL record-index mode is invalid");
-  }
-  return value;
-}
-
-function usesJsonlRecordIndex(config: ConnectionConfig): boolean {
-  return (
-    config.reader.type === "jsonl" &&
-    selectorsIn(config).some(
-      (selector) =>
-        "scope" in selector &&
-        selector.scope === "meta" &&
-        selector.value === "record-index",
-    )
-  );
-}
-
-function verificationFactsFromInputs(
-  facts: readonly FactInput[],
-  config: ConnectionConfig,
-): VerificationFact[] {
-  return facts.map((fact) => {
-    const snapshot = snapshotFact(fact);
-    validateFactAndDeriveSourceTimeKey(snapshot, config);
-    return verificationFactFromInput(snapshot);
-  });
-}
-
-function snapshotFact(fact: FactInput): FactInput {
-  if (fact === null || typeof fact !== "object" || Array.isArray(fact)) {
-    throw new TypeError("Fact is not an object");
-  }
-  const inputPayload: unknown = fact.payload;
-  if (
-    inputPayload === null ||
-    typeof inputPayload !== "object" ||
-    Array.isArray(inputPayload)
-  ) {
-    throw new TypeError("Fact payload is not a JSON object");
-  }
-  const payloadPrototype = Object.getPrototypeOf(inputPayload);
-  if (payloadPrototype !== Object.prototype && payloadPrototype !== null) {
-    throw new TypeError("Fact payload is not a JSON object");
-  }
-  const payload = Object.create(null) as Record<string, JsonScalar>;
-  for (const key of Reflect.ownKeys(inputPayload)) {
-    if (typeof key !== "string") {
-      throw new TypeError("Fact payload keys must be strings");
-    }
-    payload[key] = (inputPayload as Record<string, unknown>)[key] as JsonScalar;
-  }
-  return {
-    epistemicStatus: fact.epistemicStatus,
-    factOwner: fact.factOwner,
-    kind: fact.kind,
-    payload,
-    sourceRecordedAt: fact.sourceRecordedAt,
-    sourceRecordId: fact.sourceRecordId,
-    subject: fact.subject,
-  };
-}
-
-function validateFactAndDeriveSourceTimeKey(
-  fact: FactInput,
-  config: ConnectionConfig,
-): string {
-  for (const [field, value] of [
-    ["epistemicStatus", fact.epistemicStatus],
-    ["factOwner", fact.factOwner],
-    ["kind", fact.kind],
-    ["subject", fact.subject],
-    ["sourceRecordId", fact.sourceRecordId],
-  ] as const) {
-    if (
-      typeof value !== "string" ||
-      Buffer.from(value, "utf8").toString("utf8") !== value
-    ) {
-      throw new FactRejectedError(field, "is not a lossless SQLite string");
-    }
-  }
-  if (fact.epistemicStatus !== "claim" && fact.epistemicStatus !== "observation") {
-    const _exhaustive: never = fact.epistemicStatus;
-    void _exhaustive;
-    throw new FactRejectedError("epistemicStatus", "is not a valid value");
-  }
-  const payloadKeys = new Set(Object.keys(fact.payload));
-  const isDeclared =
-    fact.factOwner === config.factOwner &&
-    config.facts.some(
-      (declared) =>
-        declared.epistemicStatus === fact.epistemicStatus &&
-        declared.kind === fact.kind &&
-        Object.keys(declared.payload).length === payloadKeys.size &&
-        Object.keys(declared.payload).every((key) => payloadKeys.has(key)),
-    );
-  if (!isDeclared) {
-    throw new FactNotDeclaredError();
-  }
-  for (const [key, value] of Object.entries(fact.payload)) {
-    if (
-      value !== null &&
-      typeof value !== "string" &&
-      typeof value !== "boolean" &&
-      !(typeof value === "number" && Number.isFinite(value) && !Object.is(value, -0))
-    ) {
-      throw new FactRejectedError(key, "cannot be persisted exactly");
-    }
-  }
-  if (fact.sourceRecordedAt === null) {
-    return "";
-  }
-  const sourceTimeKey = utcInstantOrderingKey(fact.sourceRecordedAt);
-  if (sourceTimeKey === null) {
-    throw new FactRejectedError("sourceRecordedAt", "is not a representable UTC instant");
-  }
-  return sourceTimeKey;
-}
-
-function validateRetirementActor(value: string): void {
-  validateActor(value, "retirement");
-}
-
-function validateActor(
-  value: string,
-  operation: "forget" | "forget-civilization" | "retirement",
-): void {
-  if (!/^[a-z][a-z0-9_.:-]{0,127}$/.test(value)) {
-    // The actor is caller input, so a malformed one is an invalid argument
-    // rather than an internal fault.
-    throw Object.assign(
-      new TypeError(`A ${operation} actor must be a stable machine identifier`),
-      { code: "invalid_arguments" },
-    );
-  }
-}
-
-function parseExportInventories(
-  value: string,
-): { connectionId: string; inventoryDigest: string }[] {
-  const parsed = JSON.parse(value) as unknown;
-  if (
-    !Array.isArray(parsed) ||
-    parsed.some(
-      (item) =>
-        item === null ||
-        typeof item !== "object" ||
-        Array.isArray(item) ||
-        typeof (item as Record<string, unknown>).connectionId !== "string" ||
-        typeof (item as Record<string, unknown>).inventoryDigest !== "string",
-    )
-  ) {
-    throw new Error("Stored export coverage is invalid");
-  }
-  return parsed as { connectionId: string; inventoryDigest: string }[];
-}
-
-function parseCivilizationExportInventories(
-  value: string,
-): { civilizationId: string; inventoryDigest: string }[] {
-  const parsed = JSON.parse(value) as unknown;
-  if (
-    !Array.isArray(parsed) ||
-    parsed.some(
-      (item) =>
-        item === null ||
-        typeof item !== "object" ||
-        Array.isArray(item) ||
-        typeof (item as Record<string, unknown>).civilizationId !== "string" ||
-        typeof (item as Record<string, unknown>).inventoryDigest !== "string",
-    )
-  ) {
-    throw new Error("Stored civilization export coverage is invalid");
-  }
-  return parsed as { civilizationId: string; inventoryDigest: string }[];
-}
-
-function parseForgetInventory(value: string): ForgetInventory {
-  const parsed = JSON.parse(value) as ForgetInventory;
-  if (
-    parsed === null ||
-    typeof parsed !== "object" ||
-    typeof parsed.connectionId !== "string" ||
-    !Array.isArray(parsed.connectionVersions) ||
-    !Array.isArray(parsed.factIds) ||
-    !Array.isArray(parsed.collectionAttemptIds) ||
-    !Array.isArray(parsed.collectionAttemptRetirementIds) ||
-    !Array.isArray(parsed.recordIndexModeResolutionIds) ||
-    parsed.counts === null ||
-    typeof parsed.counts !== "object"
-  ) {
-    throw new Error("Stored forget inventory is invalid");
-  }
-  return parsed;
-}
-
-function parseCivilizationForgetInventory(value: string): CivilizationForgetInventory {
-  const parsed = JSON.parse(value) as CivilizationForgetInventory;
-  if (
-    parsed === null ||
-    typeof parsed !== "object" ||
-    typeof parsed.civilizationId !== "string" ||
-    !Array.isArray(parsed.mandateRevisions) ||
-    parsed.counts === null ||
-    typeof parsed.counts !== "object"
-  ) {
-    throw new Error("Stored civilization forget inventory is invalid");
-  }
-  return parsed;
-}
-
-function safeFailureCode(error: unknown): string {
-  if (
-    error !== null &&
-    typeof error === "object" &&
-    "code" in error &&
-    typeof error.code === "string" &&
-    /^[a-z][a-z0-9_]{0,63}$/.test(error.code)
-  ) {
-    return error.code;
-  }
-  return "internal_error";
-}
-
-/**
- * Read a stored mandate back as a mandate, or refuse.
- *
- * Re-parsing on the read path is what makes the digest honest: it is derived
- * from bytes that have been proven to still be a mandate, so content edited
- * underneath the store fails closed here rather than producing a confident
- * digest of something nobody validated.
- */
-function parseStoredMandate(mandateJson: string, civilizationId: string): MandateConfig {
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(mandateJson) as unknown;
-  } catch {
-    throw new MandateUnreadableError(civilizationId);
-  }
-  try {
-    const parsed = parseMandateConfig(decoded);
-    if (parsed.canonical !== mandateJson) {
-      throw new MandateUnreadableError(civilizationId);
-    }
-    return parsed.config;
-  } catch {
-    throw new MandateUnreadableError(civilizationId);
-  }
-}
-
-function numberOfChanges(result: StatementResultingChanges): number {
-  return Number(result.changes);
-}
-
-export function isSqliteContentionError(error: unknown): boolean {
-  if (error instanceof StoreContentionError) {
-    return true;
-  }
-  if (
-    error === null ||
-    typeof error !== "object" ||
-    !("errcode" in error) ||
-    typeof error.errcode !== "number"
-  ) {
-    return false;
-  }
-  const primaryResultCode = error.errcode & 0xff;
-  return primaryResultCode === 5 || primaryResultCode === 6;
-}
-
-function consumeContentionBudget(
-  budget: ContentionBudget,
-  elapsedMilliseconds: number,
-): void {
-  budget.remainingMilliseconds = Math.max(
-    0,
-    budget.remainingMilliseconds - elapsedMilliseconds,
-  );
-}
-
-function addFilter(
-  conditions: string[],
-  parameters: (number | string)[],
-  expression: string,
-  value: number | string | undefined,
-): void {
-  if (value !== undefined) {
-    conditions.push(expression);
-    parameters.push(value);
+    return runReadTransaction(this.#database, operation);
   }
 }

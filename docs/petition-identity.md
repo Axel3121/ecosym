@@ -670,8 +670,9 @@ original request.
 
 ## Existing confirmation previews
 
-`confirmation_previews` in `src/store.ts` is useful prior art for exact binding
-and replay resistance, but it proves a different fact.
+`confirmation_previews` in the observation store (issued, looked up and spent in
+`src/store-confirmation.ts`) is useful prior art for exact binding and replay
+resistance, but it proves a different fact.
 
 The store generates an unpredictable bearer token and, while it is usable,
 retains only its hash with the exact operation, arguments, state fingerprint,
