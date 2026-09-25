@@ -10,11 +10,10 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import {
   parseConnectionConfig,
-  selectorsIn,
   type ConnectionConfig,
   type ParsedConnectionConfig,
 } from "./config.ts";
-import { canonicalJson, type JsonScalar, type JsonValue, sha256 } from "./json.ts";
+import { canonicalJson, type JsonValue, sha256 } from "./json.ts";
 import type { FoundedCivilizationSnapshot } from "./institution-snapshot.ts";
 import type {
   ConnectionStatus,
@@ -27,7 +26,6 @@ import {
   mandateDigest,
   parseMandateConfig,
   type ParsedCivilizationConfig,
-  type MandateConfig,
   type ParsedMandateConfig,
 } from "./institution.ts";
 import {
@@ -44,7 +42,6 @@ import { PROJECT_ERROR_CODES, ProjectError, type ProjectErrorCode, type ProjectS
 export { ProjectError } from "./project-types.ts";
 import {
   sameVerificationFactSet,
-  verificationFactFromInput,
   verificationFactKey,
 } from "./verification-facts.ts";
 import {
@@ -58,7 +55,6 @@ import {
   ConnectionInactiveError,
   ConnectionNotFoundError,
   FactNotDeclaredError,
-  FactRejectedError,
   ForgetCivilizationExportCoverageError,
   ForgetCivilizationNotDissolvedError,
   ForgetCivilizationNotFoundError,
@@ -150,6 +146,37 @@ import {
   LEGACY_REBUILD_SCHEMA_VERSION,
   STORE_SCHEMA_VERSION,
 } from "./store-schema.ts";
+import {
+  addFilter,
+  collectionAttemptFromRow,
+  parseCivilizationExportInventories,
+  parseCivilizationForgetInventory,
+  parseExportInventories,
+  parseForgetInventory,
+  parseJsonlRecordIndexMode,
+  parseStoredConfig,
+  parseStoredIntegerArray,
+  parseStoredMandate,
+  parseStoredStringArray,
+  storedFactFromRow,
+  usesJsonlRecordIndex,
+  type CollectionAttemptRetirementRow,
+  type CollectionAttemptRow,
+  type ConfirmationPreviewRow,
+  type FoundedMandateRow,
+  type MandateRevisionRow,
+  type StoredFactRow,
+} from "./store-rows.ts";
+import {
+  correctionSlotKey,
+  safeFailureCode,
+  snapshotFact,
+  validateActor,
+  validateFactAndDeriveSourceTimeKey,
+  validateRetirementActor,
+  verificationFactsFromInputs,
+  type PreparedFact,
+} from "./store-validation.ts";
 
 export type {
   ActiveConnection,
@@ -3846,418 +3873,6 @@ export class ObservationStore {
   }
 }
 
-interface MandateRevisionRow {
-  mandate_id: string;
-  revision: string;
-  status: "active" | "dissolved";
-  mandate_json: string;
-  mandate_digest: string;
-  recorded_at: string;
-}
-
-type FoundedMandateRow = {
-  civilization_id: string;
-  name: string;
-  founded_at: string;
-} & { [Key in keyof MandateRevisionRow]: MandateRevisionRow[Key] | null };
-
-interface CollectionAttemptRow {
-  activation_id: string;
-  attempt_id: string;
-  completed_at: null | string;
-  config_hash: string;
-  connection_id: string;
-  facts_added: number;
-  facts_changed: number;
-  facts_seen: number;
-  failure_code: null | string;
-  outcome: "failed" | "retired" | "running" | "skipped" | "success";
-  source_records_seen: number;
-  started_at: string;
-}
-
-interface CollectionAttemptRetirementRow {
-  attempt_id: string;
-  config_hash: string;
-  connection_id: string;
-  retired_at: string;
-  retired_by: string;
-  retirement_id: string;
-}
-
-interface ConfirmationPreviewRow {
-  consumed_at: null | string;
-  state_fingerprint: string;
-}
-
-interface StoredFactRow {
-  as_of_attempt_id: null | string;
-  as_of_activation_id: null | string;
-  as_of_started_at: null | string;
-  as_of_completed_at: null | string;
-  collected_at: string;
-  config_hash: string;
-  connection_id: string;
-  epistemic_status: EpistemicStatus;
-  fact_id: number;
-  fact_owner: string;
-  kind: string;
-  payload_json: string;
-  source_record_id: string;
-  source_recorded_at: null | string;
-  subject: string;
-  temporal_status: "current" | "historical" | "unknown";
-}
-
-interface PreparedFact extends FactInput {
-  payloadHash: string;
-  payloadJson: string;
-  sourceTimeKey: string;
-}
-
-function correctionSlotKey(connectionId: string, fact: PreparedFact): string {
-  return canonicalJson([
-    connectionId,
-    fact.factOwner,
-    fact.kind,
-    fact.subject,
-    fact.epistemicStatus,
-    fact.sourceRecordId,
-    fact.sourceTimeKey,
-  ]);
-}
-
-function collectionAttemptFromRow(row: CollectionAttemptRow): CollectionAttempt {
-  return {
-    activationId: row.activation_id,
-    attemptId: row.attempt_id,
-    completedAt: row.completed_at,
-    connectionId: row.connection_id,
-    connectionVersion: row.config_hash,
-    factsAdded: row.facts_added,
-    factsChanged: row.facts_changed,
-    factsSeen: row.facts_seen,
-    failureCode: row.failure_code,
-    outcome: row.outcome,
-    sourceRecordsSeen: row.source_records_seen,
-    startedAt: row.started_at,
-  };
-}
-
-function storedFactFromRow(row: StoredFactRow): StoredFact {
-  return {
-    id: row.fact_id,
-    collectedAt: row.collected_at,
-    connectionId: row.connection_id,
-    connectionVersion: row.config_hash,
-    collectionAsOf: row.as_of_attempt_id === null ? null : {
-      attemptId: row.as_of_attempt_id,
-      activationId: row.as_of_activation_id!,
-      startedAt: row.as_of_started_at!,
-      completedAt: row.as_of_completed_at!,
-    },
-    epistemicStatus: row.epistemic_status,
-    factOwner: row.fact_owner,
-    kind: row.kind,
-    payload: JSON.parse(row.payload_json) as Record<string, JsonScalar>,
-    sourceRecordedAt: row.source_recorded_at,
-    sourceRecordId: row.source_record_id,
-    subject: row.subject,
-    temporalStatus: row.temporal_status,
-  };
-}
-
-function parseStoredConfig(configJson: string, expectedHash: string): ConnectionConfig {
-  const parsed = parseConnectionConfig(JSON.parse(configJson) as unknown);
-  if (parsed.hash !== expectedHash) {
-    throw new Error("Stored connection configuration does not match its identity");
-  }
-  return parsed.config;
-}
-
-function parseStoredIntegerArray(value: string): number[] {
-  const parsed = JSON.parse(value) as unknown;
-  if (
-    !Array.isArray(parsed) ||
-    parsed.some(
-      (item) => !Number.isSafeInteger(item) || (item as number) < 1,
-    ) ||
-    new Set(parsed).size !== parsed.length
-  ) {
-    throw new Error("Stored record-index fact inventory is invalid");
-  }
-  return parsed as number[];
-}
-
-function parseStoredStringArray(value: string): string[] {
-  const parsed = JSON.parse(value) as unknown;
-  if (
-    !Array.isArray(parsed) ||
-    parsed.some((item) => typeof item !== "string" || item.length === 0) ||
-    new Set(parsed).size !== parsed.length
-  ) {
-    throw new Error("Stored record-index attempt inventory is invalid");
-  }
-  return parsed as string[];
-}
-
-function parseJsonlRecordIndexMode(
-  value: string,
-): JsonlRecordIndexMode | "unknown" {
-  if (
-    value !== "physical-line" &&
-    value !== "record-ordinal" &&
-    value !== "unknown"
-  ) {
-    throw new Error("Stored JSONL record-index mode is invalid");
-  }
-  return value;
-}
-
-function usesJsonlRecordIndex(config: ConnectionConfig): boolean {
-  return (
-    config.reader.type === "jsonl" &&
-    selectorsIn(config).some(
-      (selector) =>
-        "scope" in selector &&
-        selector.scope === "meta" &&
-        selector.value === "record-index",
-    )
-  );
-}
-
-function verificationFactsFromInputs(
-  facts: readonly FactInput[],
-  config: ConnectionConfig,
-): VerificationFact[] {
-  return facts.map((fact) => {
-    const snapshot = snapshotFact(fact);
-    validateFactAndDeriveSourceTimeKey(snapshot, config);
-    return verificationFactFromInput(snapshot);
-  });
-}
-
-function snapshotFact(fact: FactInput): FactInput {
-  if (fact === null || typeof fact !== "object" || Array.isArray(fact)) {
-    throw new TypeError("Fact is not an object");
-  }
-  const inputPayload: unknown = fact.payload;
-  if (
-    inputPayload === null ||
-    typeof inputPayload !== "object" ||
-    Array.isArray(inputPayload)
-  ) {
-    throw new TypeError("Fact payload is not a JSON object");
-  }
-  const payloadPrototype = Object.getPrototypeOf(inputPayload);
-  if (payloadPrototype !== Object.prototype && payloadPrototype !== null) {
-    throw new TypeError("Fact payload is not a JSON object");
-  }
-  const payload = Object.create(null) as Record<string, JsonScalar>;
-  for (const key of Reflect.ownKeys(inputPayload)) {
-    if (typeof key !== "string") {
-      throw new TypeError("Fact payload keys must be strings");
-    }
-    payload[key] = (inputPayload as Record<string, unknown>)[key] as JsonScalar;
-  }
-  return {
-    epistemicStatus: fact.epistemicStatus,
-    factOwner: fact.factOwner,
-    kind: fact.kind,
-    payload,
-    sourceRecordedAt: fact.sourceRecordedAt,
-    sourceRecordId: fact.sourceRecordId,
-    subject: fact.subject,
-  };
-}
-
-function validateFactAndDeriveSourceTimeKey(
-  fact: FactInput,
-  config: ConnectionConfig,
-): string {
-  for (const [field, value] of [
-    ["epistemicStatus", fact.epistemicStatus],
-    ["factOwner", fact.factOwner],
-    ["kind", fact.kind],
-    ["subject", fact.subject],
-    ["sourceRecordId", fact.sourceRecordId],
-  ] as const) {
-    if (
-      typeof value !== "string" ||
-      Buffer.from(value, "utf8").toString("utf8") !== value
-    ) {
-      throw new FactRejectedError(field, "is not a lossless SQLite string");
-    }
-  }
-  if (fact.epistemicStatus !== "claim" && fact.epistemicStatus !== "observation") {
-    const _exhaustive: never = fact.epistemicStatus;
-    void _exhaustive;
-    throw new FactRejectedError("epistemicStatus", "is not a valid value");
-  }
-  const payloadKeys = new Set(Object.keys(fact.payload));
-  const isDeclared =
-    fact.factOwner === config.factOwner &&
-    config.facts.some(
-      (declared) =>
-        declared.epistemicStatus === fact.epistemicStatus &&
-        declared.kind === fact.kind &&
-        Object.keys(declared.payload).length === payloadKeys.size &&
-        Object.keys(declared.payload).every((key) => payloadKeys.has(key)),
-    );
-  if (!isDeclared) {
-    throw new FactNotDeclaredError();
-  }
-  for (const [key, value] of Object.entries(fact.payload)) {
-    if (
-      value !== null &&
-      typeof value !== "string" &&
-      typeof value !== "boolean" &&
-      !(typeof value === "number" && Number.isFinite(value) && !Object.is(value, -0))
-    ) {
-      throw new FactRejectedError(key, "cannot be persisted exactly");
-    }
-  }
-  if (fact.sourceRecordedAt === null) {
-    return "";
-  }
-  const sourceTimeKey = utcInstantOrderingKey(fact.sourceRecordedAt);
-  if (sourceTimeKey === null) {
-    throw new FactRejectedError("sourceRecordedAt", "is not a representable UTC instant");
-  }
-  return sourceTimeKey;
-}
-
-function validateRetirementActor(value: string): void {
-  validateActor(value, "retirement");
-}
-
-function validateActor(
-  value: string,
-  operation: "forget" | "forget-civilization" | "retirement",
-): void {
-  if (!/^[a-z][a-z0-9_.:-]{0,127}$/.test(value)) {
-    // The actor is caller input, so a malformed one is an invalid argument
-    // rather than an internal fault.
-    throw Object.assign(
-      new TypeError(`A ${operation} actor must be a stable machine identifier`),
-      { code: "invalid_arguments" },
-    );
-  }
-}
-
-function parseExportInventories(
-  value: string,
-): { connectionId: string; inventoryDigest: string }[] {
-  const parsed = JSON.parse(value) as unknown;
-  if (
-    !Array.isArray(parsed) ||
-    parsed.some(
-      (item) =>
-        item === null ||
-        typeof item !== "object" ||
-        Array.isArray(item) ||
-        typeof (item as Record<string, unknown>).connectionId !== "string" ||
-        typeof (item as Record<string, unknown>).inventoryDigest !== "string",
-    )
-  ) {
-    throw new Error("Stored export coverage is invalid");
-  }
-  return parsed as { connectionId: string; inventoryDigest: string }[];
-}
-
-function parseCivilizationExportInventories(
-  value: string,
-): { civilizationId: string; inventoryDigest: string }[] {
-  const parsed = JSON.parse(value) as unknown;
-  if (
-    !Array.isArray(parsed) ||
-    parsed.some(
-      (item) =>
-        item === null ||
-        typeof item !== "object" ||
-        Array.isArray(item) ||
-        typeof (item as Record<string, unknown>).civilizationId !== "string" ||
-        typeof (item as Record<string, unknown>).inventoryDigest !== "string",
-    )
-  ) {
-    throw new Error("Stored civilization export coverage is invalid");
-  }
-  return parsed as { civilizationId: string; inventoryDigest: string }[];
-}
-
-function parseForgetInventory(value: string): ForgetInventory {
-  const parsed = JSON.parse(value) as ForgetInventory;
-  if (
-    parsed === null ||
-    typeof parsed !== "object" ||
-    typeof parsed.connectionId !== "string" ||
-    !Array.isArray(parsed.connectionVersions) ||
-    !Array.isArray(parsed.factIds) ||
-    !Array.isArray(parsed.collectionAttemptIds) ||
-    !Array.isArray(parsed.collectionAttemptRetirementIds) ||
-    !Array.isArray(parsed.recordIndexModeResolutionIds) ||
-    parsed.counts === null ||
-    typeof parsed.counts !== "object"
-  ) {
-    throw new Error("Stored forget inventory is invalid");
-  }
-  return parsed;
-}
-
-function parseCivilizationForgetInventory(value: string): CivilizationForgetInventory {
-  const parsed = JSON.parse(value) as CivilizationForgetInventory;
-  if (
-    parsed === null ||
-    typeof parsed !== "object" ||
-    typeof parsed.civilizationId !== "string" ||
-    !Array.isArray(parsed.mandateRevisions) ||
-    parsed.counts === null ||
-    typeof parsed.counts !== "object"
-  ) {
-    throw new Error("Stored civilization forget inventory is invalid");
-  }
-  return parsed;
-}
-
-function safeFailureCode(error: unknown): string {
-  if (
-    error !== null &&
-    typeof error === "object" &&
-    "code" in error &&
-    typeof error.code === "string" &&
-    /^[a-z][a-z0-9_]{0,63}$/.test(error.code)
-  ) {
-    return error.code;
-  }
-  return "internal_error";
-}
-
-/**
- * Read a stored mandate back as a mandate, or refuse.
- *
- * Re-parsing on the read path is what makes the digest honest: it is derived
- * from bytes that have been proven to still be a mandate, so content edited
- * underneath the store fails closed here rather than producing a confident
- * digest of something nobody validated.
- */
-function parseStoredMandate(mandateJson: string, civilizationId: string): MandateConfig {
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(mandateJson) as unknown;
-  } catch {
-    throw new MandateUnreadableError(civilizationId);
-  }
-  try {
-    const parsed = parseMandateConfig(decoded);
-    if (parsed.canonical !== mandateJson) {
-      throw new MandateUnreadableError(civilizationId);
-    }
-    return parsed.config;
-  } catch {
-    throw new MandateUnreadableError(civilizationId);
-  }
-}
-
 function numberOfChanges(result: StatementResultingChanges): number {
   return Number(result.changes);
 }
@@ -4286,16 +3901,4 @@ function consumeContentionBudget(
     0,
     budget.remainingMilliseconds - elapsedMilliseconds,
   );
-}
-
-function addFilter(
-  conditions: string[],
-  parameters: (number | string)[],
-  expression: string,
-  value: number | string | undefined,
-): void {
-  if (value !== undefined) {
-    conditions.push(expression);
-    parameters.push(value);
-  }
 }
