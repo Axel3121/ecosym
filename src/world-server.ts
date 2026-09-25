@@ -54,8 +54,12 @@ export function createWorldServer(readSnapshot: () => WorldSnapshot, buildDirect
         fail(405, "Metoden er ikke tillatt");
         return;
       }
+      // Node keeps only the first Content-Type, so count the raw headers as for Host.
+      const contentTypes = request.rawHeaders.filter((_, index) => index % 2 === 0
+        && request.rawHeaders[index]!.toLowerCase() === "content-type");
       if (request.headers.origin !== `http://127.0.0.1:${address.port}`
         || (request.headers["sec-fetch-site"] !== undefined && request.headers["sec-fetch-site"] !== "same-origin")
+        || contentTypes.length !== 1
         || !/^application\/json(?:\s*;[^\r\n]*)?$/u.test(request.headers["content-type"] ?? "")) {
         fail(403, "forbidden_origin", "Forespørselen er ikke tillatt");
         return;
