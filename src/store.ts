@@ -4,9 +4,7 @@ import type { SourceReportSnapshot, SourceReportProvenance } from "./source-repo
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { performance } from "node:perf_hooks";
-import { DatabaseSync, type StatementResultingChanges } from "node:sqlite";
-import { setTimeout as delay } from "node:timers/promises";
+import { DatabaseSync } from "node:sqlite";
 
 import {
   parseConnectionConfig,
@@ -40,6 +38,7 @@ import { utcInstantOrderingKey } from "./time.ts";
 import { sourceReportFactTimeKey } from "./source-report-time.ts";
 import { PROJECT_ERROR_CODES, ProjectError, type ProjectErrorCode, type ProjectState, type ProjectRequest, type HarnessBinding, type WorldProjectSnapshot } from "./project-types.ts";
 export { ProjectError } from "./project-types.ts";
+export { createCollectionContentionBudget, isSqliteContentionError } from "./store-sqlite.ts";
 import {
   sameVerificationFactSet,
   verificationFactKey,
@@ -147,6 +146,14 @@ import {
   STORE_SCHEMA_VERSION,
 } from "./store-schema.ts";
 import {
+  BUSY_RETRY_WINDOW_MILLISECONDS,
+  createCollectionContentionBudget,
+  numberOfChanges,
+  retryTransactionWithinContentionBudget,
+  runImmediateTransaction,
+  runReadTransaction,
+} from "./store-sqlite.ts";
+import {
   addFilter,
   collectionAttemptFromRow,
   parseCivilizationExportInventories,
@@ -212,7 +219,6 @@ export type {
 } from "./observation-snapshot.ts";
 
 const STORE_FILENAME = "observations.sqlite";
-const BUSY_RETRY_WINDOW_MILLISECONDS = 250;
 const WORK_CLAIM_TTL_MILLISECONDS = 30 * 60 * 1000; // 30 minutes, first guess
 const CONFIRMATION_CONTENTION_BUDGET_MILLISECONDS = 2_000;
 const projectAttemptOwners = new Map<string, string>();
@@ -244,10 +250,6 @@ function projectOwnerAlive(eventId: string): boolean {
   } catch (error) {
     return !(error instanceof Error && "code" in error && error.code === "ESRCH");
   }
-}
-
-export function createCollectionContentionBudget(): ContentionBudget {
-  return { remainingMilliseconds: BUSY_RETRY_WINDOW_MILLISECONDS };
 }
 
 export class ObservationStore {
@@ -3750,40 +3752,12 @@ export class ObservationStore {
     contentionBudget: ContentionBudget,
     retryableOperation: () => T,
   ): Promise<T> {
-    while (true) {
-      const attemptTimeoutMilliseconds = Math.min(
-        this.#busyTimeoutMilliseconds,
-        Math.max(0, Math.floor(contentionBudget.remainingMilliseconds)),
-      );
-      const attemptStartedAt = performance.now();
-      let chargedMilliseconds = 0;
-      try {
-        return this.#withBusyTimeout(attemptTimeoutMilliseconds, () =>
-          this.#transaction(retryableOperation, (elapsedMilliseconds) => {
-            chargedMilliseconds += elapsedMilliseconds;
-            consumeContentionBudget(contentionBudget, elapsedMilliseconds);
-          }),
-        );
-      } catch (error) {
-        if (!isSqliteContentionError(error)) {
-          throw error;
-        }
-        consumeContentionBudget(
-          contentionBudget,
-          Math.max(0, performance.now() - attemptStartedAt - chargedMilliseconds),
-        );
-        const retryDelay = Math.min(10, contentionBudget.remainingMilliseconds);
-        if (retryDelay <= 0) {
-          throw new StoreContentionError(error);
-        }
-        const retryStartedAt = performance.now();
-        await delay(retryDelay);
-        consumeContentionBudget(
-          contentionBudget,
-          performance.now() - retryStartedAt,
-        );
-      }
-    }
+    return retryTransactionWithinContentionBudget(
+      this.#database,
+      this.#busyTimeoutMilliseconds,
+      contentionBudget,
+      retryableOperation,
+    );
   }
 
   #correctionSignature(connectionId: string, fact: PreparedFact): string {
@@ -3819,86 +3793,11 @@ export class ObservationStore {
     return row.next;
   }
 
-  #transaction<T>(operation: () => T, recordWait?: (milliseconds: number) => void): T {
-    const startedAt = performance.now();
-    try {
-      this.#database.exec("BEGIN IMMEDIATE");
-    } catch (error) {
-      if (isSqliteContentionError(error)) {
-        throw new StoreContentionError(error);
-      }
-      throw error;
-    } finally {
-      recordWait?.(performance.now() - startedAt);
-    }
-    try {
-      const result = operation();
-      this.#database.exec("COMMIT");
-      return result;
-    } catch (error) {
-      if (this.#database.isTransaction) {
-        this.#database.exec("ROLLBACK");
-      }
-      if (isSqliteContentionError(error)) {
-        throw new StoreContentionError(error);
-      }
-      throw error;
-    }
-  }
-
-  #withBusyTimeout<T>(timeoutMilliseconds: number, operation: () => T): T {
-    if (timeoutMilliseconds === this.#busyTimeoutMilliseconds) {
-      return operation();
-    }
-    this.#database.exec(`PRAGMA busy_timeout = ${timeoutMilliseconds}`);
-    try {
-      return operation();
-    } finally {
-      this.#database.exec(`PRAGMA busy_timeout = ${this.#busyTimeoutMilliseconds}`);
-    }
+  #transaction<T>(operation: () => T): T {
+    return runImmediateTransaction(this.#database, operation);
   }
 
   #readTransaction<T>(operation: () => T): T {
-    this.#database.exec("BEGIN");
-    try {
-      const result = operation();
-      this.#database.exec("COMMIT");
-      return result;
-    } catch (error) {
-      if (this.#database.isTransaction) {
-        this.#database.exec("ROLLBACK");
-      }
-      throw error;
-    }
+    return runReadTransaction(this.#database, operation);
   }
-}
-
-function numberOfChanges(result: StatementResultingChanges): number {
-  return Number(result.changes);
-}
-
-export function isSqliteContentionError(error: unknown): boolean {
-  if (error instanceof StoreContentionError) {
-    return true;
-  }
-  if (
-    error === null ||
-    typeof error !== "object" ||
-    !("errcode" in error) ||
-    typeof error.errcode !== "number"
-  ) {
-    return false;
-  }
-  const primaryResultCode = error.errcode & 0xff;
-  return primaryResultCode === 5 || primaryResultCode === 6;
-}
-
-function consumeContentionBudget(
-  budget: ContentionBudget,
-  elapsedMilliseconds: number,
-): void {
-  budget.remainingMilliseconds = Math.max(
-    0,
-    budget.remainingMilliseconds - elapsedMilliseconds,
-  );
 }
