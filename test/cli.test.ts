@@ -1204,3 +1204,35 @@ test("extra arguments are rejected rather than silently ignored", async () => {
     assert.notEqual(accepted.output.error, "invalid_arguments", invocation.join(" "));
   }
 });
+
+test("a malformed --by actor is an invalid argument, not an internal error", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ecosym-cli-actor-"));
+  const xdgDataHome = join(directory, "data");
+
+  // The actor is caller input with a documented grammar. A value outside it is
+  // a malformed invocation (exit 64), not a program fault (exit 1).
+  for (const invocation of [
+    ["forget", "some-source", "--by", "Alice"],
+    ["forget-civilization", "some-civilization", "--by", ""],
+    ["retire-collection-attempt", "some-attempt", "--by", "Bob"],
+  ]) {
+    const rejected = await runCli(invocation, xdgDataHome);
+    assert.equal(rejected.code, 64, invocation.join(" "));
+    assert.equal(rejected.output.error, "invalid_arguments", invocation.join(" "));
+    assert.equal(rejected.output.command, invocation[0], invocation.join(" "));
+  }
+
+  // A well-formed actor gets past the grammar and fails for the unrelated
+  // reason that nothing by that ID exists, so the assertions above are about
+  // the actor rather than a CLI that rejects these commands outright.
+  for (const invocation of [
+    ["forget", "some-source", "--by", "operator:test"],
+    ["forget-civilization", "some-civilization", "--by", "operator:test"],
+    ["retire-collection-attempt", "some-attempt", "--by", "operator:test"],
+  ]) {
+    const refused = await runCli(invocation, xdgDataHome);
+    assert.equal(refused.code, 1, invocation.join(" "));
+    assert.notEqual(refused.output.error, "invalid_arguments", invocation.join(" "));
+    assert.notEqual(refused.output.error, "internal_error", invocation.join(" "));
+  }
+});
