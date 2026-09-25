@@ -460,6 +460,44 @@ test("an unescaped quote inside an unquoted CSV field is malformed", async () =>
   assert.equal(records[0]?.record.subject, 'su"bject');
 });
 
+test("bytes that are not UTF-8 make a text source malformed rather than a replacement character", async () => {
+  const directory = workspace();
+  const prefix = {
+    csv: "id,subject,at,value\nr1,s,2026-08-30T00:00:00.000Z,",
+    json: '[{"id":"r1","subject":"s","at":"2026-08-30T00:00:00.000Z","value":"',
+    jsonl: '{"id":"r1","subject":"s","at":"2026-08-30T00:00:00.000Z","value":"',
+  };
+  const suffix = { csv: "\n", json: '"}]', jsonl: '"}\n' };
+  const reader = (type: "csv" | "json" | "jsonl", path: string) =>
+    type === "csv" ? { type, path, delimiter: "," }
+      : type === "json" ? { type, pathPattern: path, recordsPath: "" }
+        : { type, path };
+
+  for (const type of ["csv", "json", "jsonl"] as const) {
+    const path = join(directory, `source.${type}`);
+    // 0xff never occurs in UTF-8. Decoding it as U+FFFD would store a value
+    // the source never stated.
+    writeFileSync(path, Buffer.concat([Buffer.from(prefix[type]), Buffer.from([0xff]), Buffer.from(suffix[type])]));
+    assert.equal(await readError(config(reader(type, path))), "source_malformed", type);
+
+    // A U+FFFD the source really encodes is data, so the refusal above is
+    // about the bytes rather than the character.
+    writeFileSync(path, `${prefix[type]}�${suffix[type]}`);
+    const records = await readAll(config(reader(type, path)));
+    assert.equal(records.length, 1, type);
+    assert.equal(records[0]?.record.value, "�", type);
+  }
+
+  // JSONL is streamed in 64 KiB chunks. A two-byte character split across a
+  // chunk boundary is well formed and must still read.
+  const path = join(directory, "boundary.jsonl");
+  const padding = "a".repeat(65535 - Buffer.byteLength(prefix.jsonl));
+  writeFileSync(path, `${prefix.jsonl}${padding}é${suffix.jsonl}`);
+  const records = await readAll(config(reader("jsonl", path)));
+  assert.equal(records.length, 1);
+  assert.equal(records[0]?.record.value, `${padding}é`);
+});
+
 test("SQLite source failures are classified by primary result code", async (t) => {
   const directory = workspace();
   const path = join(directory, "source.db");
