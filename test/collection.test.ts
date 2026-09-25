@@ -1845,6 +1845,23 @@ test("preserves a selected __proto__ CSV column", async () => {
   }
 });
 
+test("a UTF-8 byte order mark does not become part of the first CSV header", async () => {
+  const directory = workspace();
+  const sourcePath = join(directory, "bom.csv");
+  writeFileSync(sourcePath, "﻿id,value,subject\n1,kept,item\n");
+  const parsed = fileConnection("bom-header", { type: "csv", path: sourcePath, delimiter: "," }, "value");
+  const store = new ObservationStore(join(directory, "state"));
+  try {
+    store.register(parsed);
+    await collectConnection(store, parsed.config.id);
+    assert.deepEqual(store.queryObservations().map((fact) => fact.payload), [
+      { value: "kept" },
+    ]);
+  } finally {
+    store.close();
+  }
+});
+
 test("collects a top-level JSON record array", async () => {
   const directory = workspace();
   const sourcePath = join(directory, "records.json");

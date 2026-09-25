@@ -25,7 +25,8 @@ export class HermesProjectAdapter implements HarnessAdapter {
     if (!isAbsolute(options.root)) throw new ProjectError("root_invalid");
     this.#root = resolve(options.root);
     this.#userHome = resolve(home);
-    this.#home = resolve(env.ECOSYM_HARNESS_HOME ?? env.HERMES_HOME ?? join(home, ".hermes"));
+    // An empty value counts as unset; resolve("") would silently become the server's cwd.
+    this.#home = resolve(env.ECOSYM_HARNESS_HOME || env.HERMES_HOME || join(home, ".hermes"));
     this.#env = { PATH: env.PATH ?? "/usr/local/bin:/usr/bin:/bin", HOME: home,
       HERMES_HOME: this.#home, LANG: "C", LC_ALL: "C" };
     const candidates = options.binary !== undefined ? [options.binary]

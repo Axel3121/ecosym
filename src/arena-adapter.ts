@@ -124,7 +124,7 @@ function validateSemantics(bundle: ArenaBundle): void {
     // Previous bundles may have been retrieved before this attempt, and need
     // not exist in the local store when a source is first connected.
     if (input.role !== "previous_bundle") before(observation.attemptedAt, input.retrievedAt);
-    if (input.role === "previous_bundle" && (input.inputId === bundle.bundleId || decodeURIComponent(input.uri).split(/[:/#?=&]/).includes(bundle.bundleId))) throw new ArenaAdmissionError();
+    if (input.role === "previous_bundle" && (input.inputId === bundle.bundleId || citesBundleId(decodeURIComponent(input.uri), bundle.bundleId))) throw new ArenaAdmissionError();
   }
   for (const fact of bundle.facts) {
     if ([fact.factOwner, fact.subject].some((value) => value.includes("\u0000"))) throw new ArenaAdmissionError();
@@ -132,6 +132,17 @@ function validateSemantics(bundle: ArenaBundle): void {
     before(fact.sourceRecordedAt, ended);
     before(fact.validFrom, fact.validUntil);
   }
+}
+
+// Bundle ids may contain ':', so match the whole id between URI delimiters
+// rather than comparing single segments of the split URI.
+function citesBundleId(uri: string, bundleId: string): boolean {
+  const delimiter = /[:/#?=&]/u;
+  for (let at = uri.indexOf(bundleId); at !== -1; at = uri.indexOf(bundleId, at + 1)) {
+    const end = at + bundleId.length;
+    if ((at === 0 || delimiter.test(uri[at - 1]!)) && (end === uri.length || delimiter.test(uri[end]!))) return true;
+  }
+  return false;
 }
 
 export function sourceReportProjection(bundle: ArenaBundle, local: Pick<SourceReportSnapshot, "reportId" | "connectionId" | "connectionVersion" | "admittedFrom" | "admittedAt">): SourceReportSnapshot {

@@ -26,7 +26,8 @@ function canonicalize(value: JsonValue): JsonValue {
   }
 
   if (value !== null && typeof value === "object") {
-    const result: { [key: string]: JsonValue } = {};
+    // A null prototype keeps a parsed "__proto__" key as data instead of a prototype.
+    const result: { [key: string]: JsonValue } = Object.create(null);
     for (const key of Object.keys(value).sort()) {
       const child = value[key];
       if (child !== undefined) {

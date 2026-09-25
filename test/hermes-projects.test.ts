@@ -46,6 +46,16 @@ else { ${behavior} }\n`, { mode: 0o700 });
 
 const empty = "No projects yet. Create one with `hermes project create <name>`.";
 
+test("an empty harness home variable counts as unset instead of becoming the server cwd", async (t) => {
+  const s = fake(t, `console.log(${JSON.stringify(empty)});`);
+  const adapter = new HermesProjectAdapter({ root: s.root, binary: s.binary, home: s.root,
+    env: { ...s.env, ECOSYM_HARNESS_HOME: "", HERMES_HOME: s.profile } });
+  await adapter.provision(s.request);
+  const calls = s.calls();
+  assert.ok(calls.length > 0);
+  for (const call of calls) assert.equal(call.env.HERMES_HOME, s.profile);
+});
+
 test("native argv, locale, profile, cwd and environment are bounded; renamed slug is read back", async (t) => {
   const s = fake(t, `if(args[1]==='list') console.log(${JSON.stringify(empty)});
     else if(args[1]==='create') console.log('Created project renamed-2 (p_ab12)');`);
