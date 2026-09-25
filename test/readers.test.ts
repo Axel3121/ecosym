@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:f
 import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
 import { parseConnectionConfig } from "../src/config.ts";
@@ -457,4 +458,38 @@ test("an unescaped quote inside an unquoted CSV field is malformed", async () =>
   const records = await readAll(config(reader));
   assert.equal(records.length, 1);
   assert.equal(records[0]?.record.subject, 'su"bject');
+});
+
+test("SQLite source failures are classified by primary result code", async (t) => {
+  const directory = workspace();
+  const path = join(directory, "source.db");
+  const database = new DatabaseSync(path);
+  database.exec("CREATE TABLE measurements (id TEXT, subject TEXT, at TEXT, value INTEGER)");
+  database.close();
+  const reader = { type: "sqlite", path, table: "measurements" };
+
+  // node:sqlite reports the extended result code, whose low byte is the
+  // primary code. A lock during WAL recovery (SQLITE_BUSY_RECOVERY, 261) is
+  // still a lock, and a corrupt index (SQLITE_CORRUPT_INDEX, 779) is still a
+  // malformed source; neither is an unreadable file. The primary codes are
+  // the positive controls for the same mapping.
+  for (const [errcode, expected] of [
+    [5, "source_locked"],
+    [261, "source_locked"],
+    [517, "source_locked"],
+    [6, "source_locked"],
+    [262, "source_locked"],
+    [11, "source_malformed"],
+    [779, "source_malformed"],
+    [26, "source_malformed"],
+  ] as const) {
+    t.mock.method(DatabaseSync.prototype, "prepare", () => {
+      throw Object.assign(new Error("synthetic SQLite failure"), { errcode });
+    });
+    try {
+      assert.equal(await readError(config(reader)), expected, `errcode ${errcode}`);
+    } finally {
+      t.mock.restoreAll();
+    }
+  }
 });
