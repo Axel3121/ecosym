@@ -221,6 +221,21 @@ test("static assets use realpath containment and reject raw, encoded, and symlin
   }
 });
 
+test("an encoded leading slash is rejected before it can probe files outside the build", async (t) => {
+  const directory = temporary(t);
+  const build = join(directory, "build");
+  mkdirSync(build);
+  writeFileSync(join(build, "index.html"), "<html>synthetic world</html>");
+  writeFileSync(join(directory, "canary.html"), "PRIVATE CANARY");
+  const get = await serve(t, () => snapshot(), build);
+  const outside = encodeURI(directory.slice(1));
+  const existing = await get(`/%2F${outside}/canary.html`);
+  const missing = await get(`/%2F${outside}/missing.html`);
+  assert.ok(!existing.body.includes("PRIVATE CANARY"));
+  assert.equal(existing.status, 400);
+  assert.equal(missing.status, 400);
+});
+
 test("launcher defaults to an ephemeral loopback port and closes an isolated store on SIGTERM", async (t) => {
   // Pin path wiring without requiring a pre-existing build in this launcher test.
   assert.match(await fs.readFile("src/world-main.ts", "utf8"),
