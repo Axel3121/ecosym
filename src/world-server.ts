@@ -38,7 +38,8 @@ export function createWorldServer(readSnapshot: () => WorldSnapshot, buildDirect
       if (!raw.startsWith("/") || raw.startsWith("//")) throw new Error("Invalid path");
       pathname = decodeURIComponent(raw.split("?")[0]!);
       // Reject before URL normalization can erase traversal, including double encoding.
-      if (/[\\%\x00-\x1f\x7f#]/u.test(pathname) || pathname.split("/").includes("..")) {
+      // An encoded leading slash would make the static path absolute and escape the build root.
+      if (/[\\%\x00-\x1f\x7f#]/u.test(pathname) || pathname.startsWith("//") || pathname.split("/").includes("..")) {
         throw new Error("Invalid path");
       }
     } catch {
