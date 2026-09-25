@@ -137,6 +137,22 @@ test("Arena previous-bundle references reject plain and percent-encoded self ref
   store.close();
 });
 
+test("Arena previous-bundle references reject self references when the bundle id contains a colon", async () => {
+  const store = new ObservationStore(mkdtempSync(join(tmpdir(), "ecosym-arena-")));
+  store.registerArenaSource("arena", "source", "Synthetic Owner");
+  const bundle = arenaBundle();
+  bundle.bundleId = "bundle:one";
+  bundle.provenance.inputs[0]!.role = "previous_bundle";
+  for (const uri of ["urn:arena:bundle:bundle:one", "https://example.invalid/bundles/bundle%3Aone"]) {
+    bundle.provenance.inputs[0]!.uri = uri;
+    await assert.rejects(store.admitArenaBundle("arena", JSON.stringify(bundle)), { code: "arena_invalid" }, uri);
+    assert.equal(store.countFacts(), 0);
+  }
+  bundle.provenance.inputs[0]!.uri = "urn:arena:bundle:bundle:one-extra";
+  assert.equal((await store.admitArenaBundle("arena", JSON.stringify(bundle))).outcome, "success");
+  store.close();
+});
+
 test("Arena upstream empty and outage reports remain successful reads, late onboarding and local latest order stay distinct", async () => {
   const store = new ObservationStore(mkdtempSync(join(tmpdir(), "ecosym-arena-")));
   store.registerArenaSource("arena", "source", "Synthetic Owner");
