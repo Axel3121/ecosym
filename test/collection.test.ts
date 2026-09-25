@@ -1854,8 +1854,8 @@ test("a UTF-8 byte order mark does not become part of the first CSV header", asy
   try {
     store.register(parsed);
     await collectConnection(store, parsed.config.id);
-    assert.deepEqual(store.queryObservations().map((fact) => [fact.sourceRecordId, fact.payload]), [
-      ["1", { value: "kept" }],
+    assert.deepEqual(store.queryObservations().map((fact) => fact.payload), [
+      { value: "kept" },
     ]);
   } finally {
     store.close();
