@@ -389,6 +389,8 @@ async function* readCsv(config: ConnectionConfig): AsyncGenerator<SourceRecord> 
     } catch (error) {
       throw sourceError(error);
     }
+    // utf8 decoding keeps a leading byte order mark; it is not part of the first header.
+    if (contents.startsWith("﻿")) contents = contents.slice(1);
     const rows = parseCsv(contents, config.reader.delimiter);
     const headers = rows.shift();
     if (headers === undefined || headers.length === 0) {
