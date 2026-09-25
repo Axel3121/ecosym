@@ -2450,7 +2450,7 @@ export class ObservationStore {
             attemptId,
           );
         if (numberOfChanges(completed) !== 1) {
-          throw new Error("Collection attempt is not running");
+          throw new CollectionAttemptNotRunningError(attemptId);
         }
         return {
           factsAdded: transactionFactsAdded,
