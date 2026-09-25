@@ -32,7 +32,6 @@ import {
   type OwnedStateExport,
 } from "./owned-state.ts";
 import { defaultStateDirectory } from "./paths.ts";
-import { recordIndexModeEvidence } from "./record-index-evidence.ts";
 import type { JsonlRecordIndexMode } from "./readers.ts";
 import { utcInstantOrderingKey } from "./time.ts";
 import { sourceReportFactTimeKey } from "./source-report-time.ts";
@@ -49,7 +48,6 @@ import {
   CollectionAttemptNotRunningError,
   CollectionFailedError,
   ConfirmationAlreadySpentError,
-  ConfirmationPreviewNotFoundError,
   ConnectionConflictError,
   ConnectionInactiveError,
   ConnectionNotFoundError,
@@ -63,7 +61,6 @@ import {
   ForgetExportCoverageError,
   ForgetStateChangedError,
   MandateUnreadableError,
-  RecordIndexResolutionCollectionRunningError,
   RecordIndexResolutionStateChangedError,
   SourceRevisionChangedError,
   StoreContentionError,
@@ -104,7 +101,6 @@ export {
 } from "./store-errors.ts";
 import type {
   ActiveConnection,
-  CivilizationForgetInventory,
   CivilizationForgetPlan,
   CivilizationForgetRecord,
   CivilizationForgetSnapshot,
@@ -115,7 +111,6 @@ import type {
   CollectionResult,
   CollectionSink,
   ContentionBudget,
-  ForgetInventory,
   ForgetPlan,
   ForgetRecord,
   ForgetSnapshot,
@@ -128,6 +123,7 @@ import type {
   VerificationFact,
   VerificationSnapshot,
 } from "./store-types.ts";
+import { ConfirmationState } from "./store-confirmation.ts";
 import { OwnedStateReader } from "./store-export.ts";
 import { migrateStore } from "./store-migrate.ts";
 import { projectOwnerAlive, projectProcessIdentity } from "./store-project-owner.ts";
@@ -156,7 +152,6 @@ import {
   usesJsonlRecordIndex,
   type CollectionAttemptRetirementRow,
   type CollectionAttemptRow,
-  type ConfirmationPreviewRow,
   type FoundedMandateRow,
   type MandateRevisionRow,
   type StoredFactRow,
@@ -215,6 +210,7 @@ export class ObservationStore {
   readonly #busyTimeoutMilliseconds: number;
   readonly #database: DatabaseSync;
   readonly #ownedState: OwnedStateReader;
+  readonly #confirmations: ConfirmationState;
   readonly #projectAttempts = new Map<string, { attempt: number; owner: string }>();
   #closed = false;
 
@@ -237,6 +233,7 @@ export class ObservationStore {
     this.#busyTimeoutMilliseconds = busyTimeoutMilliseconds;
     this.#database = new DatabaseSync(this.path, { timeout: busyTimeoutMilliseconds });
     this.#ownedState = new OwnedStateReader(this.#database);
+    this.#confirmations = new ConfirmationState(this.#database, this.#ownedState);
     chmodSync(this.path, 0o600);
     this.#database.exec("PRAGMA foreign_keys = ON");
     migrateStore(this.#database);
@@ -1022,7 +1019,7 @@ export class ObservationStore {
           try {
             return [{
               connectionId,
-              inventoryDigest: this.#forgetSnapshot(connectionId, false).inventoryDigest,
+              inventoryDigest: this.#confirmations.forgetSnapshot(connectionId, false).inventoryDigest,
             }];
           } catch (error) {
             if (error instanceof ForgetConnectionNotFoundError) {
@@ -1037,7 +1034,7 @@ export class ObservationStore {
             .all() as { civilization_id: string }[]
         ).map((row) => ({
           civilizationId: row.civilization_id,
-          inventoryDigest: this.#civilizationForgetSnapshot(
+          inventoryDigest: this.#confirmations.civilizationForgetSnapshot(
             row.civilization_id,
             false,
           ).inventoryDigest,
@@ -1068,11 +1065,11 @@ export class ObservationStore {
   ): ForgetPlan {
     validateActor(forgottenBy, "forget");
     return this.#transaction(() => {
-      const snapshot = this.#forgetSnapshot(connectionId);
+      const snapshot = this.#confirmations.forgetSnapshot(connectionId);
       const { stateFingerprint, ...inventory } = snapshot;
       return {
         ...inventory,
-        confirmationToken: this.#issueConfirmationPreview(
+        confirmationToken: this.#confirmations.issueConfirmationPreview(
           "forget",
           canonicalJson([connectionId, forgottenBy]),
           stateFingerprint,
@@ -1095,7 +1092,7 @@ export class ObservationStore {
     validateActor(forgottenBy, "forget");
     const forgottenAt = now.toISOString();
     const forget = () => {
-      const preview = this.#confirmationPreview(
+      const preview = this.#confirmations.confirmationPreview(
         "forget",
         canonicalJson([connectionId, forgottenBy]),
         confirmationToken,
@@ -1105,7 +1102,7 @@ export class ObservationStore {
       }
       let snapshot: ForgetSnapshot;
       try {
-        snapshot = this.#forgetSnapshot(connectionId);
+        snapshot = this.#confirmations.forgetSnapshot(connectionId);
       } catch (error) {
         if (
           error instanceof ForgetConnectionActiveError ||
@@ -1175,7 +1172,7 @@ export class ObservationStore {
           inventoryDigest,
           exportDigest,
         );
-      this.#spendConfirmationPreview(confirmationToken, forgottenAt);
+      this.#confirmations.spendConfirmationPreview(confirmationToken, forgottenAt);
       return {
         ...inventory,
         inventoryDigest,
@@ -1199,10 +1196,10 @@ export class ObservationStore {
     validateActor(forgottenBy, "forget-civilization");
     return this.#transaction(() => {
       const { stateFingerprint, ...inventory } =
-        this.#civilizationForgetSnapshot(civilizationId);
+        this.#confirmations.civilizationForgetSnapshot(civilizationId);
       return {
         ...inventory,
-        confirmationToken: this.#issueConfirmationPreview(
+        confirmationToken: this.#confirmations.issueConfirmationPreview(
           "forget-civilization",
           canonicalJson([civilizationId, forgottenBy]),
           stateFingerprint,
@@ -1225,7 +1222,7 @@ export class ObservationStore {
     validateActor(forgottenBy, "forget-civilization");
     const forgottenAt = now.toISOString();
     const forget = () => {
-      const preview = this.#confirmationPreview(
+      const preview = this.#confirmations.confirmationPreview(
         "forget-civilization",
         canonicalJson([civilizationId, forgottenBy]),
         confirmationToken,
@@ -1235,7 +1232,7 @@ export class ObservationStore {
       }
       let snapshot: CivilizationForgetSnapshot;
       try {
-        snapshot = this.#civilizationForgetSnapshot(civilizationId);
+        snapshot = this.#confirmations.civilizationForgetSnapshot(civilizationId);
       } catch (error) {
         if (
           error instanceof ForgetCivilizationNotFoundError ||
@@ -1308,7 +1305,7 @@ export class ObservationStore {
           inventoryDigest,
           exportDigest,
         );
-      this.#spendConfirmationPreview(confirmationToken, forgottenAt);
+      this.#confirmations.spendConfirmationPreview(confirmationToken, forgottenAt);
       return {
         ...inventory,
         exportDigest,
@@ -1335,14 +1332,14 @@ export class ObservationStore {
     }
     const issuedAt = now.toISOString();
     return this.#transaction(() => {
-      const { stateFingerprint, ...plan } = this.#recordIndexModeResolutionSnapshot(
+      const { stateFingerprint, ...plan } = this.#confirmations.recordIndexModeResolutionSnapshot(
         connectionId,
         connectionVersion,
         recordIndexMode,
       );
       return {
         ...plan,
-        confirmationToken: this.#issueConfirmationPreview(
+        confirmationToken: this.#confirmations.issueConfirmationPreview(
           "resolve-record-index",
           canonicalJson([connectionId, connectionVersion, recordIndexMode]),
           stateFingerprint,
@@ -1364,7 +1361,7 @@ export class ObservationStore {
     }
     const resolvedAt = now.toISOString();
     const resolve = () => {
-      const preview = this.#confirmationPreview(
+      const preview = this.#confirmations.confirmationPreview(
         "resolve-record-index",
         canonicalJson([connectionId, connectionVersion, recordIndexMode]),
         confirmationToken,
@@ -1374,7 +1371,7 @@ export class ObservationStore {
       }
       let snapshot: RecordIndexModeResolutionSnapshot;
       try {
-        snapshot = this.#recordIndexModeResolutionSnapshot(
+        snapshot = this.#confirmations.recordIndexModeResolutionSnapshot(
           connectionId,
           connectionVersion,
           recordIndexMode,
@@ -1434,7 +1431,7 @@ export class ObservationStore {
           canonicalJson(snapshot.collectionAttemptIds),
           confirmationToken,
         );
-      this.#spendConfirmationPreview(confirmationToken, resolvedAt);
+      this.#confirmations.spendConfirmationPreview(confirmationToken, resolvedAt);
       return {
         affectedFactIds: snapshot.affectedFactIds,
         collectionAttemptIds: snapshot.collectionAttemptIds,
@@ -1463,10 +1460,10 @@ export class ObservationStore {
     const issuedAt = now.toISOString();
     return this.#transaction(() => {
       const { stateFingerprint, ...plan } =
-        this.#collectionAttemptRetirementSnapshot(attemptId, retiredBy);
+        this.#confirmations.collectionAttemptRetirementSnapshot(attemptId, retiredBy);
       return {
         ...plan,
-        confirmationToken: this.#issueConfirmationPreview(
+        confirmationToken: this.#confirmations.issueConfirmationPreview(
           "retire-collection-attempt",
           canonicalJson([attemptId, retiredBy]),
           stateFingerprint,
@@ -1485,7 +1482,7 @@ export class ObservationStore {
     validateRetirementActor(retiredBy);
     const retiredAt = now.toISOString();
     const retire = () => {
-      const preview = this.#confirmationPreview(
+      const preview = this.#confirmations.confirmationPreview(
         "retire-collection-attempt",
         canonicalJson([attemptId, retiredBy]),
         confirmationToken,
@@ -1495,7 +1492,7 @@ export class ObservationStore {
       }
       let snapshot: CollectionAttemptRetirementSnapshot;
       try {
-        snapshot = this.#collectionAttemptRetirementSnapshot(attemptId, retiredBy);
+        snapshot = this.#confirmations.collectionAttemptRetirementSnapshot(attemptId, retiredBy);
       } catch (error) {
         if (error instanceof CollectionAttemptNotRunningError) {
           throw new RecordIndexResolutionStateChangedError();
@@ -1541,7 +1538,7 @@ export class ObservationStore {
           retiredBy,
           confirmationToken,
         );
-      this.#spendConfirmationPreview(confirmationToken, retiredAt);
+      this.#confirmations.spendConfirmationPreview(confirmationToken, retiredAt);
       return {
         attemptId,
         connectionId: snapshot.connectionId,
@@ -2498,361 +2495,6 @@ export class ObservationStore {
       throw new Error("Registered connection configuration is missing");
     }
     return parseStoredConfig(row.config_json, connection.configHash);
-  }
-
-  #forgetSnapshot(connectionId: string, requireInactive = true): ForgetSnapshot {
-    const active = this.#database
-      .prepare("SELECT 1 AS active FROM active_connections WHERE connection_id = ?")
-      .get(connectionId);
-    if (requireInactive && active !== undefined) {
-      throw new ForgetConnectionActiveError(connectionId);
-    }
-    const connectionVersions = (
-      this.#database
-        .prepare(
-          `SELECT config_hash FROM connection_versions
-            WHERE connection_id = ? ORDER BY config_hash`,
-        )
-        .all(connectionId) as { config_hash: string }[]
-    ).map((row) => row.config_hash);
-    if (connectionVersions.length === 0) {
-      throw new ForgetConnectionNotFoundError(connectionId);
-    }
-    const factIds = (
-      this.#database
-        .prepare("SELECT fact_id FROM facts WHERE connection_id = ? ORDER BY fact_id")
-        .all(connectionId) as { fact_id: number }[]
-    ).map((row) => row.fact_id);
-    const collectionAttemptIds = (
-      this.#database
-        .prepare(
-          `SELECT attempt_id FROM collection_attempts
-            WHERE connection_id = ? ORDER BY attempt_order`,
-        )
-        .all(connectionId) as { attempt_id: string }[]
-    ).map((row) => row.attempt_id);
-    const collectionAttemptRetirementIds = (
-      this.#database
-        .prepare(
-          `SELECT retirement_id FROM collection_attempt_retirements
-            WHERE connection_id = ? ORDER BY retirement_order`,
-        )
-        .all(connectionId) as { retirement_id: string }[]
-    ).map((row) => row.retirement_id);
-    const recordIndexModeResolutionIds = (
-      this.#database
-        .prepare(
-          `SELECT resolution_id FROM record_index_mode_resolutions
-            WHERE connection_id = ? ORDER BY resolution_order`,
-        )
-        .all(connectionId) as { resolution_id: string }[]
-    ).map((row) => row.resolution_id);
-    const sourceReportIds = (this.#database.prepare("SELECT report_id FROM source_reports WHERE connection_id = ? ORDER BY report_order").all(connectionId) as { report_id: string }[]).map((row) => row.report_id);
-    const sourceReportFacts = this.#database.prepare(`SELECT f.report_id AS reportId, f.fact_id AS factId, f.source_fact_id AS sourceFactId FROM source_report_facts f JOIN source_reports r ON r.report_id = f.report_id WHERE r.connection_id = ? ORDER BY r.report_order, f.source_fact_id`).all(connectionId) as { reportId: string; factId: number; sourceFactId: string }[];
-    const sourceReportAdmissions = this.#database.prepare(`SELECT a.report_id AS reportId, a.attempt_id AS attemptId FROM source_report_admissions a JOIN source_reports r ON r.report_id = a.report_id WHERE r.connection_id = ? ORDER BY a.admission_order`).all(connectionId) as { reportId: string; attemptId: string }[];
-    const inventory: ForgetInventory = {
-      ...(sourceReportIds.length === 0 ? {} : { sourceReportIds, sourceReportFacts, sourceReportAdmissions }),
-      collectionAttemptIds,
-      collectionAttemptRetirementIds,
-      connectionId,
-      connectionVersions,
-      counts: {
-        ...(sourceReportIds.length === 0 ? {} : { sourceReports: sourceReportIds.length, sourceReportFacts: sourceReportFacts.length, sourceReportAdmissions: sourceReportAdmissions.length }),
-        collectionAttemptRetirements: collectionAttemptRetirementIds.length,
-        collectionAttempts: collectionAttemptIds.length,
-        connectionVersions: connectionVersions.length,
-        facts: factIds.length,
-        recordIndexModeResolutions: recordIndexModeResolutionIds.length,
-      },
-      factIds,
-      recordIndexModeResolutionIds,
-    };
-    const inventoryDigest = `sha256:${sha256(
-      canonicalJson(inventory as unknown as JsonValue),
-    )}`;
-    return { ...inventory, inventoryDigest, stateFingerprint: inventoryDigest };
-  }
-
-  #civilizationForgetSnapshot(
-    civilizationId: string,
-    requireDissolved = true,
-  ): CivilizationForgetSnapshot {
-    const civilization = this.#database
-      .prepare("SELECT 1 AS found FROM civilizations WHERE civilization_id = ?")
-      .get(civilizationId);
-    if (civilization === undefined) {
-      throw new ForgetCivilizationNotFoundError(civilizationId);
-    }
-    const revisions = this.#database
-      .prepare(
-        `SELECT civilization_id, mandate_id, revision, status
-           FROM mandate_revisions
-          WHERE civilization_id = ?
-          ORDER BY revision_order`,
-      )
-      .all(civilizationId) as {
-      civilization_id: string;
-      mandate_id: string;
-      revision: string;
-      status: "active" | "dissolved";
-    }[];
-    if (revisions.length === 0) {
-      throw new MandateUnreadableError(civilizationId);
-    }
-    if (requireDissolved && revisions.at(-1)?.status !== "dissolved") {
-      throw new ForgetCivilizationNotDissolvedError(civilizationId);
-    }
-    const mandateRevisions = revisions.map((row) => ({
-      civilizationId: row.civilization_id,
-      mandateId: row.mandate_id,
-      revision: row.revision,
-    }));
-    const projectState = this.#ownedState.projectExport(civilizationId);
-    if (requireDissolved && projectState.projects!.some((project) => {
-      const latest = projectState.projectProvisioningEvents!.filter((event) => event.project_id === project.project_id).at(-1);
-      return latest !== undefined && projectOwnerAlive(latest.event_id as string);
-    })) throw new ProjectError("retry_in_progress");
-    const projects = projectState.projects!.map((row) => ({
-      projectId: row.project_id as string, workspacePath: row.workspace_path as string,
-    }));
-    const projectProvisioningEventIds = projectState.projectProvisioningEvents!.map((row) => row.event_id as string);
-    const projectHarnessBindingIds = projectState.projectHarnessBindings!.map((row) => row.project_id as string);
-    const inventory: CivilizationForgetInventory = {
-      civilizationId,
-      ...(projects.length === 0 ? {} : { projects, projectProvisioningEventIds, projectHarnessBindingIds }),
-      counts: {
-        civilizations: 1,
-        mandateRevisions: mandateRevisions.length,
-        ...(projects.length === 0 ? {} : {
-          projects: projects.length,
-          projectProvisioningEvents: projectProvisioningEventIds.length,
-          projectHarnessBindings: projectHarnessBindingIds.length,
-        }),
-      },
-      mandateRevisions,
-    };
-    const inventoryDigest = `sha256:${sha256(
-      canonicalJson(inventory as unknown as JsonValue),
-    )}`;
-    return { ...inventory, inventoryDigest, stateFingerprint: projects.length === 0 ? inventoryDigest :
-      `sha256:${sha256(canonicalJson({ inventoryDigest, projectState } as unknown as JsonValue))}` };
-  }
-
-  #collectionAttemptRetirementSnapshot(
-    attemptId: string,
-    retiredBy: string,
-  ): CollectionAttemptRetirementSnapshot {
-    const attempt = this.#database
-      .prepare(
-        `SELECT connection_id, config_hash, started_at, outcome
-           FROM collection_attempts
-          WHERE attempt_id = ?`,
-      )
-      .get(attemptId) as
-      | undefined
-      | {
-          config_hash: string;
-          connection_id: string;
-          outcome: "failed" | "retired" | "running" | "skipped" | "success";
-          started_at: string;
-        };
-    if (attempt?.outcome !== "running") {
-      throw new CollectionAttemptNotRunningError(attemptId);
-    }
-    return {
-      attemptId,
-      stateFingerprint: `sha256:${sha256(
-        canonicalJson([
-          attemptId,
-          attempt.connection_id,
-          attempt.config_hash,
-          attempt.started_at,
-          attempt.outcome,
-          retiredBy,
-        ]),
-      )}`,
-      connectionId: attempt.connection_id,
-      connectionVersion: attempt.config_hash,
-      retiredBy,
-      startedAt: attempt.started_at,
-    };
-  }
-
-  #recordIndexModeResolutionSnapshot(
-    connectionId: string,
-    connectionVersion: string,
-    recordIndexMode: JsonlRecordIndexMode,
-  ): RecordIndexModeResolutionSnapshot {
-    const active = this.#database
-      .prepare(
-        `SELECT c.config_hash, v.config_json, v.jsonl_record_index_mode
-           FROM active_connections c
-           JOIN connection_versions v
-             ON v.connection_id = c.connection_id
-            AND v.config_hash = c.config_hash
-          WHERE c.connection_id = ?`,
-      )
-      .get(connectionId) as
-      | undefined
-      | { config_hash: string; config_json: string; jsonl_record_index_mode: string };
-    if (active === undefined) {
-      throw new ConnectionNotFoundError(connectionId);
-    }
-    if (active.config_hash !== connectionVersion) {
-      throw new ConnectionInactiveError(connectionId);
-    }
-    const currentRecordIndexMode = parseJsonlRecordIndexMode(
-      active.jsonl_record_index_mode,
-    );
-    const resolutions = this.#database
-      .prepare(
-        `SELECT count(*) AS count,
-                COALESCE(MAX(resolution_order), 0) AS latest_order
-           FROM record_index_mode_resolutions
-          WHERE connection_id = ? AND config_hash = ?`,
-      )
-      .get(connectionId, connectionVersion) as {
-      count: number;
-      latest_order: number;
-    };
-    if (
-      currentRecordIndexMode === recordIndexMode ||
-      (currentRecordIndexMode !== "unknown" && resolutions.count === 0)
-    ) {
-      throw new StoredRecordIndexModeKnownError(connectionId);
-    }
-    const facts = this.#database
-      .prepare(
-        `SELECT fact_id, last_seen_attempt_order
-           FROM facts
-          WHERE connection_id = ? AND config_hash = ?
-          ORDER BY fact_id`,
-      )
-      .all(connectionId, connectionVersion) as {
-      fact_id: number;
-      last_seen_attempt_order: number;
-    }[];
-    const attempts = this.#database
-      .prepare(
-        `SELECT attempt_id, attempt_order, outcome
-           FROM collection_attempts
-          WHERE connection_id = ? AND config_hash = ?
-          ORDER BY attempt_order`,
-      )
-      .all(connectionId, connectionVersion) as {
-      attempt_id: string;
-      attempt_order: number;
-      outcome: "failed" | "retired" | "running" | "skipped" | "success";
-    }[];
-    if (attempts.some((attempt) => attempt.outcome === "running")) {
-      throw new RecordIndexResolutionCollectionRunningError(connectionId);
-    }
-    const config = parseStoredConfig(active.config_json, connectionVersion);
-    const storedIndexEvidence = recordIndexModeEvidence(
-      this.#database,
-      config,
-      connectionId,
-      connectionVersion,
-    );
-    const affectedFactIds = facts.map((fact) => fact.fact_id);
-    const collectionAttemptIds = attempts.map((attempt) => attempt.attempt_id);
-    // source_records_seen changes only when an attempt is added or completes;
-    // those changes already alter the attempt tuples included below.
-    const stateFingerprint = `sha256:${sha256(
-      canonicalJson([
-        connectionId,
-        connectionVersion,
-        currentRecordIndexMode,
-        recordIndexMode,
-        facts.map((fact) => [fact.fact_id, fact.last_seen_attempt_order]),
-        attempts.map((attempt) => [
-          attempt.attempt_id,
-          attempt.attempt_order,
-          attempt.outcome,
-        ]),
-        resolutions.count,
-        resolutions.latest_order,
-      ]),
-    )}`;
-    return {
-      affectedFactIds,
-      collectionAttemptIds,
-      collectionAttemptsRecorded: collectionAttemptIds.length,
-      connectionId,
-      connectionVersion,
-      currentRecordIndexMode,
-      factsAffected: affectedFactIds.length,
-      recordIndexMode,
-      stateFingerprint,
-      storedIndexEvidence,
-    };
-  }
-
-  #issueConfirmationPreview(
-    operation:
-      | "forget"
-      | "forget-civilization"
-      | "resolve-record-index"
-      | "retire-collection-attempt",
-    argumentsJson: string,
-    stateFingerprint: string,
-    issuedAt: string,
-  ): string {
-    const confirmationToken = `confirmation:${randomUUID()}`;
-    this.#database
-      .prepare(
-        `INSERT INTO confirmation_previews
-           (confirmation_token_hash, operation, arguments_json, state_fingerprint,
-            issued_at, consumed_at)
-         VALUES (?, ?, ?, ?, ?, NULL)`,
-      )
-      .run(
-        sha256(confirmationToken),
-        operation,
-        argumentsJson,
-        stateFingerprint,
-        issuedAt,
-      );
-    return confirmationToken;
-  }
-
-  #confirmationPreview(
-    operation:
-      | "forget"
-      | "forget-civilization"
-      | "resolve-record-index"
-      | "retire-collection-attempt",
-    argumentsJson: string,
-    confirmationToken: string,
-  ): ConfirmationPreviewRow {
-    const preview = this.#database
-      .prepare(
-        `SELECT state_fingerprint, consumed_at
-           FROM confirmation_previews
-          WHERE confirmation_token_hash = ?
-            AND operation = ?
-            AND arguments_json = ?`,
-      )
-      .get(sha256(confirmationToken), operation, argumentsJson) as
-      | ConfirmationPreviewRow
-      | undefined;
-    if (preview === undefined) {
-      throw new ConfirmationPreviewNotFoundError();
-    }
-    return preview;
-  }
-
-  #spendConfirmationPreview(confirmationToken: string, consumedAt: string): void {
-    const spent = this.#database
-      .prepare(
-        `UPDATE confirmation_previews
-            SET consumed_at = ?
-          WHERE confirmation_token_hash = ? AND consumed_at IS NULL`,
-      )
-      .run(consumedAt, sha256(confirmationToken));
-    if (numberOfChanges(spent) !== 1) {
-      throw new ConfirmationAlreadySpentError();
-    }
   }
 
   #assertStoredRecordIndexMode(
