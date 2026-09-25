@@ -36,10 +36,7 @@ import {
   type OwnedStateExport,
 } from "./owned-state.ts";
 import { defaultStateDirectory } from "./paths.ts";
-import {
-  recordIndexModeEvidence,
-  type RecordIndexModeEvidence,
-} from "./record-index-evidence.ts";
+import { recordIndexModeEvidence } from "./record-index-evidence.ts";
 import type { JsonlRecordIndexMode } from "./readers.ts";
 import { utcInstantOrderingKey } from "./time.ts";
 import { sourceReportFactTimeKey } from "./source-report-time.ts";
@@ -110,6 +107,56 @@ export {
   StoredRecordIndexModeUnknownError,
   WorkClaimConflictError,
 } from "./store-errors.ts";
+import type {
+  ActiveConnection,
+  CivilizationForgetInventory,
+  CivilizationForgetPlan,
+  CivilizationForgetRecord,
+  CivilizationForgetSnapshot,
+  CollectionAttempt,
+  CollectionAttemptRetirement,
+  CollectionAttemptRetirementPlan,
+  CollectionAttemptRetirementSnapshot,
+  CollectionResult,
+  CollectionSink,
+  ContentionBudget,
+  ForgetInventory,
+  ForgetPlan,
+  ForgetRecord,
+  ForgetSnapshot,
+  OpenWorkClaim,
+  QueryOptions,
+  RecordIndexModeResolution,
+  RecordIndexModeResolutionPlan,
+  RecordIndexModeResolutionSnapshot,
+  ResolvedAuthorityContext,
+  VerificationFact,
+  VerificationSnapshot,
+} from "./store-types.ts";
+
+export type {
+  ActiveConnection,
+  CivilizationForgetInventory,
+  CivilizationForgetPlan,
+  CivilizationForgetRecord,
+  CivilizationRevisionIdentity,
+  CollectionAttempt,
+  CollectionAttemptRetirement,
+  CollectionAttemptRetirementPlan,
+  CollectionResult,
+  CollectionSink,
+  ContentionBudget,
+  ForgetInventory,
+  ForgetPlan,
+  ForgetRecord,
+  OpenWorkClaim,
+  QueryOptions,
+  RecordIndexModeResolution,
+  RecordIndexModeResolutionPlan,
+  ResolvedAuthorityContext,
+  VerificationFact,
+  VerificationSnapshot,
+} from "./store-types.ts";
 
 export type {
   ConnectionStatus,
@@ -405,14 +452,6 @@ const CREATE_SOURCE_REPORTS = `
   ) STRICT;
 `;
 
-export interface ActiveConnection {
-  activationId: string;
-  config: ConnectionConfig;
-  configHash: string;
-  connectedAt: string;
-  jsonlRecordIndexMode: JsonlRecordIndexMode | "unknown";
-}
-
 // A last-seen order, unlike attempt_id, advances even for identical sightings.
 // Never carry absence evidence across configuration or activation boundaries.
 const FACT_COLLECTION_AS_OF_JOIN = `
@@ -428,223 +467,6 @@ const FACT_COLLECTION_AS_OF_JOIN = `
          AND attempt.activation_id = seen.activation_id
          AND attempt.outcome = 'success'
     )`;
-
-export interface QueryOptions {
-  activeOnly?: boolean;
-  afterId?: number;
-  connectionId?: string;
-  factOwner?: string;
-  kind?: string;
-  limit?: number;
-  order?: "asc" | "desc";
-  subject?: string;
-}
-
-export interface CollectionResult {
-  attemptId: string;
-  completedAt: string;
-  factsAdded: number;
-  factsChanged: number;
-  factsSeen: number;
-  outcome: "success";
-  sourceRecordsSeen: number;
-  startedAt: string;
-}
-
-export interface CollectionAttempt {
-  activationId: string;
-  attemptId: string;
-  completedAt: null | string;
-  connectionId: string;
-  connectionVersion: string;
-  factsAdded: number;
-  factsChanged: number;
-  factsSeen: number;
-  failureCode: null | string;
-  outcome: "failed" | "retired" | "running" | "skipped" | "success";
-  sourceRecordsSeen: number;
-  startedAt: string;
-}
-
-export interface CollectionAttemptRetirement {
-  attemptId: string;
-  connectionId: string;
-  connectionVersion: string;
-  retiredAt: string;
-  retiredBy: string;
-  retirementId: string;
-}
-
-export interface CollectionAttemptRetirementPlan {
-  attemptId: string;
-  confirmationToken: string;
-  connectionId: string;
-  connectionVersion: string;
-  retiredBy: string;
-  startedAt: string;
-}
-
-type CollectionAttemptRetirementSnapshot = Omit<
-  CollectionAttemptRetirementPlan,
-  "confirmationToken"
-> & { stateFingerprint: string };
-
-export interface VerificationFact {
-  epistemicStatus: EpistemicStatus;
-  factOwner: string;
-  kind: string;
-  payloadHash: string;
-  sourceRecordedAt: null | string;
-  sourceRecordId: string;
-  subject: string;
-}
-
-export interface VerificationSnapshot {
-  currentnessKnown: boolean;
-  facts: VerificationFact[];
-  jsonlRecordIndexMode: JsonlRecordIndexMode | "unknown";
-  payloadHashesValid: boolean;
-  sourceTimeKeysValid: boolean;
-}
-
-export interface RecordIndexModeResolution {
-  affectedFactIds: number[];
-  collectionAttemptIds: string[];
-  collectionAttemptsRecorded: number;
-  connectionId: string;
-  connectionVersion: string;
-  factsAffected: number;
-  previousRecordIndexMode: JsonlRecordIndexMode | "unknown";
-  recordIndexMode: JsonlRecordIndexMode;
-  resolutionId: string;
-  resolvedAt: string;
-}
-
-export interface RecordIndexModeResolutionPlan {
-  affectedFactIds: number[];
-  collectionAttemptIds: string[];
-  collectionAttemptsRecorded: number;
-  confirmationToken: string;
-  connectionId: string;
-  connectionVersion: string;
-  currentRecordIndexMode: JsonlRecordIndexMode | "unknown";
-  factsAffected: number;
-  recordIndexMode: JsonlRecordIndexMode;
-  storedIndexEvidence: RecordIndexModeEvidence;
-}
-
-export interface ForgetInventory {
-  sourceReportIds?: string[];
-  sourceReportFacts?: { reportId: string; factId: number; sourceFactId: string }[];
-  sourceReportAdmissions?: { reportId: string; attemptId: string }[];
-  collectionAttemptIds: string[];
-  collectionAttemptRetirementIds: string[];
-  connectionId: string;
-  connectionVersions: string[];
-  counts: {
-    sourceReports?: number;
-    sourceReportFacts?: number;
-    sourceReportAdmissions?: number;
-    collectionAttemptRetirements: number;
-    collectionAttempts: number;
-    connectionVersions: number;
-    facts: number;
-    recordIndexModeResolutions: number;
-  };
-  factIds: number[];
-  recordIndexModeResolutionIds: string[];
-}
-
-export interface ForgetPlan extends ForgetInventory {
-  confirmationToken: string;
-  consequence: string;
-  inventoryDigest: string;
-  forgottenBy: string;
-}
-
-export interface ForgetRecord extends ForgetInventory {
-  exportDigest: string;
-  forgetId: string;
-  forgottenAt: string;
-  forgottenBy: string;
-  inventoryDigest: string;
-}
-
-export interface CivilizationRevisionIdentity {
-  civilizationId: string;
-  mandateId: string;
-  revision: string;
-}
-
-export interface CivilizationForgetInventory {
-  civilizationId: string;
-  counts: {
-    civilizations: 1;
-    mandateRevisions: number;
-    projects?: number;
-    projectProvisioningEvents?: number;
-    projectHarnessBindings?: number;
-  };
-  mandateRevisions: CivilizationRevisionIdentity[];
-  projects?: { projectId: string; workspacePath: string }[];
-  projectProvisioningEventIds?: string[];
-  projectHarnessBindingIds?: string[];
-}
-
-export interface CivilizationForgetPlan extends CivilizationForgetInventory {
-  confirmationToken: string;
-  consequence: string;
-  forgottenBy: string;
-  inventoryDigest: string;
-}
-
-export interface CivilizationForgetRecord extends CivilizationForgetInventory {
-  exportDigest: string;
-  forgetId: string;
-  forgottenAt: string;
-  forgottenBy: string;
-  inventoryDigest: string;
-}
-
-type CivilizationForgetSnapshot = CivilizationForgetInventory & {
-  inventoryDigest: string;
-  stateFingerprint: string;
-};
-
-type ForgetSnapshot = ForgetInventory & {
-  inventoryDigest: string;
-  stateFingerprint: string;
-};
-
-type RecordIndexModeResolutionSnapshot = Omit<
-  RecordIndexModeResolutionPlan,
-  "confirmationToken"
-> & { stateFingerprint: string };
-
-export interface CollectionSink {
-  recordSourceRecord(facts: () => readonly FactInput[]): void;
-}
-
-export interface ResolvedAuthorityContext {
-  authorityContext: {
-    civilizationId: string;
-    authorityContext: {
-      mandateId: string;
-      mandateRevision: string;
-      mandateDigest: string;
-    };
-  };
-  mandate: MandateConfig;
-}
-
-export interface OpenWorkClaim {
-  claimId: string;
-  civilizationId: string;
-  resourceId: string;
-  claimedBy: string;
-  claimedAt: string;
-  expiresAt: string;
-}
 
 export class ObservationStore {
   readonly path: string;
@@ -4330,10 +4152,6 @@ interface StoredFactRow {
   source_recorded_at: null | string;
   subject: string;
   temporal_status: "current" | "historical" | "unknown";
-}
-
-export interface ContentionBudget {
-  remainingMilliseconds: number;
 }
 
 interface PreparedFact extends FactInput {
