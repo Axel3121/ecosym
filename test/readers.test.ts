@@ -480,12 +480,24 @@ test("bytes that are not UTF-8 make a text source malformed rather than a replac
     writeFileSync(path, Buffer.concat([Buffer.from(prefix[type]), Buffer.from([0xff]), Buffer.from(suffix[type])]));
     assert.equal(await readError(config(reader(type, path))), "source_malformed", type);
 
+    // Record-index resolution reads JSONL through its own path.
+    if (type === "jsonl") {
+      await assert.rejects(
+        readJsonlSourceWithRecordIndexModes(config(reader(type, path))),
+        (error: unknown) => error instanceof SourceReadError && error.code === "source_malformed",
+      );
+    }
+
     // A U+FFFD the source really encodes is data, so the refusal above is
     // about the bytes rather than the character.
     writeFileSync(path, `${prefix[type]}�${suffix[type]}`);
     const records = await readAll(config(reader(type, path)));
     assert.equal(records.length, 1, type);
     assert.equal(records[0]?.record.value, "�", type);
+    if (type === "jsonl") {
+      const modes = await readJsonlSourceWithRecordIndexModes(config(reader(type, path)));
+      assert.equal(modes.recordOrdinal[0]?.record.value, "�");
+    }
   }
 
   // JSONL is streamed in 64 KiB chunks. A two-byte character split across a
