@@ -4766,7 +4766,12 @@ function validateActor(
   operation: "forget" | "forget-civilization" | "retirement",
 ): void {
   if (!/^[a-z][a-z0-9_.:-]{0,127}$/.test(value)) {
-    throw new TypeError(`A ${operation} actor must be a stable machine identifier`);
+    // The actor is caller input, so a malformed one is an invalid argument
+    // rather than an internal fault.
+    throw Object.assign(
+      new TypeError(`A ${operation} actor must be a stable machine identifier`),
+      { code: "invalid_arguments" },
+    );
   }
 }
 
