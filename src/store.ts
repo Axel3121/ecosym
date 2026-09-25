@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { ArenaAdmissionError, parseArenaBundle, sourceReportProjection, type ArenaBundle } from "./arena-adapter.ts";
 import type { SourceReportSnapshot, SourceReportProvenance } from "./source-report.ts";
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -130,6 +130,7 @@ import type {
 } from "./store-types.ts";
 import { OwnedStateReader } from "./store-export.ts";
 import { migrateStore } from "./store-migrate.ts";
+import { projectOwnerAlive, projectProcessIdentity } from "./store-project-owner.ts";
 import { FACT_COLLECTION_AS_OF_JOIN } from "./store-schema.ts";
 import {
   BUSY_RETRY_WINDOW_MILLISECONDS,
@@ -208,35 +209,6 @@ const STORE_FILENAME = "observations.sqlite";
 const WORK_CLAIM_TTL_MILLISECONDS = 30 * 60 * 1000; // 30 minutes, first guess
 const CONFIRMATION_CONTENTION_BUDGET_MILLISECONDS = 2_000;
 const projectAttemptOwners = new Map<string, string>();
-
-// Opaque event identities carry ownership, not state or a public failure reason.
-// Linux start ticks distinguish PID reuse; elsewhere a live PID fails closed.
-function projectProcessIdentity(pid: number): string {
-  if (process.platform !== "linux") return "live";
-  const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-  const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-  if (fields[0] === "Z" || fields[0] === "X") return "dead";
-  return `${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()}.${fields[19]!}`;
-}
-
-function projectOwnerAlive(eventId: string): boolean {
-  const match = /^project-owner:(\d+):([^:]+):/.exec(eventId);
-  if (match === null) return false;
-  const pid = Number(match[1]);
-  if (process.platform === "linux") {
-    try {
-      return projectProcessIdentity(pid) === match[2];
-    } catch {
-      // Unreadable identity is inconclusive; only ESRCH proves the PID is gone.
-    }
-  }
-  try {
-    process.kill(pid, 0);
-    return process.platform === "linux" || projectProcessIdentity(pid) === match[2];
-  } catch (error) {
-    return !(error instanceof Error && "code" in error && error.code === "ESRCH");
-  }
-}
 
 export class ObservationStore {
   readonly path: string;
