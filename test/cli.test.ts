@@ -953,7 +953,7 @@ test("retirement is an explicit, durable CLI recovery for an abandoned attempt",
   assert.equal(supersededPreview.code, 1);
   assert.equal(
     supersededPreview.output.error,
-    "record_index_resolution_state_changed",
+    "collection_attempt_retirement_state_changed",
   );
   const recovered = await runCli(
     ["resolve-record-index", parsed.config.id, parsed.hash, "record-ordinal"],

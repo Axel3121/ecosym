@@ -1406,6 +1406,38 @@ test("retiring one explicitly named running attempt leaves another concurrent at
       running[0]?.attemptId as string,
       "operator:recovery",
     );
+    const supersededPlan = store.planCollectionAttemptRetirement(
+      running[0]?.attemptId as string,
+      "operator:recovery",
+    );
+    const changedPlan = store.planCollectionAttemptRetirement(
+      running[1]?.attemptId as string,
+      "operator:recovery",
+    );
+    const startedAtEditor = new DatabaseSync(store.path);
+    const originalStartedAt = (
+      startedAtEditor
+        .prepare("SELECT started_at FROM collection_attempts WHERE attempt_id = ?")
+        .get(changedPlan.attemptId) as { started_at: string }
+    ).started_at;
+    startedAtEditor
+      .prepare("UPDATE collection_attempts SET started_at = ? WHERE attempt_id = ?")
+      .run("2000-01-01T00:00:00.000Z", changedPlan.attemptId);
+    await assert.rejects(
+      store.retireCollectionAttempt(
+        changedPlan.attemptId,
+        changedPlan.retiredBy,
+        changedPlan.confirmationToken,
+      ),
+      {
+        name: "CollectionAttemptRetirementStateChangedError",
+        code: "collection_attempt_retirement_state_changed",
+      },
+    );
+    startedAtEditor
+      .prepare("UPDATE collection_attempts SET started_at = ? WHERE attempt_id = ?")
+      .run(originalStartedAt, changedPlan.attemptId);
+    startedAtEditor.close();
     const retirement = await store.retireCollectionAttempt(
       retirementPlan.attemptId,
       retirementPlan.retiredBy,
@@ -1435,6 +1467,18 @@ test("retiring one explicitly named running attempt leaves another concurrent at
         [running[0]?.attemptId, "retired"],
         [running[1]?.attemptId, "running"],
       ],
+    );
+    assert.deepEqual(store.collectionAttemptRetirements(), [retirement]);
+    await assert.rejects(
+      store.retireCollectionAttempt(
+        supersededPlan.attemptId,
+        supersededPlan.retiredBy,
+        supersededPlan.confirmationToken,
+      ),
+      {
+        name: "CollectionAttemptRetirementStateChangedError",
+        code: "collection_attempt_retirement_state_changed",
+      },
     );
     assert.deepEqual(store.collectionAttemptRetirements(), [retirement]);
     releaseSecond?.();
