@@ -236,7 +236,7 @@ export class ObservationStore {
     this.#confirmations = new ConfirmationState(this.#database, this.#ownedState);
     chmodSync(this.path, 0o600);
     this.#database.exec("PRAGMA foreign_keys = ON");
-    migrateStore(this.#database);
+    migrateStore(this.#database, busyTimeoutMilliseconds);
     this.#database.exec("PRAGMA journal_mode = WAL");
   }
 
