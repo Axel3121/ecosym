@@ -46,7 +46,7 @@ export function worldForm(value: unknown): WorldForm {
         }
         const kind = source.collection?.status ?? "missing";
         marks.push({ axis: "collection", kind, label: `${source.connectionId}: ${kind}. ${source.collection === null
-          ? "No active registered connection with this exact ID." : collectionMeaning[source.collection.reason]}` });
+          ? "No active registered connection with this exact ID." : describeCollection(source.collection)}` });
         for (const [epistemic, facts] of [["observation", source.observations], ["claim", source.claims]] as const) {
           if (facts.length === 0) continue;
           marks.push({ axis: "epistemic", kind: epistemic, label: `${source.connectionId}: ${epistemic} recorded.` });
@@ -94,6 +94,12 @@ const collectionMeaning = {
   "record-index-unknown": "Unread: the stored JSONL record-index interpretation is unknown; record identity cannot be reliably interpreted until resolved.",
 } satisfies Record<ConnectionStatus["reason"], string>;
 
+function describeCollection(collection: NonNullable<WorldSourcePicture["sources"][number]["collection"]>): string {
+  return collection.reason === "failed" && typeof collection.failureCode === "string"
+    ? `Unread: the latest collection attempt failed (${collection.failureCode}). Retained facts do not establish a fresh read or source absence.`
+    : collectionMeaning[collection.reason];
+}
+
 /** Pure form projection of validated evidence; none changes population, activity or terrain. */
 export function inspectSourceFields(picture: WorldSourcePicture, snapshot: WorldSnapshot): { label: string; values: string[] }[] {
   const civilization = snapshot.civilizations.find((entry) => entry.civilizationId === picture.civilizationId)!;
@@ -118,7 +124,7 @@ export function inspectSourceFields(picture: WorldSourcePicture, snapshot: World
     fields.push({ label: `Collection picture: ${source.connectionId}`, values: [
       "Collection metadata is owned by Ecosym's observation store, not an external observation.",
       collection === null ? "Missing registered source: no active connection with this exact ID."
-        : collectionMeaning[collection.reason],
+        : describeCollection(collection),
       JSON.stringify(collection),
       `attemptsInProgress: ${JSON.stringify(source.attemptsInProgress)}`,
     ] });

@@ -325,6 +325,7 @@ test("a failed collection rolls back all facts before recording unread status", 
         lastAttemptAt: undefined,
         reason: "failed",
         status: "unread",
+        failureCode: "source_malformed",
       },
     );
     // Reading the expectation from the method under test would compare the

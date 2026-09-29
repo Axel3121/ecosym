@@ -126,7 +126,7 @@ test("the production world surface uses the actual build and launcher with isola
     assert.equal(await page.title(), "EcoSym");
     const loaded = await snapshotResponse;
     assert.equal(loaded.status(), 200);
-    assert.deepEqual(validateWorldSnapshot(await loaded.json()), empty);
+    assert.deepEqual(validateWorldSnapshot(await loaded.json()), { ...empty, schemaVersion: 3 });
     await page.getByRole("heading", { name: "No civilizations founded" }).waitFor();
     assert.equal(await page.locator(".place, .inspection").count(), 0);
     assert.match(await page.locator('.world-message[role="status"]').innerText(), /Nothing has been placed here/u);

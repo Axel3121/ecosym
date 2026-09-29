@@ -83,6 +83,7 @@ test("first-ever gated collection composes as incomplete without facts or a comp
     assert.deepEqual(running.collection, {
       connectionId: "board", connectionVersion: parsed.hash,
       lastAttemptAt: attempt.startedAt, reason: "incomplete", status: "unread",
+      failureCode: null,
     });
     assert.deepEqual(running.attemptsInProgress, [{
       attemptId: attempt.attemptId, connectionId: "board", connectionVersion: parsed.hash,
@@ -125,6 +126,7 @@ for (const changed of [false, true]) {
       assert.deepEqual(reconnected.collection, {
         connectionId: "board", connectionVersion: next.hash,
         lastAttemptAt: null, reason: "never-run", status: "unread",
+        failureCode: null,
       });
       assert.deepEqual(reconnected.observations, changed ? [] : before.observations);
       assert.deepEqual(reconnected.claims, changed ? [] : before.claims);
@@ -181,7 +183,7 @@ test("narration keeps pre-write statuses, attempts, facts and counts in one read
     assert.deepEqual(source(after), {
       connectionId: "board",
       collection: { connectionId: "board", connectionVersion: next.hash,
-        lastAttemptAt: null, reason: "never-run", status: "unread" },
+        lastAttemptAt: null, reason: "never-run", status: "unread", failureCode: null },
       attemptsInProgress: [], observations: [], claims: [],
     });
     assert.equal(after.observationsTruncated, false);
@@ -249,7 +251,7 @@ test("synthetic stored unknown record-index mode composes safely without a prior
   assert.deepEqual(source(composeWorldSnapshot(store)), {
     connectionId: "board",
     collection: { connectionId: "board", connectionVersion: indexed.hash,
-      lastAttemptAt: null, reason: "record-index-unknown", status: "unread" },
+      lastAttemptAt: null, reason: "record-index-unknown", status: "unread", failureCode: null },
     attemptsInProgress: [], observations: [], claims: [],
   });
 });

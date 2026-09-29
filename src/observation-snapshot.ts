@@ -47,6 +47,7 @@ export interface NarrationSnapshot {
 export interface ConnectionStatus {
   connectionId: string;
   connectionVersion: string;
+  failureCode: null | string;
   lastAttemptAt: null | string;
   reason:
     | "collected"
