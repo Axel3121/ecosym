@@ -42,9 +42,9 @@ test("schema 2 projects are detached declared state, not source observations or 
   }
 });
 
-test("both snapshot versions without projects remain valid TypeScript and retain their runtime shape", () => {
+test("all snapshot versions without projects remain valid TypeScript and retain their runtime shape", () => {
   const { civilizations, sourcePictures, observationsTruncated, claimsTruncated } = snapshot();
-  for (const schemaVersion of [1, 2] as const) {
+  for (const schemaVersion of [1, 2, 3] as const) {
     const legacy: WorldSnapshot = { schemaVersion, civilizations, sourcePictures, observationsTruncated, claimsTruncated };
     for (const input of [legacy, JSON.parse(JSON.stringify(legacy))]) {
       const validated = validateWorldSnapshot(input);
@@ -66,10 +66,55 @@ test("legacy schema 1 keeps its closed shape and rejects projects even when empt
   }
 });
 
+test("collection failureCode is required only in schema 3 and is closed and reason-bound", () => {
+  const legacyCollection = { connectionId: "source", connectionVersion: "v1", lastAttemptAt: instant,
+    reason: "failed", status: "unread" };
+  const input = snapshot();
+  input.civilizations[0]!.sources = ["source"];
+  const withCollection = (schemaVersion: number, collection: unknown) => ({
+    ...input, schemaVersion,
+    ...(schemaVersion === 1 ? {} : { projects: input.projects }),
+    sourcePictures: [{ civilizationId: project.civilizationId, sources: [{ connectionId: "source",
+      collection, attemptsInProgress: [], observations: [], claims: [] }] }],
+  });
+  for (const schemaVersion of [1, 2]) {
+    const legacy = withCollection(schemaVersion, legacyCollection);
+    if (schemaVersion === 1) delete legacy.projects;
+    for (const value of [legacy, JSON.parse(JSON.stringify(legacy))]) {
+      assert.deepEqual(validateWorldSnapshot(value), legacy);
+      for (const failureCode of [null, "source_unreadable"]) {
+        const invalid = structuredClone(value);
+        invalid.sourcePictures[0].sources[0].collection.failureCode = failureCode;
+        assert.throws(() => validateWorldSnapshot(invalid), /Invalid world snapshot fields/);
+      }
+    }
+  }
+  for (const failureCode of [null, "source_unreadable", "source_malformed", "a", "a".repeat(64)]) {
+    const valid = withCollection(3, { ...legacyCollection, failureCode });
+    assert.deepEqual(validateWorldSnapshot(JSON.parse(JSON.stringify(valid))), valid);
+  }
+  assert.throws(() => validateWorldSnapshot(withCollection(3, legacyCollection)), /Invalid world snapshot fields/);
+  for (const failureCode of [undefined, "", "Bad_code", "source-unreadable", "private\ntext", "a".repeat(65), 1, false, {}, []]) {
+    assert.throws(() => validateWorldSnapshot(withCollection(3, { ...legacyCollection, failureCode })), /Invalid collection failure code/);
+  }
+  assert.throws(() => validateWorldSnapshot(withCollection(3, { ...legacyCollection, failureCode: null, extra: true })), /Invalid world snapshot fields/);
+  for (const reason of ["collected", "nothing-new", "never-run", "incomplete", "retired", "skipped", "record-index-unknown"]) {
+    const valid = withCollection(3, { ...legacyCollection, reason, failureCode: null,
+      status: reason === "collected" ? "changed" : reason === "nothing-new" ? "quiet" : "unread",
+      lastAttemptAt: reason === "never-run" ? null : instant });
+    if (reason === "incomplete") Object.assign(valid.sourcePictures[0]!.sources[0]!, {
+      attemptsInProgress: [{ attemptId: "attempt", connectionId: "source", connectionVersion: "v1", startedAt: instant }],
+    });
+    assert.deepEqual(validateWorldSnapshot(valid), valid);
+    Object.assign(valid.sourcePictures[0]!.sources[0]!.collection!, { failureCode: "source_unreadable" });
+    assert.throws(() => validateWorldSnapshot(valid), /Invalid collection failure code/);
+  }
+});
+
 test("project contracts reject missing and extra keys, accessors, invalid values and inconsistent links", () => {
   const rejects = (value: unknown) => assert.throws(() => validateWorldSnapshot(value));
   const input = snapshot();
-  rejects({ ...input, schemaVersion: 3 });
+  rejects({ ...input, schemaVersion: 4 });
   rejects({ ...input, projects: undefined });
   rejects({ ...input, projects: null });
   rejects({ ...input, projects: {} });
@@ -130,7 +175,7 @@ test("owner composition requires listProjects and an open work claim changes no 
     externalArchived: true, provenance: "adopted", harnessHome: join(directory, "hermes"), harnessVersion: "0.21.0" });
   store.releaseProjectAttempt(requested.projectId);
   const before = composeWorldSnapshot(store);
-  assert.equal(before.schemaVersion, 2);
+  assert.equal(before.schemaVersion, 3);
   assert.equal(before.projects![0]!.state, "established");
   assert.deepEqual(before.sourcePictures, [{ civilizationId, sources: [] }]);
   store.claimResource(civilizationId, "synthetic-resource", "synthetic-agent");
