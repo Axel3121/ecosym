@@ -84,7 +84,7 @@ export function runImmediateTransaction<T>(
   }
 }
 
-function withBusyTimeout<T>(
+export function withBusyTimeout<T>(
   database: DatabaseSync,
   busyTimeoutMilliseconds: number,
   timeoutMilliseconds: number,

@@ -18,11 +18,17 @@ import {
   LEGACY_REBUILD_SCHEMA_VERSION,
   STORE_SCHEMA_VERSION,
 } from "./store-schema.ts";
-import { runImmediateTransaction } from "./store-sqlite.ts";
+import { runImmediateTransaction, withBusyTimeout } from "./store-sqlite.ts";
+
+/** How long an opener waits for another opener's upgrade to release the write lock. */
+export const MIGRATION_BUSY_TIMEOUT_MILLISECONDS = 30_000;
+
+// Defensive bound on dispatch iterations; a legitimate upgrade needs at most a handful.
+const MAXIMUM_MIGRATION_ITERATIONS = 32;
 
 /** Bring an opened observation store up to STORE_SCHEMA_VERSION. */
-export function migrateStore(database: DatabaseSync): void {
-  new StoreMigration(database).migrate();
+export function migrateStore(database: DatabaseSync, busyTimeoutMilliseconds: number): void {
+  new StoreMigration(database).migrate(busyTimeoutMilliseconds);
 }
 
 class StoreMigration {
@@ -32,23 +38,60 @@ class StoreMigration {
     this.#database = database;
   }
 
-  migrate(): void {
-    this.#migrate();
+  migrate(busyTimeoutMilliseconds: number): void {
+    if (this.#userVersion() === STORE_SCHEMA_VERSION) {
+      return;
+    }
+    withBusyTimeout(
+      this.#database,
+      busyTimeoutMilliseconds,
+      MIGRATION_BUSY_TIMEOUT_MILLISECONDS,
+      () => this.#migrate(),
+    );
   }
 
   #transaction<T>(operation: () => T): T {
     return runImmediateTransaction(this.#database, operation);
   }
 
-  #migrate(): void {
-    const version = this.#database.prepare("PRAGMA user_version").get() as {
+  #userVersion(): number {
+    const row = this.#database.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    if (version.user_version === STORE_SCHEMA_VERSION) {
-      return;
+    return row.user_version;
+  }
+
+  /**
+   * Run one step inside the write lock only if the store is still at the
+   * version the step upgrades from; another opener may have moved it on.
+   */
+  #step(from: number, apply: () => void): void {
+    this.#transaction(() => {
+      if (this.#userVersion() !== from) {
+        return;
+      }
+      apply();
+    });
+  }
+
+  /**
+   * Each pass reads the version outside the lock only as a hint for which step
+   * to try; the step itself decides again inside the lock.
+   */
+  #migrate(): void {
+    for (let iteration = 0; iteration < MAXIMUM_MIGRATION_ITERATIONS; iteration += 1) {
+      const version = this.#userVersion();
+      if (version === STORE_SCHEMA_VERSION) {
+        return;
+      }
+      this.#migrateStep(version);
     }
-    if (version.user_version === 17) {
-      this.#transaction(() => {
+    throw new Error("Observation store migration did not converge");
+  }
+
+  #migrateStep(version: number): void {
+    if (version === 17) {
+      this.#step(17, () => {
         this.#database.exec(`ALTER TABLE project_provisioning_events ADD COLUMN retry_request_key TEXT;
           CREATE UNIQUE INDEX project_retry_requests
             ON project_provisioning_events(project_id, retry_request_key) WHERE retry_request_key IS NOT NULL;
@@ -56,31 +99,30 @@ class StoreMigration {
       });
       return;
     }
-    if (version.user_version === 15) {
-      this.#transaction(() => {
+    if (version === 15) {
+      this.#step(15, () => {
         this.#database.exec(CREATE_SOURCE_REPORTS);
         this.#database.exec("PRAGMA user_version = 16");
       });
-      this.#migrate();
       return;
     }
-    if (version.user_version === 16) {
-      this.#transaction(() => {
+    if (version === 16) {
+      this.#step(16, () => {
         this.#database.exec(CREATE_PROJECTS);
         this.#database.exec("PRAGMA user_version = 18");
       });
       return;
     }
-    if (version.user_version === 13) {
+    if (version === 13) {
       this.#migrateSchemaThirteen();
       return;
     }
-    if (version.user_version === 14) {
+    if (version === 14) {
       this.#migrateSchemaFourteen();
       return;
     }
-    if (version.user_version === 12) {
-      this.#transaction(() => {
+    if (version === 12) {
+      this.#step(12, () => {
         this.#database.exec(`
           ALTER TABLE confirmation_previews RENAME TO confirmation_previews_v12;
           ${CREATE_CONFIRMATION_PREVIEWS}
@@ -93,11 +135,10 @@ class StoreMigration {
           PRAGMA user_version = 13;
         `);
       });
-      this.#migrateSchemaThirteen();
       return;
     }
-    if (version.user_version === 11) {
-      this.#transaction(() => {
+    if (version === 11) {
+      this.#step(11, () => {
         this.#database.exec(`
           ALTER TABLE confirmation_previews RENAME TO confirmation_previews_v11;
           ${CREATE_CONFIRMATION_PREVIEWS}
@@ -110,11 +151,10 @@ class StoreMigration {
           PRAGMA user_version = 13;
         `);
       });
-      this.#migrateSchemaThirteen();
       return;
     }
-    if (version.user_version === 10) {
-      this.#transaction(() => {
+    if (version === 10) {
+      this.#step(10, () => {
         this.#database.exec(`
           ${CREATE_CONFIRMATION_PREVIEWS}
           ${CREATE_INSTITUTION}
@@ -123,18 +163,25 @@ class StoreMigration {
           PRAGMA user_version = 13;
         `);
       });
-      this.#migrateSchemaThirteen();
       return;
     }
-    if (version.user_version === 9) {
+    if (version === 9) {
       this.#migrateSchemaNine();
       return;
     }
+    this.#migrateLegacy();
+  }
+
+  #migrateLegacy(): void {
     this.#transaction(() => {
       const row = this.#database.prepare("PRAGMA user_version").get() as {
         user_version: number;
       };
-      if (row.user_version === STORE_SCHEMA_VERSION) {
+      // Another opener has already moved past the legacy steps; dispatch continues from there.
+      if (
+        row.user_version >= LEGACY_REBUILD_SCHEMA_VERSION &&
+        row.user_version <= STORE_SCHEMA_VERSION
+      ) {
         return;
       }
       if (row.user_version === 8) {
@@ -467,15 +514,12 @@ class StoreMigration {
         PRAGMA user_version = ${LEGACY_REBUILD_SCHEMA_VERSION};
       `);
     });
-    if (version.user_version !== 0) {
-      this.#migrateSchemaNine();
-    }
   }
 
   #migrateSchemaNine(): void {
     this.#database.exec("PRAGMA foreign_keys = OFF");
     try {
-      this.#transaction(() => {
+      this.#step(LEGACY_REBUILD_SCHEMA_VERSION, () => {
         this.#database.exec(
           CREATE_COLLECTION_ATTEMPTS.replace(
             "CREATE TABLE collection_attempts",
@@ -508,14 +552,13 @@ class StoreMigration {
     } finally {
       this.#database.exec("PRAGMA foreign_keys = ON");
     }
-    this.#migrateSchemaFourteen();
   }
 
   #migrateSchemaThirteen(): void {
-    const columns = this.#database.prepare("PRAGMA table_info(owned_state_exports)").all() as {
-      name: string;
-    }[];
-    this.#transaction(() => {
+    this.#step(13, () => {
+      const columns = this.#database.prepare("PRAGMA table_info(owned_state_exports)").all() as {
+        name: string;
+      }[];
       this.#database.exec(`
         ALTER TABLE confirmation_previews RENAME TO confirmation_previews_v13;
         ${CREATE_CONFIRMATION_PREVIEWS}
@@ -530,15 +573,13 @@ class StoreMigration {
       this.#database.exec(CREATE_CIVILIZATION_FORGET_RECORDS);
       this.#database.exec("PRAGMA user_version = 14");
     });
-    this.#migrateSchemaFourteen();
   }
 
   #migrateSchemaFourteen(): void {
-    this.#transaction(() => {
+    this.#step(14, () => {
       this.#database.exec(CREATE_WORK_CLAIMS);
       this.#database.exec(CREATE_SOURCE_REPORTS);
       this.#database.exec("PRAGMA user_version = 16");
     });
-    this.#migrate();
   }
 }
