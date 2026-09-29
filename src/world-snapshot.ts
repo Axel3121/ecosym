@@ -7,19 +7,19 @@ import { sourceReportInstantOrderingKey } from "./source-report-time.ts";
 import { PROJECT_ERROR_CODES, type WorldProjectSnapshot } from "./project-types.ts";
 
 /**
- * Production GET /api/world-snapshot emits schema 2 with projects, including [].
- * Validation also accepts legacy schema 1 without projects, preserving its version
- * and omitted field. Old closed schema-1 consumers cannot accept project fields.
- * Schema 2 permits omission too; supplied projects are always validated.
+ * Production GET /api/world-snapshot emits schema 3 with collection failureCode
+ * and projects, including []. Validation preserves legacy schema 1 and 2 shapes
+ * without failureCode. Schema 1 forbids projects; schema 2 and 3 permit omission.
+ * Supplied projects are always validated.
  */
-export const WORLD_SNAPSHOT_SCHEMA_VERSION = 2;
+export const WORLD_SNAPSHOT_SCHEMA_VERSION = 3;
 
 export const WORLD_FACT_SEMANTICS_CAVEAT = "Observations describe the source owner's recorded fields at collection, not completed work, operational success or civilization activity. Runtime prose reports remain claims. Temporal status describes stored collection evidence, not live source truth. collectionAsOf is the latest successful collection interval in the fact's last-seen connection/configuration/activation lifetime; null means unknown. collectedAt is provenance, never a substitute for sourceRecordedAt. Verify does not reconcile this picture; recollect to advance it. Running attempts and truncated results can leave the picture partial. A project is a declared place and its provisioning state. Its harness binding is what was observed at observedAt, never a present-tense claim, and never evidence of work, activity, or an admitted mandate in any runtime.";
 
 export interface WorldSourceSnapshot {
   sourceReport?: SourceReportSnapshot;
   connectionId: string;
-  collection: ConnectionStatus | null;
+  collection: (Omit<ConnectionStatus, "failureCode"> & { failureCode?: null | string }) | null;
   attemptsInProgress: NarrationAttempt[];
   observations: StoredFact[];
   claims: StoredFact[];
@@ -31,10 +31,10 @@ export interface WorldSourcePicture {
 }
 
 export interface WorldSnapshot {
-  schemaVersion: 1 | typeof WORLD_SNAPSHOT_SCHEMA_VERSION;
+  schemaVersion: 1 | 2 | typeof WORLD_SNAPSHOT_SCHEMA_VERSION;
   civilizations: FoundedCivilizationSnapshot[];
   sourcePictures: WorldSourcePicture[];
-  /** Optional in schema 2; forbidden in legacy schema 1 by runtime validation. */
+  /** Optional in schema 2 and 3; forbidden in legacy schema 1 by runtime validation. */
   projects?: WorldProjectSnapshot[];
   /** Owner-wide limits, not per-civilization completeness assessments. */
   observationsTruncated: boolean;
@@ -183,9 +183,10 @@ function list<T>(value: unknown, parse: (entry: unknown) => T): T[] {
   });
 }
 
-function collection(value: unknown): ConnectionStatus | null {
+function collection(value: unknown, schemaVersion: WorldSnapshot["schemaVersion"]): WorldSourceSnapshot["collection"] {
   if (value === null) return null;
-  const entry = record(value, ["connectionId", "connectionVersion", "lastAttemptAt", "reason", "status"]);
+  const entry = record(value, ["connectionId", "connectionVersion", "lastAttemptAt", "reason", "status",
+    ...(schemaVersion === 3 ? ["failureCode"] : [])]);
   const reason = entry.reason;
   if (reason !== "collected" && reason !== "failed" && reason !== "incomplete" && reason !== "never-run"
     && reason !== "nothing-new" && reason !== "record-index-unknown" && reason !== "retired" && reason !== "skipped") {
@@ -196,9 +197,15 @@ function collection(value: unknown): ConnectionStatus | null {
     || (reason !== "never-run" && reason !== "record-index-unknown" && entry.lastAttemptAt === null)) {
     throw new Error("Inconsistent collection status");
   }
+  const failureCode = entry.failureCode;
+  if (schemaVersion === 3 && failureCode !== null
+    && (reason !== "failed" || typeof failureCode !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(failureCode))) {
+    throw new Error("Invalid collection failure code");
+  }
   return {
     connectionId: text(entry.connectionId), connectionVersion: text(entry.connectionVersion),
     lastAttemptAt: entry.lastAttemptAt === null ? null : timestamp(entry.lastAttemptAt), reason, status,
+    ...(schemaVersion === 3 ? { failureCode: failureCode as null | string } : {}),
   };
 }
 
@@ -278,7 +285,8 @@ export function validateWorldProjectSnapshot(value: unknown): WorldProjectSnapsh
 /** Reject extra fields, accessors and inconsistent links; return recursively detached data. */
 export function validateWorldSnapshot(value: unknown): WorldSnapshot {
   const snapshot = record(value, ["schemaVersion", "civilizations", "sourcePictures", "observationsTruncated", "claimsTruncated"], ["projects"]);
-  if (snapshot.schemaVersion !== 1 && snapshot.schemaVersion !== WORLD_SNAPSHOT_SCHEMA_VERSION) throw new Error("Invalid world snapshot version");
+  const schemaVersion = snapshot.schemaVersion;
+  if (schemaVersion !== 1 && schemaVersion !== 2 && schemaVersion !== WORLD_SNAPSHOT_SCHEMA_VERSION) throw new Error("Invalid world snapshot version");
   if (snapshot.schemaVersion === 1 && Object.hasOwn(snapshot, "projects")) throw new Error("Invalid world snapshot fields");
   const { civilizations } = validateInstitutionSnapshot({ schemaVersion: 1, civilizations: snapshot.civilizations });
   const civilizationsById = new Map(civilizations.map((entry) => [entry.civilizationId, entry]));
@@ -304,7 +312,7 @@ export function validateWorldSnapshot(value: unknown): WorldSnapshot {
       if (!expectedSources.has(connectionId) || seenSources.has(connectionId)) throw new Error("Invalid source link");
       seenSources.add(connectionId);
       const normalized: WorldSourceSnapshot = {
-        connectionId, collection: collection(source.collection),
+        connectionId, collection: collection(source.collection, schemaVersion),
         attemptsInProgress: list(source.attemptsInProgress, (value) => {
           const attempt = record(value, ["attemptId", "connectionId", "connectionVersion", "startedAt"]);
           return {
@@ -341,7 +349,7 @@ export function validateWorldSnapshot(value: unknown): WorldSnapshot {
   });
   if (seenCivilizations.size !== civilizations.length) throw new Error("Missing civilization picture");
   return {
-    schemaVersion: snapshot.schemaVersion, civilizations, sourcePictures, ...(projects ? { projects } : {}),
+    schemaVersion, civilizations, sourcePictures, ...(projects ? { projects } : {}),
     observationsTruncated: boolean(snapshot.observationsTruncated), claimsTruncated: boolean(snapshot.claimsTruncated),
   };
 }

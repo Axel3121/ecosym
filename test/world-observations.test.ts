@@ -14,7 +14,7 @@ import { CollectionFailedError, ObservationStore } from "../src/store.ts";
 import { composeWorldSnapshot } from "../src/world-application.ts";
 import { createWorldServer } from "../src/world-server.ts";
 import { validateWorldSnapshot, type WorldSnapshot } from "../src/world-snapshot.ts";
-import { inspectSourceFields } from "../src/world-form.ts";
+import { inspectSourceFields, worldForm } from "../src/world-form.ts";
 
 function fixture(t: TestContext) {
   const directory = mkdtempSync(join(tmpdir(), "ecosym-world-observations-"));
@@ -62,6 +62,66 @@ function picture(snapshot: WorldSnapshot, civilizationId: string) {
   assert.ok(result);
   return result;
 }
+
+test("stored failure codes survive statuses, narration, schema 3 composition and world form prose", async (t) => {
+  const { store, register, found } = fixture(t);
+  for (const code of ["source_unreadable", "source_malformed"]) {
+    register(code);
+    await assert.rejects(store.collect(store.getConnection(code), () => {
+      throw Object.assign(new Error("synthetic failure"), { code });
+    }), { code });
+  }
+  register("quiet", false, "empty_tasks");
+  await collectConnection(store, "quiet");
+  register("undeclared");
+  const { civilizationId } = found("Failures", ["source_unreadable", "source_malformed", "quiet"]);
+  const expected = [
+    ["quiet", "nothing-new", "quiet", null],
+    ["source_malformed", "failed", "unread", "source_malformed"],
+    ["source_unreadable", "failed", "unread", "source_unreadable"],
+  ];
+  const statuses = store.statuses().filter((status) => status.connectionId !== "undeclared");
+  assert.deepEqual(statuses.map((entry) => [entry.connectionId, entry.reason, entry.status, entry.failureCode]), expected);
+  assert.deepEqual(store.narrate().connections, store.statuses());
+  const snapshot = composeWorldSnapshot(store);
+  assert.equal(snapshot.schemaVersion, 3);
+  const sources = picture(snapshot, civilizationId).sources;
+  assert.equal(sources.length, 3);
+  assert.deepEqual(sources.map((source) => source.collection).sort((a, b) => a!.connectionId.localeCompare(b!.connectionId)), statuses);
+  const form = worldForm(snapshot);
+  const inspection = form.places[0]!.inspection.find((field) => field.label === "Collection picture: source_unreadable")!;
+  assert.equal(inspection.values[1], "Unread: the latest collection attempt failed (source_unreadable). Retained facts do not establish a fresh read or source absence.");
+  assert.doesNotMatch(inspection.values.join("\n"), /Successfully read with no new or changed facts|Successfully saw new or changed stored facts/);
+  assert.ok(form.places[0]!.marks.some((mark) => mark.axis === "collection" && mark.label.includes("failed (source_unreadable)")));
+});
+
+test("statuses never invent a failure code or attach it to a non-failed reason", async (t) => {
+  const { store, register } = fixture(t);
+  register("board");
+  assert.equal(store.statuses()[0]!.failureCode, null);
+  await store.collect(store.getConnection("board"), () => {});
+  const database = new DatabaseSync(store.path);
+  t.after(() => database.close());
+  // Simulate unsafe legacy/corrupt rows, including null codes forbidden by today's write constraint.
+  database.exec("PRAGMA ignore_check_constraints = ON");
+  for (const code of [null, "", "Source_unreadable", "source-unreadable", "a".repeat(65), "private\ntext", "source_malformed", "a".repeat(64)]) {
+    database.prepare("UPDATE collection_attempts SET outcome = 'failed', failure_code = ?").run(code);
+    const status = store.statuses()[0]!;
+    assert.equal(status.reason, "failed");
+    assert.equal(status.status, "unread");
+    assert.equal(status.failureCode, code === "source_malformed" || code === "a".repeat(64) ? code : null);
+  }
+  for (const [outcome, factsAdded, reason, status] of [
+    ["success", 0, "nothing-new", "quiet"], ["success", 1, "collected", "changed"],
+    ["running", 0, "incomplete", "unread"], ["retired", 0, "retired", "unread"], ["skipped", 0, "skipped", "unread"],
+  ] as const) {
+    database.prepare("UPDATE collection_attempts SET outcome = ?, facts_added = ?, failure_code = 'source_unreadable'").run(outcome, factsAdded);
+    assert.deepEqual([store.statuses()[0]!.reason, store.statuses()[0]!.status, store.statuses()[0]!.failureCode], [reason, status, null]);
+  }
+  database.exec("UPDATE collection_attempts SET outcome = 'failed'; UPDATE connection_versions SET jsonl_record_index_mode = 'unknown'");
+  assert.equal(store.statuses()[0]!.reason, "record-index-unknown");
+  assert.equal(store.statuses()[0]!.failureCode, null);
+});
 
 async function serve(t: TestContext, readSnapshot: () => WorldSnapshot, directory: string) {
   const server = createWorldServer(readSnapshot, join(directory, "missing-build"));

@@ -238,7 +238,7 @@ export class ObservationStore {
     this.#confirmations = new ConfirmationState(this.#database, this.#ownedState);
     chmodSync(this.path, 0o600);
     this.#database.exec("PRAGMA foreign_keys = ON");
-    migrateStore(this.#database);
+    migrateStore(this.#database, busyTimeoutMilliseconds);
     this.#database.exec("PRAGMA journal_mode = WAL");
   }
 
@@ -1898,7 +1898,7 @@ export class ObservationStore {
       .prepare(
         `SELECT c.connection_id, c.config_hash,
                 COALESCE(a.completed_at, a.started_at) AS last_attempt_at,
-                a.outcome, a.facts_added, a.facts_changed, v.jsonl_record_index_mode
+                a.outcome, a.failure_code, a.facts_added, a.facts_changed, v.jsonl_record_index_mode
            FROM active_connections c
            JOIN connection_versions v
              ON v.connection_id = c.connection_id
@@ -1919,6 +1919,7 @@ export class ObservationStore {
       connection_id: string;
       facts_added: null | number;
       facts_changed: null | number;
+      failure_code: null | string;
       jsonl_record_index_mode: string;
       last_attempt_at: null | string;
       outcome: null | "failed" | "retired" | "running" | "skipped" | "success";
@@ -1928,6 +1929,7 @@ export class ObservationStore {
       const connection = {
         connectionId: row.connection_id,
         connectionVersion: row.config_hash,
+        failureCode: null,
       };
       if (row.jsonl_record_index_mode === "unknown") {
         return {
@@ -1963,6 +1965,8 @@ export class ObservationStore {
           lastAttemptAt: row.last_attempt_at,
           reason: row.outcome,
           status: "unread",
+          failureCode: row.outcome === "failed" && typeof row.failure_code === "string"
+            && /^[a-z][a-z0-9_]{0,63}$/.test(row.failure_code) ? row.failure_code : null,
         };
       }
       if (row.facts_added === 0 && row.facts_changed === 0) {

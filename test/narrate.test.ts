@@ -109,6 +109,29 @@ async function narrate(xdgDataHome: string, arguments_: string[] = []) {
   return result.output;
 }
 
+test("status and narrate keep schema 1 envelopes and publish the stored failure codes", async (t) => {
+  const { directory, xdgDataHome } = fixture(t);
+  for (const id of ["source_unreadable", "source_malformed", "quiet"]) {
+    const { configPath } = sqliteConnection(directory, id, 0, 0);
+    await connectAndCollect(configPath, id, xdgDataHome);
+  }
+  const store = new ObservationStore(join(xdgDataHome, "ecosym"));
+  t.after(() => store.close());
+  for (const code of ["source_unreadable", "source_malformed"]) {
+    await assert.rejects(store.collect(store.getConnection(code), () => {
+      throw Object.assign(new Error("synthetic failure"), { code });
+    }), { code });
+  }
+  const status = await runCli(["status"], xdgDataHome);
+  assert.equal(status.code, 0);
+  assert.equal(status.output.schemaVersion, 1);
+  assert.deepEqual(status.output.connections, store.statuses());
+  assert.deepEqual((await narrate(xdgDataHome)).connections, store.statuses());
+  assert.deepEqual(store.statuses().map((entry) => [entry.connectionId, entry.failureCode]), [
+    ["quiet", null], ["source_malformed", "source_malformed"], ["source_unreadable", "source_unreadable"],
+  ]);
+});
+
 test("query and narrate bound currentness to collection, not ephemeral verification", async (t) => {
   const { directory, xdgDataHome } = fixture(t);
   const { config, configPath } = sqliteConnection(directory, "currentness", 1, 1);
