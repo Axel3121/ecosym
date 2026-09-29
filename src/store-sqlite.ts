@@ -74,14 +74,24 @@ export function runImmediateTransaction<T>(
     database.exec("COMMIT");
     return result;
   } catch (error) {
-    if (database.isTransaction) {
-      database.exec("ROLLBACK");
-    }
-    if (isSqliteContentionError(error)) {
-      throw new StoreContentionError(error);
-    }
-    throw error;
+    rollbackKeepingCause(database);
+    throw contentionAware(error);
   }
+}
+
+function rollbackKeepingCause(database: DatabaseSync): void {
+  if (!database.isTransaction) {
+    return;
+  }
+  try {
+    database.exec("ROLLBACK");
+  } catch {
+    // The error that caused the rollback is the one the caller must see.
+  }
+}
+
+function contentionAware(error: unknown): unknown {
+  return isSqliteContentionError(error) ? new StoreContentionError(error) : error;
 }
 
 export function withBusyTimeout<T>(
@@ -102,16 +112,18 @@ export function withBusyTimeout<T>(
 }
 
 export function runReadTransaction<T>(database: DatabaseSync, operation: () => T): T {
-  database.exec("BEGIN");
+  try {
+    database.exec("BEGIN");
+  } catch (error) {
+    throw contentionAware(error);
+  }
   try {
     const result = operation();
     database.exec("COMMIT");
     return result;
   } catch (error) {
-    if (database.isTransaction) {
-      database.exec("ROLLBACK");
-    }
-    throw error;
+    rollbackKeepingCause(database);
+    throw contentionAware(error);
   }
 }
 

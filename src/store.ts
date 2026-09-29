@@ -2370,6 +2370,16 @@ export class ObservationStore {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
       throw new RangeError("Query limit must be an integer from 1 through 1000");
     }
+    // Facts and their provenance are two statements; one read transaction gives both the same snapshot.
+    const read = (): StoredFact[] => this.#readFacts(epistemicStatus, options, limit);
+    return this.#database.isTransaction ? read() : this.#readTransaction(read);
+  }
+
+  #readFacts(
+    epistemicStatus: EpistemicStatus,
+    options: QueryOptions,
+    limit: number,
+  ): StoredFact[] {
     const { conditions, parameters } = this.#factFilters(epistemicStatus, options);
     parameters.push(limit);
 
