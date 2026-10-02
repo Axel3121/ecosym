@@ -209,6 +209,15 @@ export class CollectionAttemptNotRunningError extends Error {
   }
 }
 
+export class CollectionAttemptRetirementStateChangedError extends Error {
+  readonly code = "collection_attempt_retirement_state_changed";
+
+  constructor() {
+    super("The collection attempt changed after retirement confirmation was requested");
+    this.name = "CollectionAttemptRetirementStateChangedError";
+  }
+}
+
 export class SourceRevisionChangedError extends Error {
   readonly code = "source_changed";
 

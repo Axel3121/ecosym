@@ -46,6 +46,7 @@ import {
   CivilizationDissolvedError,
   CivilizationNotFoundError,
   CollectionAttemptNotRunningError,
+  CollectionAttemptRetirementStateChangedError,
   CollectionFailedError,
   ConfirmationAlreadySpentError,
   ConnectionConflictError,
@@ -74,6 +75,7 @@ export {
   CivilizationDissolvedError,
   CivilizationNotFoundError,
   CollectionAttemptNotRunningError,
+  CollectionAttemptRetirementStateChangedError,
   CollectionFailedError,
   ConfirmationAlreadySpentError,
   ConfirmationPreviewNotFoundError,
@@ -1495,12 +1497,12 @@ export class ObservationStore {
         snapshot = this.#confirmations.collectionAttemptRetirementSnapshot(attemptId, retiredBy);
       } catch (error) {
         if (error instanceof CollectionAttemptNotRunningError) {
-          throw new RecordIndexResolutionStateChangedError();
+          throw new CollectionAttemptRetirementStateChangedError();
         }
         throw error;
       }
       if (preview.state_fingerprint !== snapshot.stateFingerprint) {
-        throw new RecordIndexResolutionStateChangedError();
+        throw new CollectionAttemptRetirementStateChangedError();
       }
       const retired = this.#database
         .prepare(
