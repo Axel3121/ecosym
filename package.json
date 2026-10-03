@@ -16,7 +16,10 @@
     "serve:world": "node src/world-main.ts",
     "ecosym": "node src/cli.ts",
     "test": "node -e \"const { globSync } = require('node:fs'); if (globSync('test/*.test.ts').length === 0) throw new Error('no tests discovered')\" && node --test --test-concurrency=3 --test-reporter=spec test/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "proto": "vite -c vite.proto.config.ts",
+    "build:proto": "vite build -c vite.proto.config.ts",
+    "typecheck:proto": "tsc -p tsconfig.proto.json --noEmit"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",

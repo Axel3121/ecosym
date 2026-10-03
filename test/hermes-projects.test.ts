@@ -9,9 +9,9 @@ import { ProjectService } from "../src/projects.ts";
 import { ObservationStore } from "../src/store.ts";
 import { parseCivilizationConfig } from "../src/institution.ts";
 import { randomUUID } from "node:crypto";
-import { hermesAvailable } from "./hermes-available.ts";
+import { nativeHermes, type NativeHermes } from "./hermes-available.ts";
 
-function isolated(t: TestContext) {
+function isolated(t: TestContext, keep: () => boolean = () => false) {
   const root = mkdtempSync(join(tmpdir(), "ecosym-hermes-test-"));
   const profile = join(root, "profile");
   const workspace = join(root, "workspace");
@@ -21,7 +21,7 @@ function isolated(t: TestContext) {
   assert.notEqual(realpathSync(profile), join(homedir(), ".hermes"), "DANGER: native test targets the user's real Hermes home");
   const path = relative(realpathSync(root), realpathSync(profile));
   assert.ok(path && !isAbsolute(path) && path !== ".." && !path.startsWith(`..${sep}`), "DANGER: harness home escaped isolated tmp tree");
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => { if (!keep()) rmSync(root, { recursive: true, force: true }); });
   const env = { PATH: process.env.PATH, HOME: root, HERMES_HOME: profile, LANG: "C", LC_ALL: "C" };
   return { root, profile, workspace, env, request: { name: "Fjordkart", slug: "fjordkart", workspacePath: workspace } };
 }
@@ -164,13 +164,18 @@ test("binary is resolved once and invalid positional inputs cannot invoke native
 });
 
 test("real native integration uses only temporary profile: service create, show, reconcile, archive adoption", { timeout: 30_000 }, async (t) => {
-  const s = isolated(t);
+  let guard: NativeHermes | undefined;
+  // A native run that rewrote a launcher it executes through may now depend on this tree: keep it rather than break hermes.
+  const changed = () => guard?.kind === "ready" ? guard.changed() : [];
+  const s = isolated(t, () => changed().length > 0);
   assert.equal(s.env.HERMES_HOME, s.profile, "DANGER: native call escaped test profile");
   assert.notEqual(realpathSync(s.profile), join(homedir(), ".hermes"), "DANGER: real Hermes home");
-  if (!hermesAvailable(s.env.PATH)) {
-    t.skip("Native integration skipped: no executable hermes on PATH; profile isolation verified");
+  guard = nativeHermes(s.env.PATH);
+  if (guard.kind !== "ready") {
+    t.skip(guard.reason);
     return;
   }
+  t.after(() => assert.deepEqual(changed(), [], `DANGER: native Hermes changed files it executes through; retained ${s.root}, which they may now run from`));
   const adapter = new HermesProjectAdapter({ root: s.root, env: s.env, home: s.root });
   const store = new ObservationStore(join(s.root, "state"));
   t.after(() => store.close());

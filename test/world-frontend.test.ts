@@ -12,6 +12,8 @@ import { createServer } from "vite";
 import ts from "typescript";
 import { validateWorldSnapshot, type WorldSnapshot } from "../src/world-snapshot.ts";
 import { worldForm } from "../src/world-form.ts";
+import { brightness } from "../web/sky.ts";
+import { gap, lastRead, readLine, signal } from "../web/timing.ts";
 
 const pureSources = ["world-form.ts", "world-snapshot.ts", "project-types.ts", "institution-snapshot.ts", "observation-snapshot.ts", "validate-institution-snapshot.ts", "time.ts", "source-report.ts", "source-report-time.ts"];
 const empty: WorldSnapshot = { schemaVersion: 2, civilizations: [], sourcePictures: [], projects: [], observationsTruncated: false, claimsTruncated: false };
@@ -51,6 +53,15 @@ function foundedSnapshot(): WorldSnapshot {
   snapshot.sourcePictures.reverse();
   return validateWorldSnapshot(snapshot);
 }
+
+const isActive = (node: Element) => node === document.activeElement;
+const body = (page: import("playwright").Page, name: string) => page.getByRole("button", { name: `Åpne ${name}`, exact: true });
+const plate = (page: import("playwright").Page, name: string) => page.getByRole("region", { name: `Sivilisasjon: ${name}`, exact: true });
+const amber = "rgb(242, 181, 68)";
+const red = "rgb(240, 69, 90)";
+const blue = "rgb(77, 158, 255)";
+const ink = "rgb(233, 237, 245)";
+const ink3 = "rgb(141, 151, 168)";
 
 test("the production world surface uses the actual build and launcher with isolated synthetic browser fixtures", { timeout: 120000 }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "ecosym-frontend-"));
@@ -95,7 +106,11 @@ test("the production world surface uses the actual build and launcher with isola
   const bundle = await readFile(join(output, script), "utf8");
   assert.match(bundle, /\/api\/world-snapshot/u);
   assert.doesNotMatch(bundle, /node:sqlite|@vite\/client|react-refresh/u);
-  assert.ok((await readdir(join(output, "assets"))).every((file) => /\.(js|css)$/u.test(file)));
+  const assets = await readdir(join(output, "assets"));
+  assert.ok(assets.every((file) => /\.(js|css|woff2)$/u.test(file)), "the field ships no raster: every light is drawn from data");
+  const fonts = assets.filter((file) => file.endsWith(".woff2"));
+  assert.deepEqual(fonts.map((file) => file.match(/^(plex-(?:sans|mono)-(?:ext-)?\d{3})-[\w-]+\.woff2$/u)?.[1] ?? file).sort(),
+    ["plex-mono-400", "plex-mono-500", "plex-mono-ext-400", "plex-mono-ext-500", "plex-sans-300", "plex-sans-400", "plex-sans-500", "plex-sans-ext-300", "plex-sans-ext-400", "plex-sans-ext-500"]);
   const styles = [...html.matchAll(/<link[^>]+href="([^"]+\.css)"/gu)].map((match) => match[1]!);
   assert.ok(styles.length > 0);
   for (const style of styles) {
@@ -104,7 +119,18 @@ test("the production world surface uses the actual build and launcher with isola
     assert.equal(css.status, 200);
     assert.equal(css.headers.get("content-type"), "text/css; charset=utf-8");
     assert.equal(css.headers.get("x-content-type-options"), "nosniff");
-    assert.equal(await css.text(), await readFile(join(output, style), "utf8"));
+    const text = await css.text();
+    assert.equal(text, await readFile(join(output, style), "utf8"));
+    // CSP allows only same-origin fonts: every face is a hashed self-hosted file, never inlined or fetched from a CDN.
+    assert.doesNotMatch(text, /url\(["']?(?:data:|https?:|\/\/)/u);
+    for (const font of fonts) assert.ok(text.includes(`/assets/${font}`), `${font} must be referenced by the built stylesheet`);
+  }
+  for (const font of fonts) {
+    const served = await fetch(`${url}/assets/${font}`);
+    assert.equal(served.status, 200);
+    assert.equal(served.headers.get("content-type"), "font/woff2");
+    assert.equal(served.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(Buffer.compare(Buffer.from(await served.arrayBuffer()), await readFile(join(output, "assets", font))), 0);
   }
   const asset = await fetch(`${url}${script}`);
   assert.equal(asset.status, 200);
@@ -113,7 +139,7 @@ test("the production world surface uses the actual build and launcher with isola
   assert.equal(await asset.text(), bundle);
   const browser = await chromium.launch();
   t.after(() => browser.close());
-  for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
     const page = await browser.newPage({ viewport });
     const errors: string[] = [];
     const requests: { url: string; method: string; type: string }[] = [];
@@ -124,14 +150,24 @@ test("the production world surface uses the actual build and launcher with isola
     await page.goto(url);
     await page.locator('#root > main[aria-label="EcoSym"]').waitFor({ state: "attached" });
     assert.equal(await page.title(), "EcoSym");
+    assert.equal(await page.locator("html").getAttribute("lang"), "nb");
     const loaded = await snapshotResponse;
     assert.equal(loaded.status(), 200);
     assert.deepEqual(validateWorldSnapshot(await loaded.json()), { ...empty, schemaVersion: 3 });
-    await page.getByRole("heading", { name: "No civilizations founded" }).waitFor();
-    assert.equal(await page.locator(".place, .inspection").count(), 0);
-    assert.match(await page.locator('.world-message[role="status"]').innerText(), /Nothing has been placed here/u);
+    await page.getByRole("heading", { name: "Ingen sivilisasjoner grunnlagt", exact: true }).waitFor();
+    assert.equal(await page.locator(".body, .plate").count(), 0);
+    assert.match(await page.locator('.notice[role="status"]').innerText(), /Ingenting er grunnlagt ennå/u);
+    assert.equal(await page.locator(".foot .gap").textContent(), "Ingen erklærte kilder", "a world with no declared sources makes no claim about reading");
+    // Creating a project registers it in Hermes: the surface never claims that nothing leaves it.
+    assert.doesNotMatch(await page.locator(".foot").innerText(), /sendes/u);
     await page.waitForLoadState("networkidle");
-    assert.deepEqual(requests.sort((a, b) => a.url.localeCompare(b.url)), [
+    const fontRequests = requests.filter((request) => request.type === "font");
+    assert.ok(fontRequests.length >= 1, "the self-hosted face must actually be fetched");
+    for (const request of fontRequests) {
+      assert.equal(request.method, "GET");
+      assert.ok(request.url.startsWith(`${url}/assets/plex-`) && request.url.endsWith(".woff2"), `unexpected font request ${request.url}`);
+    }
+    assert.deepEqual(requests.filter((request) => request.type !== "font").sort((a, b) => a.url.localeCompare(b.url)), [
       { url: `${url}/`, method: "GET", type: "document" },
       { url: `${url}${script}`, method: "GET", type: "script" },
       ...styles.map((style) => ({ url: `${url}${style}`, method: "GET", type: "stylesheet" })),
@@ -165,18 +201,25 @@ test("the production world surface uses the actual build and launcher with isola
         else await route.fulfill({ json: { ...empty, extra: "invalid contract" } });
       });
       await page.goto(url);
-      await page.getByRole("heading", { name: "Reading the world", exact: true }).waitFor();
-      assert.equal(await page.getByRole("button", { name: "Read again" }).isDisabled(), true);
-      assert.equal(await page.locator(".place, .inspection").count(), 0);
+      await page.getByRole("heading", { name: "Leser verden", exact: true }).waitFor();
+      assert.equal(await page.getByRole("button", { name: "Les på nytt", exact: true }).isDisabled(), true);
+      assert.equal(await page.locator(".body, .plate").count(), 0);
+      assert.equal(await page.locator('.notice[role="status"]').getAttribute("data-kind"), "loading");
+      assert.equal(await page.locator(".notice-ring").evaluate((node) => getComputedStyle(node).animationName), "none", "loading is a static hairline ring");
       release();
-      await page.getByRole("heading", { name: "No civilizations founded" }).waitFor();
-      for (const [kind, heading] of [["http", "World unavailable / HTTP 503"], ["request", "World connection failed"], ["invalid", "Unrecognized world picture"]] as const) {
+      await page.getByRole("heading", { name: "Ingen sivilisasjoner grunnlagt", exact: true }).waitFor();
+      assert.equal(await page.getByRole("button", { name: "Les på nytt", exact: true }).isDisabled(), false);
+      for (const [kind, heading] of [["http", "Verden utilgjengelig / HTTP 503"], ["request", "Ingen forbindelse til verden"], ["invalid", "Ukjent verdensbilde"]] as const) {
         mode = kind;
-        await page.getByRole("button", { name: "Read again" }).click();
+        await page.getByRole("button", { name: "Les på nytt", exact: true }).click();
         await page.getByRole("heading", { name: heading, exact: true }).waitFor();
-        assert.match(await page.locator('.world-message[role="status"]').innerText(), /This is not an empty or quiet world/u);
-        assert.equal(await page.locator(".place, .inspection").count(), 0);
-        assert.equal(await page.getByRole("heading", { name: "No civilizations founded" }).count(), 0);
+        const notice = page.locator('.notice[role="status"]');
+        assert.match(await notice.innerText(), /ikke en tom eller stille verden/u);
+        assert.equal(await notice.getAttribute("data-kind"), "failure");
+        assert.equal(await notice.locator(".notice-ring").evaluate((node) => getComputedStyle(node).borderTopColor), red, "failure is the ring in red rim, nothing else is red");
+        assert.equal(await notice.locator(".notice-ring").evaluate((node) => getComputedStyle(node).animationName), "none", "nothing spins: a ring, not a spinner");
+        assert.equal(await page.locator(".body, .plate").count(), 0);
+        assert.equal(await page.getByRole("heading", { name: "Ingen sivilisasjoner grunnlagt" }).count(), 0);
         await page.waitForLoadState("networkidle");
         assert.deepEqual(errors, []);
       }
@@ -184,8 +227,8 @@ test("the production world surface uses the actual build and launcher with isola
   });
   const snapshot = foundedSnapshot();
   const form = worldForm(snapshot);
-  for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
-    await t.test(`${viewport.width}px legacy schema 1 snapshots without projects remain inspectable`, async () => {
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    await t.test(`${viewport.width}px legacy schema 1 snapshots without projects remain readable`, async () => {
       const page = await browser.newPage({ viewport });
       const { projects: _, ...fields } = foundedSnapshot();
       const legacy: WorldSnapshot = { ...fields, schemaVersion: 1 };
@@ -194,9 +237,9 @@ test("the production world surface uses the actual build and launcher with isola
       try {
         await page.route("**/api/world-snapshot", (route) => route.fulfill({ json: legacy }));
         await page.goto(url);
-        await page.getByRole("button", { name: `Inspect ${legacy.civilizations[0]!.name}`, exact: true }).click();
+        await body(page, legacy.civilizations[0]!.name).click();
         await page.getByRole("region", { name: "Prosjekter", exact: true }).getByText("Ingen prosjekter", { exact: true }).waitFor();
-        assert.equal(await page.locator(".place").count(), legacy.civilizations.length);
+        assert.equal(await page.locator(".body").count(), legacy.civilizations.length);
         assert.deepEqual(errors, []);
       } finally { await page.close(); }
     });
@@ -240,31 +283,31 @@ test("the production world surface uses the actual build and launcher with isola
           await route.fulfill({ status: 201, json: project });
         });
         await page.goto(url);
-        const place = page.getByRole("button", { name: `Inspect ${civilization.name}`, exact: true });
-        await place.focus();
+        const star = body(page, civilization.name);
+        await star.focus();
         await page.keyboard.press("Enter");
         const projects = page.getByRole("region", { name: "Prosjekter", exact: true });
         await projects.getByText("Ingen prosjekter", { exact: true }).waitFor();
-        const close = page.getByRole("button", { name: "Close inspection" });
+        const close = page.getByRole("button", { name: "Lukk", exact: true });
         const create = projects.getByRole("button", { name: "Opprett", exact: true });
-        await close.focus();
+        assert.equal(await close.evaluate(isActive), true, "approaching a body moves focus to the plate's close control");
         await page.keyboard.press("Shift+Tab");
-        assert.equal(await page.getByRole("button", { name: "Home", exact: true }).evaluate((node) => node === document.activeElement), true);
+        assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("body")), true, "the field sits before the plate in reading order");
         await close.focus();
         await page.keyboard.press("Tab");
-        assert.equal(await projects.getByLabel("Prosjektnavn", { exact: true }).evaluate((node) => node === document.activeElement), true);
+        assert.equal(await projects.getByLabel("Prosjektnavn", { exact: true }).evaluate(isActive), true);
         await projects.getByLabel("Prosjektnavn", { exact: true }).fill("Fjordkart");
         await create.click();
         await arrived;
         assert.equal(await create.isDisabled(), true);
         assert.equal(await projects.getByLabel("Prosjektnavn", { exact: true }).isDisabled(), true);
         assert.equal(await projects.getByLabel("Harness", { exact: true }).isDisabled(), true);
-        assert.equal(await close.evaluate((node) => node === document.activeElement), true, "sending must retain inspector keyboard access");
+        assert.equal(await close.evaluate(isActive), true, "sending must retain plate keyboard access");
         assert.equal(await projects.locator("li").count(), 0);
         assert.equal(reads, 1);
         release();
         await projects.getByRole("alert").waitFor();
-        assert.equal(await projects.getByRole("alert").innerText(), "Prosjektet kunne ikke behandles. Pr\u00f8v igjen.");
+        assert.equal(await projects.getByRole("alert").innerText(), "Prosjektet kunne ikke behandles. Prøv igjen.");
         assert.doesNotMatch(await projects.innerText(), /PRIVATE|\/private/);
         assert.equal(await projects.getByLabel("Prosjektnavn", { exact: true }).inputValue(), "Fjordkart");
         await create.click();
@@ -274,19 +317,20 @@ test("the production world surface uses the actual build and launcher with isola
         assert.equal(await projects.getByLabel("Prosjektnavn", { exact: true }).inputValue(), "");
         assert.match(await projects.innerText(), /Observert registrert i hermes \(fjordkart-2, p_ab12cd34\) 2026-01-01T00:00:00.000Z/);
         assert.match(await projects.innerText(), /Registreringen var arkivert i hermes ved siste observasjon/);
-        assert.equal(await projects.getByRole("button", { name: "Pr\u00f8v igjen" }).count(), 0);
-        assert.equal(await projects.locator(".mark, [data-axis], [role=progressbar]").count(), 0);
+        assert.equal(await projects.getByRole("button", { name: "Prøv igjen" }).count(), 0);
+        assert.equal(await projects.locator(".tick, .bloom, [data-brightness], [role=progressbar]").count(), 0, "a registered project is a declared place, never a light");
+        assert.equal(await page.locator(".bloom").count(), 0, "an established project earns no bloom");
         await projects.getByLabel("Prosjektnavn", { exact: true }).fill("Another place");
         await create.click();
         await projects.getByRole("heading", { name: "Another place", exact: true }).waitFor();
         assert.notEqual(submissions[2]!.requestKey, submissions[1]!.requestKey);
         assert.equal(reads, 3);
-        assert.equal(await page.getByRole("complementary").evaluate((node) => node.scrollWidth <= node.clientWidth), true);
+        assert.equal(await plate(page, civilization.name).evaluate((node) => node.scrollWidth <= node.clientWidth), true);
         await page.keyboard.press("Escape");
-        await page.getByRole("complementary").waitFor({ state: "detached" });
-        assert.equal(await place.evaluate((node) => node === document.activeElement), true);
+        await plate(page, civilization.name).waitFor({ state: "detached" });
+        assert.equal(await star.evaluate(isActive), true);
         await page.reload();
-        await place.focus();
+        await star.focus();
         await page.keyboard.press("Enter");
         await projects.getByRole("heading", { name: "Fjordkart", exact: true }).waitFor();
         assert.equal(await projects.locator("li").count(), 2);
@@ -295,9 +339,10 @@ test("the production world surface uses the actual build and launcher with isola
     });
   }
   await t.test("every non-established state can retry; unknown stays distinct and other civilizations do not inherit projects", async () => {
-    const page = await browser.newPage();
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     const picture = foundedSnapshot();
-    const civilizationId = picture.civilizations[0]!.civilizationId;
+    // A quiet civilization: loss outranks waiting on the signal line, so the bloom needs a body that can see.
+    const civilizationId = picture.civilizations[2]!.civilizationId;
     const states = ["requested", "directory-created", "external-unknown", "failed"] as const;
     picture.projects = states.map((state) => ({ projectId: `project:${state}`, civilizationId, name: state,
       slug: state, workspacePath: `/synthetic/${state}`, state, attempt: state === "requested" ? 0 : 1,
@@ -321,21 +366,31 @@ test("the production world surface uses the actual build and launcher with isola
         await route.fulfill({ json: project });
       });
       await page.goto(url);
-      await page.getByRole("button", { name: "Inspect Synthetic 0", exact: true }).focus();
-      await page.keyboard.press("Enter");
+      // Waiting on you is the single pure-white bloom in the field, with a blue label, before anything is opened.
+      const star = body(page, "Synthetic 2");
+      await star.waitFor();
+      assert.equal(await star.getAttribute("data-waiting"), "4");
+      assert.equal(await page.locator(".bloom").count(), 1, "one bloom per civilization, whatever waits there");
+      assert.equal(await star.locator(".bloom").evaluate((node) => getComputedStyle(node).fill), "rgb(255, 255, 255)", "pure white is reserved for what waits on you");
+      assert.equal(await star.locator(".wait").textContent(), "4 prosjekter venter på deg");
+      assert.equal(await star.locator(".wait").evaluate((node) => getComputedStyle(node).fill), blue);
+      assert.equal(await star.locator(".line").getAttribute("data-tone"), "waiting");
+      assert.equal(await star.locator(".line").textContent(), `lest for ${gap("2026-01-01T00:00:00.000Z", Date.now())} siden`, "waiting colours the bloom label, never the gap line");
+      await star.click();
       const projects = page.getByRole("region", { name: "Prosjekter", exact: true });
       await projects.waitFor();
-      assert.equal(await projects.getByRole("button", { name: "Pr\u00f8v igjen", exact: true }).count(), 4);
-      assert.match(await projects.innerText(), /Harness-registrering ukjent; ikke bevis p\u00e5 at den mislyktes. Mappa fantes ved fors\u00f8ket./);
+      await plate(page, "Synthetic 2").waitFor();
+      assert.equal(await projects.getByRole("button", { name: "Prøv igjen", exact: true }).count(), 4);
+      assert.match(await projects.innerText(), /Harness-registrering ukjent; ikke bevis på at den mislyktes. Mappa fantes ved forsøket./);
       assert.match(await projects.innerText(), /Opprettelse mislyktes. Prosjektmappa kunne ikke opprettes./);
       assert.doesNotMatch(await projects.innerText(), /filesystem_denied/);
-      assert.equal(await projects.getByText("Opprettelse p\u00e5begynt.", { exact: true }).count(), 2);
+      assert.equal(await projects.getByText("Opprettelse påbegynt.", { exact: true }).count(), 2);
       for (const state of states) {
         const row = projects.locator("li").filter({ has: page.getByRole("heading", { name: state, exact: true }) });
-        const retry = row.getByRole("button", { name: "Pr\u00f8v igjen", exact: true });
+        const retry = row.getByRole("button", { name: "Prøv igjen", exact: true });
         await retry.click();
         if (state === "requested") {
-          await projects.getByText("Et nytt fors\u00f8k p\u00e5g\u00e5r allerede.", { exact: true }).waitFor();
+          await projects.getByText("Et nytt forsøk pågår allerede.", { exact: true }).waitFor();
           await retry.click();
         }
         await retry.waitFor({ state: "detached" });
@@ -344,266 +399,211 @@ test("the production world surface uses the actual build and launcher with isola
       assert.equal(retries.length, 5);
       assert.deepEqual(retries[0], retries[1]);
       assert.equal(new Set(retries.slice(1).map((body) => body.requestKey)).size, 4);
+      await page.locator(".bloom").waitFor({ state: "detached" });
+      assert.equal(await star.getAttribute("data-waiting"), null, "nothing waits once every project is established");
       await page.keyboard.press("Escape");
-      await page.getByRole("button", { name: "Inspect Synthetic 1", exact: true }).focus();
+      await plate(page, "Synthetic 2").waitFor({ state: "detached" });
+      await body(page, "Synthetic 1").focus();
       await page.keyboard.press("Enter");
       await projects.getByText("Ingen prosjekter", { exact: true }).waitFor();
       await page.keyboard.press("Escape");
-      await page.getByRole("button", { name: "Inspect Synthetic 3", exact: true }).focus();
+      await body(page, "Synthetic 3").focus();
       await page.keyboard.press("Enter");
       await projects.waitFor();
       assert.equal(await projects.locator("form").count(), 0, "dissolved civilizations cannot create projects");
+      assert.match(await projects.innerText(), /Oppløste sivilisasjoner kan ikke opprette prosjekter/);
     } finally { await page.close(); }
   });
-  await t.test("visible axis and kind marks retain distinct computed visual grammar", async () => {
-    const page = await browser.newPage();
+  await t.test("every light and line form in the field is derived: brightness steps, tick forms, occlusion, one colour per meaning", async () => {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     try {
       await page.route("**/api/world-snapshot", (route) => route.fulfill({ json: snapshot }));
       await page.goto(url);
-      await page.locator(".place").first().waitFor();
-      const treatments = new Map<string, string[]>();
-      for (const [axis, kind, border, color, background] of [
-        ["institution", "active", "solid", "rgb(124, 103, 76)", "rgb(220, 202, 158)"],
-        ["institution", "dissolved", "double", "rgb(124, 103, 76)", "rgb(220, 202, 158)"],
-        ["institution", "unreadable", "dashed", "rgb(124, 103, 76)", "rgb(181, 175, 149)"],
-        ["collection", "unknown", "dotted", "rgb(79, 100, 91)", "rgb(200, 195, 174)"],
-        ["collection", "unread", "dashed", "rgb(79, 100, 91)", "rgb(200, 195, 174)"],
-        ["collection", "missing", "double", "rgb(119, 92, 71)", "rgb(200, 195, 174)"],
-        ["collection", "quiet", "double", "rgb(79, 100, 91)", "rgb(200, 195, 174)"],
-        ["collection", "changed", "solid", "rgb(79, 100, 91)", "rgb(200, 195, 174)"],
-        ["temporal", "unknown", "dotted", "rgb(57, 94, 96)", "rgb(213, 220, 226)"],
-        ["temporal", "current", "solid", "rgb(57, 94, 96)", "rgb(208, 222, 208)"],
-        ["temporal", "historical", "double", "rgb(134, 99, 63)", "rgb(222, 208, 171)"],
-        ["epistemic", "observation", "solid", "rgb(121, 97, 129)", "rgb(227, 215, 229)"],
-        ["epistemic", "claim", "dashed", "rgb(121, 97, 129)", "rgb(227, 215, 229)"],
-        ["attempt", "in-progress", "solid", "rgb(166, 83, 45)", "rgb(228, 216, 183)"],
-        ["limits", "observations-truncated", "solid", "rgb(166, 83, 45)", "rgb(228, 216, 183)"],
-        ["limits", "claims-truncated", "solid", "rgb(166, 83, 45)", "rgb(228, 216, 183)"],
-      ] as const) {
-        const mark = page.locator(`.mark[data-axis="${axis}"][data-kind="${kind}"]`).first();
-        await mark.scrollIntoViewIfNeeded();
-        assert.equal(await mark.isVisible(), true);
-        assert.equal(await mark.innerText(), `${axis}: ${kind}`);
-        const treatment = await mark.evaluate((node) => {
-          const style = getComputedStyle(node);
-          return [style.borderLeftStyle, style.borderLeftColor, style.backgroundColor, style.borderTopStyle];
-        });
-        assert.deepEqual(treatment, [border, color, background, axis === "collection" ? border : axis === "limits" ? "solid" : kind === "claim" ? "dashed" : "none"], `${axis}: ${kind}`);
-        treatments.set(`${axis}: ${kind}`, treatment);
+      await page.locator(".body").first().waitFor();
+      const now = Date.now();
+      for (const place of form.places) {
+        const star = body(page, place.name);
+        const expected = brightness(lastRead(place), now);
+        assert.equal(await star.getAttribute("data-brightness"), expected, `${place.name} brightness`);
+        assert.equal(await star.locator(".tick").count(), place.sourcePicture.sources.length, `${place.name} carries one tick per declared source`);
+        const state = signal(place, []);
+        assert.equal(await star.getAttribute("data-occluded"), state.tone === "loss" ? "true" : null, `${place.name} occlusion follows lost sight only`);
+        assert.equal(await star.locator(".occluder").count(), state.tone === "loss" ? 1 : 0);
+        const expectedLine = state.tone === "loss" ? state.line : place.institution === "dissolved" ? "oppløst" : readLine(place.sourcePicture.sources, now);
+        assert.equal(await star.locator(".line").textContent(), expectedLine, `${place.name} carries its gap time, or its loss in words`);
+        if (place.institution === "dissolved") {
+          assert.equal(await star.getAttribute("data-dissolved"), "true");
+          assert.equal(await star.locator(".core, .glow").count(), 0, "a dissolved civilization is an empty ring");
+        }
+        if (place.institution === "dissolved") continue;
+        if (expected === "never") assert.equal(await star.locator(".core-outline").count(), 1, "never read is an outline, not a dim core");
+        else assert.equal(await star.locator(".core").evaluate((node) => Number(getComputedStyle(node).opacity) > 0), true);
       }
-      for (const other of ["collection: unknown", "collection: unread", "collection: missing", "institution: unreadable", "temporal: current", "temporal: historical"]) {
-        assert.notDeepEqual(treatments.get("temporal: unknown"), treatments.get(other), `temporal uncertainty must differ from ${other}`);
+      // Stated outright rather than re-derived: an attempt that read nothing is never shown as a read, nor lights a body.
+      for (const name of ["Synthetic 4", "Synthetic 5", "Synthetic 6"]) {
+        assert.equal(await body(page, name).locator(".line").textContent(), "ulest etter siste forsøk", `${name}: an incomplete, retired or skipped attempt is not a read`);
+        assert.equal(await body(page, name).getAttribute("data-brightness"), "never", `${name}: an attempt that read nothing lights nothing`);
+        assert.match(await body(page, name).getAttribute("aria-description") ?? "", /\. Ulest etter siste forsøk\.$/u);
       }
-      assert.notDeepEqual(treatments.get("epistemic: observation"), treatments.get("epistemic: claim"));
-      assert.notDeepEqual(treatments.get("attempt: in-progress"), treatments.get("limits: observations-truncated"));
+      for (const name of ["Synthetic 3", "Synthetic 7"]) assert.equal(await body(page, name).getAttribute("data-brightness"), "never", `${name}: lost sight lights nothing`);
+      for (const name of ["Synthetic 2", "Synthetic 8"]) assert.notEqual(await body(page, name).getAttribute("data-brightness"), "never", `${name}: a successful read lights the body`);
+      assert.equal(await page.locator(".foot .gap").textContent(), `Sist lest for ${gap("2026-01-01T00:00:00.000Z", now)} siden`, "no unsuccessful attempt here is later than the reads");
+      const stroke = (selector: string) => page.locator(selector).first().evaluate((node) => { const style = getComputedStyle(node); return [style.stroke, style.strokeWidth, style.strokeDasharray]; });
+      assert.deepEqual(await stroke('.tick[data-kind="changed"]'), [amber, "3.5px", "none"]);
+      assert.deepEqual(await stroke('.tick[data-kind="quiet"]'), [ink, "2.5px", "none"]);
+      assert.deepEqual(await stroke('.tick[data-kind="unread"]'), [ink, "2.5px", "4px, 5px"]);
+      assert.deepEqual(await stroke('.tick[data-kind="missing"] .gap-rim'), [red, "1px", "none"]);
+      assert.deepEqual((await stroke('.tick[data-attempt="true"]')).slice(1, 2), ["1px"], "a recorded attempt is a hollow tick, never a filled one");
+      assert.equal(await page.locator(".occluder").first().evaluate((node) => getComputedStyle(node).stroke), red);
+      assert.equal(await page.locator('.tick:not([data-kind="changed"])').evaluateAll((nodes) => nodes.every((node) => getComputedStyle(node).stroke !== "rgb(242, 181, 68)")), true, "amber belongs to observed change only");
+      const fill = (selector: string) => page.locator(selector).first().evaluate((node) => getComputedStyle(node).fill);
+      assert.equal(await fill('.line[data-tone="loss"]'), ink, "words carry the loss; the rim carries the colour");
+      assert.equal(await fill('.line[data-tone="velocity"]'), ink3, "amber's only carrier in the field is the solid tick");
+      assert.equal(await fill('.line[data-tone="neutral"]'), ink3);
+      assert.equal(await page.locator('.line[data-tone="velocity"]').first().textContent(), `lest for ${gap("2026-01-01T00:00:00.000Z", now)} siden`);
+      assert.equal(await page.locator(".bloom, .wait").count(), 0, "nothing waits on you in this picture");
+      assert.equal(await page.locator(".tick[data-kind=\"changed\"]").count(), 1);
+      await body(page, "Synthetic 0").click();
+      const opened = plate(page, "Synthetic 0");
+      await opened.waitFor();
+      assert.equal(await opened.locator(".signal").evaluate((node) => getComputedStyle(node).color), ink, "the plate's loss line stays words, never red text");
+      assert.equal(await opened.locator('.status[data-kind="missing"]').evaluate((node) => getComputedStyle(node).color), red);
+      assert.equal(await body(page, "Synthetic 0").locator(".ring").evaluate((node) => getComputedStyle(node).strokeWidth), "1.5px", "the approached body's ring brightens; the body never moves");
     } finally { await page.close(); }
   });
-  await t.test("validated founding, every core mark and every inspection value reach React one-for-one", async () => {
-    const page = await browser.newPage();
+  await t.test("validated founding, every body and every stored field reach React one-for-one", async () => {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
     try {
       await page.route("**/api/world-snapshot", (route) => route.fulfill({ json: snapshot }));
       await page.goto(url);
-      await page.locator(".place").first().waitFor();
-      assert.equal(await page.locator(".place").count(), form.places.length);
-      assert.equal(await page.locator('.world-message[role="status"]').count(), 0);
-      await page.getByRole("button", { name: "Read again" }).focus();
-      await page.keyboard.press("Tab");
-      for (const [index, place] of form.places.entries()) {
-        const button = page.getByRole("button", { name: `Inspect ${place.name}`, exact: true });
-        assert.equal(await button.getAttribute("data-institution"), place.institution);
-        assert.equal(await button.locator(".place-name").textContent(), place.name);
-        assert.equal(await button.locator(".place-domain").textContent(), place.domain);
-        assert.deepEqual(await button.locator(".mark").evaluateAll((marks) => marks.map((mark) => ({
-          axis: mark.getAttribute("data-axis"), kind: mark.getAttribute("data-kind"), label: mark.getAttribute("aria-label"),
-        }))), place.marks);
-        assert.equal(await page.locator(".place").nth(index).getAttribute("aria-label"), `Inspect ${place.name}`);
-        // Keyboard activation also works for evidence-rich places taller than the viewport.
-        await page.keyboard.press("Tab");
-        assert.equal(await button.evaluate((node) => node === document.activeElement), true);
+      await page.locator(".body").first().waitFor();
+      assert.equal(await page.locator(".body").count(), form.places.length);
+      assert.equal(await page.locator('.notice[role="status"], .plate').count(), 0, "no panel exists before approach");
+      const positions = await page.locator(".body .hit").evaluateAll((nodes) => nodes.map((node) => [node.getAttribute("cx"), node.getAttribute("cy")]));
+      await page.reload();
+      await page.locator(".body").first().waitFor();
+      assert.deepEqual(await page.locator(".body .hit").evaluateAll((nodes) => nodes.map((node) => [node.getAttribute("cx"), node.getAttribute("cy")])), positions, "the same snapshot always yields the same sky");
+      for (const place of form.places) {
+        const star = body(page, place.name);
+        assert.equal(await star.locator(".name").textContent(), place.name);
+        const reading = readLine(place.sourcePicture.sources, Date.now());
+        const description = await star.getAttribute("aria-description") ?? "";
+        assert.equal(description, `${signal(place, []).line}. ${reading.charAt(0).toUpperCase()}${reading.slice(1)}.`);
+        assert.doesNotMatch(description, /for aldri siden/u, "a body never read is not described as read 'never ago'");
+        await star.focus();
         await page.keyboard.press("Enter");
-        const inspector = page.getByRole("complementary", { name: `Inspection: ${place.name}`, exact: true });
-        await inspector.waitFor();
-        assert.deepEqual(await inspector.locator(".inspection-field").evaluateAll((fields) => fields.map((field) => ({
+        const opened = plate(page, place.name);
+        await opened.waitFor();
+        assert.equal(await star.getAttribute("aria-current"), "page");
+        assert.equal(await opened.locator("h1").first().textContent(), place.name);
+        assert.equal(await opened.locator(".domain").textContent(), place.domain);
+        assert.equal(await opened.locator(".source-list li").count(), place.institution === "unreadable" ? 0 : place.sourcePicture.sources.length);
+        assert.deepEqual(await opened.locator(".record-field").evaluateAll((fields) => fields.map((field) => ({
           label: field.querySelector("h3")!.textContent, values: [...field.querySelectorAll("p")].map((p) => p.textContent),
         }))), place.inspection);
-        assert.equal(await inspector.locator("b, script").count(), 0);
-        assert.equal(await page.getByRole("button", { name: "Close inspection" }).evaluate((node) => node === document.activeElement), true);
+        assert.equal(await opened.locator("b, script").count(), 0);
+        assert.equal(await page.getByRole("button", { name: "Lukk", exact: true }).evaluate(isActive), true);
         await page.keyboard.press("Escape");
-        await inspector.waitFor({ state: "detached" });
-        assert.equal(await button.evaluate((node) => node === document.activeElement), true);
-        assert.equal(await button.getAttribute("aria-expanded"), "false");
+        await opened.waitFor({ state: "detached" });
+        assert.equal(await star.evaluate(isActive), true);
+        assert.equal(await star.getAttribute("aria-current"), null);
       }
       assert.doesNotMatch(await page.locator("body").innerText(), /\b(council|petition|decision|chat|persona)\b/iu);
       assert.equal(await page.locator("input, textarea, [contenteditable=true], [role=dialog], [role=log]").count(), 0);
       assert.deepEqual(errors, []);
     } finally { await page.close(); }
   });
-  await t.test("native placement, keyboard navigation, mouse selection and drag, zoom and reload", async () => {
+  await t.test("arrow keys travel the field, Enter approaches, Escape returns, and reload closes the plate", async () => {
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     try {
-      const small = { ...empty, civilizations: snapshot.civilizations.slice(-2, -1), sourcePictures: snapshot.sourcePictures.filter((picture) => picture.civilizationId === snapshot.civilizations.at(-2)!.civilizationId) };
+      const three = snapshot.civilizations.slice(0, 3);
+      const small = { ...empty, civilizations: three, sourcePictures: snapshot.sourcePictures.filter((picture) => three.some((civilization) => civilization.civilizationId === picture.civilizationId)) };
       let reads = 0;
       await page.route("**/api/world-snapshot", (route) => { reads++; return route.fulfill({ json: small }); });
       await page.goto(url);
-      const button = page.getByRole("button", { name: `Inspect ${small.civilizations[0]!.name}`, exact: true });
-      await button.waitFor();
-      const scene = page.getByLabel("Explore world", { exact: true });
-      await page.getByRole("button", { name: "Read again" }).focus();
-      await page.keyboard.press("Tab");
-      assert.equal(await scene.evaluate((node) => node === document.activeElement), true);
-      await page.keyboard.press("ArrowRight");
+      const first = body(page, three[0]!.name);
+      await first.waitFor();
+      await first.focus();
+      const visited = new Set<string>();
+      for (let step = 0; step < 3; step++) {
+        visited.add((await page.evaluate(() => document.activeElement?.getAttribute("aria-label"))) ?? "");
+        await page.keyboard.press("ArrowRight");
+      }
+      assert.equal(visited.size, 3, "ArrowRight visits every body around the field");
+      assert.equal(await first.evaluate(isActive), true, "and wraps back to where it started");
       await page.keyboard.press("ArrowDown");
-      assert.deepEqual(await scene.evaluate((node) => [node.scrollLeft, node.scrollTop]), [100, 100]);
-      await page.keyboard.press("+");
-      assert.equal(await page.getByLabel("Zoom level").textContent(), "110%");
-      await page.keyboard.press("-");
-      assert.equal(await page.getByLabel("Zoom level").textContent(), "100%");
-      await page.keyboard.press("+");
-      assert.equal(await page.getByLabel("Zoom level").textContent(), "110%");
-      assert.equal(await scene.evaluate((node) => node.scrollLeft > 0 && node.scrollTop > 0), true);
-      await page.keyboard.press("Home");
-      assert.equal(await page.getByLabel("Zoom level").textContent(), "100%");
-      assert.equal(await page.locator(".painted-world").evaluate((node) => getComputedStyle(node).transform), "matrix(1, 0, 0, 1, 0, 0)");
-      assert.deepEqual(await scene.evaluate((node) => [node.scrollLeft, node.scrollTop]), [0, 0]);
-      await page.keyboard.press("Tab");
-      assert.equal(await button.evaluate((node) => node === document.activeElement), true);
-      assert.equal(await button.evaluate((node) => node.tagName), "BUTTON");
-      assert.notEqual(await button.evaluate((node) => getComputedStyle(node).outlineStyle), "none");
-      assert.equal(await button.locator(".place-ground").evaluate((node) => {
+      assert.equal(await body(page, three[1]!.name).evaluate(isActive), true, "ArrowDown walks founding order");
+      await page.keyboard.press("ArrowUp");
+      assert.equal(await first.evaluate(isActive), true);
+      assert.equal(await first.evaluate((node) => node.tagName.toLowerCase()), "g");
+      assert.equal(await first.locator(".hit").evaluate((node) => {
         const rect = node.getBoundingClientRect();
-        return document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)?.closest("button") === node.closest("button");
-      }), true, "the visible location is the native button hit target, not a second coordinate overlay");
+        return document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)?.closest(".body") === node.closest(".body");
+      }), true, "the body itself is the native hit target");
       await page.keyboard.press("Enter");
-      await page.getByRole("complementary").waitFor();
-      assert.equal(await button.getAttribute("aria-expanded"), "true");
+      const opened = plate(page, three[0]!.name);
+      await opened.waitFor();
+      assert.equal(await first.getAttribute("aria-current"), "page");
       await page.keyboard.press("Escape");
-      assert.equal(await button.evaluate((node) => node === document.activeElement), true);
-      await button.locator(".place-ground").click();
-      await page.getByRole("complementary").waitFor();
-      await page.getByRole("button", { name: "Close inspection" }).click();
-      assert.equal(await button.evaluate((node) => node === document.activeElement), true);
-      const bounds = (await scene.boundingBox())!;
-      await page.mouse.move(bounds.x + bounds.width - 100, bounds.y + 100);
-      await page.mouse.down();
-      await page.mouse.move(bounds.x + bounds.width - 200, bounds.y + 50, { steps: 5 });
-      await page.mouse.up();
-      assert.deepEqual(await scene.evaluate((node) => [node.scrollLeft, node.scrollTop]), [100, 50]);
-      assert.equal(await page.getByRole("complementary").count(), 0);
-      await page.getByRole("button", { name: "Zoom in", exact: true }).click();
-      assert.equal(await page.getByLabel("Zoom level").textContent(), "110%");
-      assert.equal(await page.locator(".painted-world").evaluate((node) => getComputedStyle(node).transform), "matrix(1.1, 0, 0, 1.1, 0, 0)");
-      await page.getByRole("button", { name: "Zoom out", exact: true }).click();
-      await page.getByRole("button", { name: "Home", exact: true }).click();
-      assert.deepEqual(await scene.evaluate((node) => [node.scrollLeft, node.scrollTop]), [0, 0]);
-      await button.locator(".place-ground").click();
-      await page.getByRole("complementary").waitFor();
-      await page.getByRole("button", { name: "Read again" }).click();
-      await button.waitFor();
+      await opened.waitFor({ state: "detached" });
+      assert.equal(await first.evaluate(isActive), true);
+      await first.click();
+      await opened.waitFor();
+      await page.getByRole("button", { name: "Lukk", exact: true }).click();
+      await opened.waitFor({ state: "detached" });
+      assert.equal(await first.evaluate(isActive), true);
+      await first.click();
+      await opened.waitFor();
+      await page.getByRole("button", { name: "Les på nytt", exact: true }).click();
+      await first.waitFor();
       assert.equal(reads, 2);
-      assert.equal(await page.getByRole("complementary").count(), 0);
-      assert.equal(await button.getAttribute("aria-expanded"), "false");
+      assert.equal(await opened.count(), 0);
+      assert.equal(await first.getAttribute("aria-current"), null);
     } finally { await page.close(); }
   });
   for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
-    await t.test(`${viewport.width}px navigation never covers founded places or evidence`, async () => {
+    await t.test(`${viewport.width}px every body stays reachable, labels stay inside the field, and nothing overflows, with and without a plate open`, async () => {
       const page = await browser.newPage({ viewport });
       try {
         await page.route("**/api/world-snapshot", (route) => route.fulfill({ json: snapshot }));
         await page.goto(url);
-        await page.locator(".place").first().waitFor();
-        assert.equal(await page.locator(".place").count(), form.places.length);
-        assert.equal(await page.locator(".mark").count(), form.places.reduce((count, place) => count + place.marks.length, 0));
-        for (const inspecting of [false, true]) {
-          if (inspecting) {
-            await page.getByRole("button", { name: "Inspect Synthetic 8", exact: true }).focus();
-            await page.keyboard.press("Enter");
-            await page.getByRole("complementary").waitFor();
+        await page.locator(".body").first().waitFor();
+        assert.equal(await page.locator(".body").count(), form.places.length);
+        for (const opened of [false, true]) {
+          if (opened) {
+            await body(page, "Synthetic 8").click();
+            await plate(page, "Synthetic 8").waitFor();
           }
-          for (const zoom of ["100%", "60%", "160%"] as const) {
-            while (await page.getByLabel("Zoom level").textContent() !== zoom) {
-              await page.getByRole("button", { name: zoom === "60%" ? "Zoom out" : "Zoom in", exact: true }).click();
-            }
-            const scene = (await page.getByLabel("Explore world", { exact: true }).boundingBox())!;
-            const controls = (await page.getByRole("navigation", { name: "World navigation" }).boundingBox())!;
-            assert.ok(scene.y + scene.height <= controls.y, "navigation must be outside the entire scrollable scene at every scroll position");
-            for (const target of await page.locator(".place-ground, .place-name, .place-domain, .mark").all()) {
-              assert.equal(await target.evaluate((node) => {
-                node.scrollIntoView({ block: "center", inline: "center" });
-                const bounds = node.getBoundingClientRect();
-                const scene = node.closest(".scene")!.getBoundingClientRect();
-                const hit = document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
-                // Scrolling rounds to CSS pixels while zoomed bounds can be fractional.
-                return bounds.top >= scene.top - 1 && bounds.bottom <= scene.bottom + 1
-                  && bounds.left >= scene.left - 1 && bounds.right <= scene.right + 1
-                  && hit !== null && node.contains(hit);
-              }), true, `${await target.getAttribute("class")} must remain reachable and unobstructed at ${zoom}, inspection ${inspecting}`);
+          assert.deepEqual(await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]), [viewport.width, viewport.width], `no horizontal page overflow, plate open ${opened}`);
+          for (const star of await page.locator(".body").all()) {
+            await star.scrollIntoViewIfNeeded();
+            const field = (await page.locator(".field-wrap").boundingBox())!;
+            assert.equal(await star.locator(".hit").evaluate((node, field) => {
+              const bounds = node.getBoundingClientRect();
+              const hit = document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+              return bounds.left >= field.x - 1 && bounds.right <= field.x + field.width + 1 && hit !== null && (hit.closest(".body") === node.closest(".body"));
+            }, field), true, `${await star.getAttribute("aria-label")} must sit inside the field and be its own hit target, plate open ${opened}`);
+            for (const label of await star.locator("text").all()) {
+              const bounds = (await label.boundingBox())!;
+              assert.ok(bounds.x >= field.x - 1 && bounds.x + bounds.width <= field.x + field.width + 1, `${await label.textContent()} must stay inside the field width, plate open ${opened}`);
             }
           }
-          await page.getByRole("button", { name: "Home", exact: true }).click();
+          if (opened) {
+            const sheet = plate(page, "Synthetic 8");
+            assert.equal(await sheet.evaluate((node) => node.scrollWidth <= node.clientWidth), true, "the plate must wrap without horizontal overflow");
+            if (viewport.width >= 1144) {
+              const box = (await sheet.boundingBox())!;
+              const field = (await page.locator(".field-wrap").boundingBox())!;
+              assert.ok(box.x >= field.x + field.width - 1, "the plate never covers the field: approach costs no reflow");
+            }
+          }
         }
       } finally { await page.close(); }
     });
   }
-  await t.test("390px viewport retains at least 30% actual scene with inspection open and no page overflow", async (t) => {
-    const viewport = { width: 390, height: 844 };
-    const page = await browser.newPage({ viewport });
-    try {
-      await page.route("**/api/world-snapshot", (route) => route.fulfill({ json: snapshot }));
-      await page.goto(url);
-      const place = form.places.find((place) => place.name === "Synthetic 8")!;
-      const button = page.getByRole("button", { name: `Inspect ${place.name}`, exact: true });
-      await button.waitFor();
-      await button.focus();
-      await page.keyboard.press("Enter");
-      await page.getByRole("complementary").waitFor();
-      const scene = (await page.getByLabel("Explore world", { exact: true }).boundingBox())!;
-      const disclaimer = page.getByText("Neutral terrain / no inferred activity", { exact: true });
-      assert.equal(await disclaimer.isVisible(), true);
-      const disclaimerBounds = (await disclaimer.boundingBox())!;
-      assert.ok(disclaimerBounds.x >= 0 && disclaimerBounds.y >= 0
-        && disclaimerBounds.x + disclaimerBounds.width <= viewport.width
-        && disclaimerBounds.y + disclaimerBounds.height <= viewport.height, "neutral terrain disclaimer must stay inside the narrow viewport");
-      const inspector = (await page.getByRole("complementary").boundingBox())!;
-      t.diagnostic(`Actual scene: ${scene.width} x ${scene.height}px; viewport: ${viewport.width} x ${viewport.height}px`);
-      assert.ok(scene.height >= viewport.height * 0.3, `Actual scene height ${scene.height}px < ${viewport.height * 0.3}px`);
-      assert.ok(scene.y + scene.height <= inspector.y, "inspector must not cover the scene");
-      const controls = (await page.getByRole("navigation", { name: "World navigation" }).boundingBox())!;
-      assert.ok(scene.y + scene.height <= controls.y, "navigation must not cover the scrollable scene or its evidence marks");
-      assert.equal(await button.locator(".mark").count(), place.marks.length);
-      for (const mark of await button.locator(".mark").all()) {
-        const visible = await mark.evaluate((node) => {
-          node.scrollIntoView({ block: "nearest", inline: "nearest" });
-          const bounds = node.getBoundingClientRect();
-          const scene = node.closest(".scene")!.getBoundingClientRect();
-          return bounds.top >= scene.top && bounds.bottom <= scene.bottom
-            && bounds.left >= scene.left && bounds.right <= scene.right
-            && document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2) === node;
-        });
-        assert.ok(visible, `${await mark.getAttribute("aria-label")} must be reachable and unobstructed with inspection open`);
-      }
-      assert.equal(await page.getByRole("complementary").evaluate((node) => node.scrollWidth <= node.clientWidth), true, "inspection must wrap without horizontal overflow");
-      assert.deepEqual(await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.scrollHeight]), [viewport.width, viewport.height]);
-    } finally { await page.close(); }
-  });
-  await t.test("long evidence marks do not overlap another native place hit target", async () => {
-    const page = await browser.newPage();
-    try {
-      await page.route("**/api/world-snapshot", (route) => route.fulfill({ json: snapshot }));
-      await page.goto(url);
-      await page.locator(".place").first().waitFor();
-      const overlaps = await page.locator(".place").evaluateAll((nodes) => nodes.flatMap((node, index) => {
-        const a = node.getBoundingClientRect();
-        return nodes.slice(index + 1).filter((other) => {
-          const b = other.getBoundingClientRect();
-          return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
-        }).map((other) => [node.getAttribute("aria-label"), other.getAttribute("aria-label")]);
-      }));
-      assert.deepEqual(overlaps, [], "Evidence-rich place buttons must not overlap");
-    } finally { await page.close(); }
-  });
   child.kill("SIGTERM");
   assert.deepEqual(await exit, [0, null]);
 });
@@ -631,8 +631,8 @@ test("the committed Vite dev config shows invalid-response without an API proxy"
   await page.goto(`http://127.0.0.1:${address.port}`);
   await page.locator('#root > main[aria-label="EcoSym"]').waitFor({ state: "attached" });
   assert.equal(await page.title(), "EcoSym");
-  await page.getByRole("heading", { name: "Unrecognized world picture" }).waitFor();
-  assert.equal(await page.locator(".place, .inspection").count(), 0);
+  await page.getByRole("heading", { name: "Ukjent verdensbilde", exact: true }).waitFor();
+  assert.equal(await page.locator(".body, .plate").count(), 0);
   assert.equal(server.config.server.proxy, undefined);
   await page.waitForLoadState("networkidle");
   assert.deepEqual(errors, []);
@@ -677,7 +677,7 @@ test("Vite hot-refreshes an isolated frontend copy without navigation", { timeou
   page.on("request", (request) => { if (new URL(request.url()).pathname.startsWith("/api/")) apiRequests.push(request.url()); });
   await page.goto(url);
   await page.locator('#root > main[aria-label="EcoSym"]').waitFor({ state: "attached" });
-  await page.getByRole("heading", { name: "Unrecognized world picture" }).waitFor();
+  await page.getByRole("heading", { name: "Ukjent verdensbilde", exact: true }).waitFor();
   // A full reload would remove this marker; only the isolated copy is edited.
   await page.evaluate("window.__hmrMarker = true");
   const component = join(root, "App.tsx");
@@ -690,7 +690,7 @@ test("Vite hot-refreshes an isolated frontend copy without navigation", { timeou
 });
 
 test("React entry import closure stays within React, CSS and pure world contracts", async () => {
-  const allowed = new Set(["web/main.tsx", "web/App.tsx", "web/world-client.ts", "web/world.css", ...pureSources.map((file) => `src/${file}`)]);
+  const allowed = new Set(["web/main.tsx", "web/App.tsx", "web/world-client.ts", "web/timing.ts", "web/sky.ts", "web/app.css", ...pureSources.map((file) => `src/${file}`)]);
   const visited = new Set<string>();
   async function visit(path: string): Promise<void> {
     assert.ok(allowed.has(path), `Unexpected browser dependency: ${path}`);
@@ -716,6 +716,8 @@ test("React entry import closure stays within React, CSS and pure world contract
   }
   await visit("web/main.tsx");
   assert.ok(visited.has("web/App.tsx"));
+  assert.ok(visited.has("web/timing.ts"));
+  assert.ok(visited.has("web/sky.ts"));
   assert.ok(visited.has("src/world-form.ts"));
   assert.ok(visited.has("src/world-snapshot.ts"));
 });

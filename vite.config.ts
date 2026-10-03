@@ -19,5 +19,7 @@ export default defineConfig({
     outDir: fileURLToPath(new URL("./dist/world/", import.meta.url)),
     emptyOutDir: true,
     sourcemap: false,
+    // CSP allows only same-origin fonts: never inline an asset as a data: URI.
+    assetsInlineLimit: 0,
   },
 });

@@ -114,7 +114,7 @@ export function createWorldServer(readSnapshot: () => WorldSnapshot, buildDirect
     const file = pathname === "/" ? "index.html" : pathname.slice(1);
     const contentType = new Map([
       [".html", "text/html; charset=utf-8"], [".js", "text/javascript; charset=utf-8"],
-      [".css", "text/css; charset=utf-8"],
+      [".css", "text/css; charset=utf-8"], [".woff2", "font/woff2"], [".png", "image/png"],
     ]).get(extname(file));
     if (!contentType) { fail(404, "Ikke funnet"); return; }
     try {

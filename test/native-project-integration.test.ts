@@ -15,7 +15,7 @@ import { ObservationStore } from "../src/store.ts";
 import { composeWorldSnapshot } from "../src/world-application.ts";
 import { createWorldServer } from "../src/world-server.ts";
 import { validateWorldSnapshot } from "../src/world-snapshot.ts";
-import { hermesAvailable } from "./hermes-available.ts";
+import { nativeHermes, type NativeHermes } from "./hermes-available.ts";
 
 function assertIsolated(root: string, home: string) {
   assert.ok(isAbsolute(home), "DANGER: native test requires an absolute Hermes home");
@@ -52,6 +52,7 @@ test("real HTTP native create and show primary readback survive browser reload",
   let server: ReturnType<typeof createWorldServer> | undefined;
   let vite: ViteDevServer | undefined;
   let browser: Browser | undefined;
+  let guard: NativeHermes | undefined;
   t.after(async () => {
     await browser?.close();
     await vite?.close();
@@ -60,7 +61,10 @@ test("real HTTP native create and show primary readback survive browser reload",
       await new Promise<void>((done, reject) => server!.close((error) => error ? reject(error) : done()));
     }
     store?.close();
-    rmSync(root, { recursive: true, force: true });
+    // A native run that rewrote a launcher it executes through may now depend on this tree: keep it rather than break hermes.
+    const changed = guard?.kind === "ready" ? guard.changed() : [];
+    if (changed.length === 0) rmSync(root, { recursive: true, force: true });
+    assert.deepEqual(changed, [], `DANGER: native Hermes changed files it executes through; retained ${root}, which they may now run from`);
   });
   for (const path of [profile, home, workspaces]) mkdirSync(path, { mode: 0o700 });
   const env = { PATH: process.env.PATH, HERMES_HOME: profile, ECOSYM_HARNESS_HOME: profile };
@@ -71,8 +75,9 @@ test("real HTTP native create and show primary readback survive browser reload",
   assertIsolated(root, workspaces);
   assert.equal(env.HERMES_HOME, profile, "DANGER: native call escaped test profile");
   assert.notEqual(realpathSync(profile), join(homedir(), ".hermes"), "DANGER: real Hermes home");
-  if (!hermesAvailable(env.PATH)) {
-    t.skip("Native integration skipped: no executable hermes on PATH; profile isolation verified");
+  guard = nativeHermes(env.PATH);
+  if (guard.kind !== "ready") {
+    t.skip(guard.reason);
     return;
   }
   const adapter = new HermesProjectAdapter({ root: workspaces, home, env });
@@ -110,7 +115,7 @@ test("real HTTP native create and show primary readback survive browser reload",
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
   await page.goto(frontendUrl);
-  await page.getByRole("button", { name: "Inspect Native integration", exact: true }).click();
+  await page.getByRole("button", { name: "Åpne Native integration", exact: true }).click();
   await page.getByText("Ingen prosjekter", { exact: true }).waitFor();
 
   const response = await fetch(`${apiUrl}/api/civilizations/${encodeURIComponent(civilizationId)}/projects`, {
@@ -152,7 +157,7 @@ test("real HTTP native create and show primary readback survive browser reload",
   const loaded = await snapshotResponse;
   assert.equal(loaded.status(), 200);
   assert.deepEqual(validateWorldSnapshot(await loaded.json()).projects, [project]);
-  await page.getByRole("button", { name: "Inspect Native integration", exact: true }).click();
+  await page.getByRole("button", { name: "Åpne Native integration", exact: true }).click();
   const projects = page.getByRole("region", { name: "Prosjekter", exact: true });
   await projects.getByRole("heading", { name: project.name, exact: true }).waitFor();
   assert.equal(await projects.getByText(project.workspacePath, { exact: true }).isVisible(), true);

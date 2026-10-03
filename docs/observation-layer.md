@@ -266,7 +266,9 @@ revision identities, counts, inventory digest, and presented export digest.
 `query` and `narrate` read stored state only, never live sources. Each returned
 fact carries `collectionAsOf`: `attemptId`, `activationId`, `startedAt`, and
 `completedAt` of the highest-order successful collection in the fact's last-seen
-connection/configuration/activation lifetime. This is a collection interval, not
+connection/configuration/activation lifetime. A collection here is a read of the
+source; an admitted report whose upstream could not observe is not one, and is
+skipped. This is a collection interval, not
 an assertion that the source was unchanged during or after that read. The order
 is the store's monotone admission order, not completion time or wall-clock order.
 If stored last-seen evidence cannot establish that lifetime, the boundary is
@@ -287,7 +289,10 @@ Re-seeing the identical fact can restore currentness without deleting history,
 subject to the existing source-time and correction ordering rules. Failed,
 skipped, retired, and running attempts do not establish absence. Neither do
 attempts in other configurations or activations, or stale collectors refused at
-commit. Until re-seen after reconnect, a prior activation's fact retains its old
+commit. Nor does an admitted source report whose upstream could not observe
+(`cannot_observe`): reading the report succeeded, so collection health is quiet,
+but its empty fact list is not a read of the source, and earlier facts keep their
+currentness and `collectionAsOf` boundary. Until re-seen after reconnect, a prior activation's fact retains its old
 boundary; a successful empty read in a new activation does not rewrite it.
 
 `unknown` still means insufficient temporal evidence, not proven absence. A
