@@ -247,16 +247,31 @@ export const CREATE_SOURCE_REPORTS = `
 
 // A last-seen order, unlike attempt_id, advances even for identical sightings.
 // Never carry absence evidence across configuration or activation boundaries.
+// An admitted upstream report that could not observe is a successful read of a
+// report, not of the source: its empty fact list establishes no absence. Resolve
+// that source-read boundary once per connection/configuration/activation lifetime.
 export const FACT_COLLECTION_AS_OF_JOIN = `
   LEFT JOIN collection_attempts seen
     ON seen.attempt_order = f.last_seen_attempt_order
    AND seen.connection_id = f.connection_id AND seen.config_hash = f.config_hash
    AND seen.outcome = 'success'
-  LEFT JOIN collection_attempts collected
-    ON collected.attempt_order = (
+  LEFT JOIN (
+    SELECT DISTINCT lifetime.connection_id, lifetime.config_hash, lifetime.activation_id, (
       SELECT MAX(attempt.attempt_order) FROM collection_attempts attempt
-       WHERE attempt.connection_id = seen.connection_id
-         AND attempt.config_hash = seen.config_hash
-         AND attempt.activation_id = seen.activation_id
+       WHERE attempt.connection_id = lifetime.connection_id
+         AND attempt.config_hash = lifetime.config_hash
+         AND attempt.activation_id = lifetime.activation_id
          AND attempt.outcome = 'success'
-    )`;
+         AND NOT EXISTS (
+           SELECT 1 FROM source_report_admissions admission
+             JOIN source_reports report ON report.report_id = admission.report_id
+            WHERE admission.attempt_id = attempt.attempt_id
+              AND json_extract(report.snapshot_json, '$.observation.state') = 'cannot_observe')
+    ) AS attempt_order
+      FROM (SELECT DISTINCT connection_id, config_hash, activation_id FROM collection_attempts) lifetime
+  ) boundary
+    ON boundary.connection_id = seen.connection_id
+   AND boundary.config_hash = seen.config_hash
+   AND boundary.activation_id = seen.activation_id
+  LEFT JOIN collection_attempts collected
+    ON collected.attempt_order = boundary.attempt_order`;

@@ -114,6 +114,16 @@ Keep the Ecosym store isolated too. Native integration tests must reject the
 user's real profile rather than falling back to it; they must never create or
 modify user projects. Run them only with these isolated roots.
 
+An isolated harness home does not isolate the harness installation. A
+self-managed Hermes install re-points its own launchers at the managed Python
+under whatever `HERMES_HOME` it starts with; installed inside `~/.hermes`, a
+native test run left the user's `hermes` pointing into a deleted temporary
+profile. Native tests therefore skip, stating why, when `hermes` runs through,
+or its launchers name, any path inside `ECOSYM_HARNESS_HOME`, `HERMES_HOME`, or
+`~/.hermes`. Otherwise they fail, and keep their temporary tree, if a native run
+changed any launcher file or link they execute through. Launchers are followed
+through literal absolute paths only, so this is a tripwire, not a sandbox.
+
 ## Changes
 
 Keep each change coherent: implementation, tests, and any documentation whose

@@ -183,6 +183,33 @@ test("Arena upstream empty and outage reports remain successful reads, late onbo
   store.close();
 });
 
+test("an upstream that cannot observe establishes no absence: earlier claims keep their currentness and boundary", async () => {
+  const store = new ObservationStore(mkdtempSync(join(tmpdir(), "ecosym-arena-")));
+  store.registerArenaSource("arena", "source", "Synthetic Owner");
+  const observed = await store.admitArenaBundle("arena", JSON.stringify(arenaBundle()));
+  const [before] = store.queryClaims();
+  assert.equal(before!.temporalStatus, "current");
+  assert.equal(before!.collectionAsOf!.attemptId, observed.attemptId);
+  const outage = arenaBundle() as ArenaBundle;
+  outage.bundleId = "outage"; outage.facts = [];
+  outage.observation = { state: "cannot_observe", attemptedAt: outage.producedAt, failedAt: outage.producedAt, activity: "unknown", failure: "timeout", retryable: true, lastSuccessfulBundleId: "bundle-one" };
+  outage.processing.models.forEach((model) => { model.status = "not_run"; model.outputDigest = null; });
+  outage.freshness = { status: "unknown", basis: "unavailable", evaluatedAt: outage.producedAt, sourceAsOf: null, validUntil: null };
+  assert.equal((await store.admitArenaBundle("arena", JSON.stringify(outage))).outcome, "success");
+  assert.equal(store.statuses()[0]!.status, "quiet", "Ecosym's read of the report still succeeded");
+  const [after] = store.queryClaims();
+  assert.equal(after!.temporalStatus, "current", "an upstream outage is not evidence that the claim stopped being current");
+  assert.equal(after!.collectionAsOf!.attemptId, observed.attemptId, "the claim keeps the boundary of the read that saw it");
+  assert.equal(store.narrate().claims[0]!.temporalStatus, "current");
+  const empty = arenaBundle();
+  empty.bundleId = "empty"; empty.facts = []; empty.observation.activity = "none";
+  const complete = await store.admitArenaBundle("arena", JSON.stringify(empty));
+  const [absent] = store.queryClaims();
+  assert.equal(absent!.temporalStatus, "historical", "a complete observed read without the claim still establishes its absence");
+  assert.equal(absent!.collectionAsOf!.attemptId, complete.attemptId);
+  store.close();
+});
+
 test("Arena only admits through registered text/bytes boundary, never generic raw fact collection", async () => {
   const store = new ObservationStore(mkdtempSync(join(tmpdir(), "ecosym-arena-")));
   await assert.rejects(store.admitArenaBundle("missing", JSON.stringify(arenaBundle())), { code: "connection_not_found" });
